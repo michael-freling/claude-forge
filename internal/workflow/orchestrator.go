@@ -210,7 +210,7 @@ func (o *Orchestrator) handleSkipToPhase(state *WorkflowState, targetPhase Phase
 		return fmt.Errorf("state cannot be nil")
 	}
 
-	validator := NewSkipValidator(o.stateManager, o.config.BaseDir)
+	validator := NewSkipValidator(o.stateManager)
 	if err := validator.ValidateSkip(state, targetPhase, forceBackward, externalPlanPath); err != nil {
 		return fmt.Errorf("skip validation failed: %w", err)
 	}

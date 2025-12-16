@@ -307,21 +307,18 @@ func TestNewSkipValidator(t *testing.T) {
 	sm := NewStateManager(tmpDir)
 
 	tests := []struct {
-		name    string
-		baseDir string
+		name string
 	}{
 		{
-			name:    "creates skip validator",
-			baseDir: tmpDir,
+			name: "creates skip validator",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			validator := NewSkipValidator(sm, tt.baseDir)
+			validator := NewSkipValidator(sm)
 			assert.NotNil(t, validator)
 			assert.Equal(t, sm, validator.stateManager)
-			assert.Equal(t, tt.baseDir, validator.baseDir)
 		})
 	}
 }
@@ -513,7 +510,7 @@ func TestSkipValidator_ValidateSkip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			sm := NewStateManager(tmpDir)
-			validator := NewSkipValidator(sm, tmpDir)
+			validator := NewSkipValidator(sm)
 
 			state := tt.setupState(sm)
 			err := validator.ValidateSkip(state, tt.targetPhase, tt.forceBackward, tt.externalPlanPath)
@@ -529,7 +526,7 @@ func TestSkipValidator_ValidateSkip(t *testing.T) {
 	}
 }
 
-func TestSkipValidator_checkArtifact(t *testing.T) {
+func TestSkipValidator_validateArtifactPrerequisite(t *testing.T) {
 	tests := []struct {
 		name             string
 		setupState       func(sm StateManager) *WorkflowState
@@ -650,10 +647,10 @@ func TestSkipValidator_checkArtifact(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			sm := NewStateManager(tmpDir)
-			validator := NewSkipValidator(sm, tmpDir)
+			validator := NewSkipValidator(sm)
 
 			state := tt.setupState(sm)
-			satisfied, reason := validator.checkArtifact(state, tt.artifact, tt.externalPlanPath)
+			satisfied, reason := validator.validateArtifactPrerequisite(state, tt.artifact, tt.externalPlanPath)
 
 			assert.Equal(t, tt.wantSatisfied, satisfied)
 			if !tt.wantSatisfied {

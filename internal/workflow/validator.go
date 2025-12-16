@@ -11,6 +11,15 @@ import (
 var (
 	// validWorkflowNameRegex ensures alphanumeric characters and hyphens only
 	validWorkflowNameRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
+
+	// phaseOrder defines the sequential order of workflow phases
+	phaseOrder = []Phase{
+		PhasePlanning,
+		PhaseConfirmation,
+		PhaseImplementation,
+		PhaseRefactoring,
+		PhasePRSplit,
+	}
 )
 
 // ValidateWorkflowName validates a workflow name
@@ -70,20 +79,19 @@ func ValidateDescription(desc string) error {
 // SkipValidator validates whether a skip to a target phase is allowed
 type SkipValidator struct {
 	stateManager StateManager
-	baseDir      string
 }
 
 // NewSkipValidator creates a new SkipValidator
-func NewSkipValidator(stateManager StateManager, baseDir string) *SkipValidator {
+func NewSkipValidator(stateManager StateManager) *SkipValidator {
 	return &SkipValidator{
 		stateManager: stateManager,
-		baseDir:      baseDir,
 	}
 }
 
 // ValidateSkip validates whether a skip to the target phase is allowed
 // Returns nil if valid, or an error describing what's missing/wrong
 func (v *SkipValidator) ValidateSkip(state *WorkflowState, targetPhase Phase, forceBackward bool, externalPlanPath string) error {
+	// Parameter validation first (fail fast on obvious errors)
 	if targetPhase == "" {
 		return fmt.Errorf("target phase cannot be empty")
 	}
@@ -96,6 +104,7 @@ func (v *SkipValidator) ValidateSkip(state *WorkflowState, targetPhase Phase, fo
 		return fmt.Errorf("cannot skip to FAILED phase: this is an error state")
 	}
 
+	// Backward skip check
 	currentPhaseOrder := getPhaseOrder(state.CurrentPhase)
 	targetPhaseOrder := getPhaseOrder(targetPhase)
 
@@ -105,6 +114,7 @@ func (v *SkipValidator) ValidateSkip(state *WorkflowState, targetPhase Phase, fo
 		}
 	}
 
+	// Prerequisites validation
 	prereqs, exists := PhasePrerequisitesMap[targetPhase]
 	if !exists {
 		return fmt.Errorf("no prerequisites defined for phase %s", targetPhase)
@@ -112,7 +122,7 @@ func (v *SkipValidator) ValidateSkip(state *WorkflowState, targetPhase Phase, fo
 
 	var missingPrereqs []string
 	for _, prereq := range prereqs.Prerequisites {
-		satisfied, reason := v.checkArtifact(state, prereq.ArtifactType, externalPlanPath)
+		satisfied, reason := v.validateArtifactPrerequisite(state, prereq.ArtifactType, externalPlanPath)
 		if !satisfied {
 			missingPrereqs = append(missingPrereqs, reason)
 		}
@@ -125,8 +135,9 @@ func (v *SkipValidator) ValidateSkip(state *WorkflowState, targetPhase Phase, fo
 	return nil
 }
 
-// checkArtifact checks if a specific artifact requirement is satisfied
-func (v *SkipValidator) checkArtifact(state *WorkflowState, artifact ArtifactType, externalPlanPath string) (bool, string) {
+// validateArtifactPrerequisite validates if a specific artifact prerequisite is satisfied
+// Returns (true, "") if satisfied, or (false, reason) if not satisfied
+func (v *SkipValidator) validateArtifactPrerequisite(state *WorkflowState, artifact ArtifactType, externalPlanPath string) (bool, string) {
 	switch artifact {
 	case ArtifactPlan:
 		planPath := filepath.Join(v.stateManager.WorkflowDir(state.Name), planFileName)
@@ -167,7 +178,11 @@ func (v *SkipValidator) checkArtifact(state *WorkflowState, artifact ArtifactTyp
 	}
 }
 
-// getPhaseOrder returns the numeric order of a phase for comparison
+// getPhaseOrder returns the numeric order of a phase for comparison.
+// Each valid phase is assigned a sequential order number starting from 0.
+// PhaseFailed and unknown phases return -1 to indicate invalid/error states.
+// This ordering is used to determine if a skip is forward or backward,
+// and to calculate which phases would be skipped.
 func getPhaseOrder(phase Phase) int {
 	switch phase {
 	case PhasePlanning:
@@ -198,18 +213,10 @@ func CalculateSkippedPhases(current, target Phase) []Phase {
 		return nil
 	}
 
-	allPhases := []Phase{
-		PhasePlanning,
-		PhaseConfirmation,
-		PhaseImplementation,
-		PhaseRefactoring,
-		PhasePRSplit,
-	}
-
 	var skipped []Phase
-	for _, phase := range allPhases {
-		phaseOrder := getPhaseOrder(phase)
-		if phaseOrder > currentOrder && phaseOrder < targetOrder {
+	for _, phase := range phaseOrder {
+		order := getPhaseOrder(phase)
+		if order > currentOrder && order < targetOrder {
 			skipped = append(skipped, phase)
 		}
 	}
