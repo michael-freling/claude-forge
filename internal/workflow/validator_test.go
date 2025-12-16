@@ -301,3 +301,485 @@ func TestValidateDescriptionWithEnvOverride(t *testing.T) {
 		})
 	}
 }
+
+func TestNewSkipValidator(t *testing.T) {
+	tmpDir := t.TempDir()
+	sm := NewStateManager(tmpDir)
+
+	tests := []struct {
+		name    string
+		baseDir string
+	}{
+		{
+			name:    "creates skip validator",
+			baseDir: tmpDir,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			validator := NewSkipValidator(sm, tt.baseDir)
+			assert.NotNil(t, validator)
+			assert.Equal(t, sm, validator.stateManager)
+			assert.Equal(t, tt.baseDir, validator.baseDir)
+		})
+	}
+}
+
+func TestSkipValidator_ValidateSkip(t *testing.T) {
+	tests := []struct {
+		name             string
+		setupState       func(sm StateManager) *WorkflowState
+		targetPhase      Phase
+		forceBackward    bool
+		externalPlanPath string
+		wantErr          bool
+		errContains      string
+	}{
+		{
+			name: "planning to planning is valid",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			targetPhase: PhasePlanning,
+			wantErr:     false,
+		},
+		{
+			name: "empty target phase returns error",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			targetPhase: "",
+			wantErr:     true,
+			errContains: "target phase cannot be empty",
+		},
+		{
+			name: "cannot skip to COMPLETED phase",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			targetPhase: PhaseCompleted,
+			wantErr:     true,
+			errContains: "cannot skip to COMPLETED phase",
+		},
+		{
+			name: "cannot skip to FAILED phase",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			targetPhase: PhaseFailed,
+			wantErr:     true,
+			errContains: "cannot skip to FAILED phase",
+		},
+		{
+			name: "confirmation requires plan.json",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			targetPhase: PhaseConfirmation,
+			wantErr:     true,
+			errContains: "plan.json not found",
+		},
+		{
+			name: "confirmation valid with existing plan.json",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				plan := &Plan{Summary: "test plan"}
+				sm.SavePlan("test", plan)
+				return state
+			},
+			targetPhase: PhaseConfirmation,
+			wantErr:     false,
+		},
+		{
+			name: "confirmation valid with external plan",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			targetPhase:      PhaseConfirmation,
+			externalPlanPath: "/path/to/external/plan.json",
+			wantErr:          false,
+		},
+		{
+			name: "implementation requires plan and approval",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			targetPhase: PhaseImplementation,
+			wantErr:     true,
+			errContains: "missing prerequisites",
+		},
+		{
+			name: "implementation valid with plan and approval",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				plan := &Plan{Summary: "test plan"}
+				sm.SavePlan("test", plan)
+				state.Phases[PhaseConfirmation].Status = StatusCompleted
+				return state
+			},
+			targetPhase: PhaseImplementation,
+			wantErr:     false,
+		},
+		{
+			name: "refactoring requires plan, approval, and implementation",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				plan := &Plan{Summary: "test plan"}
+				sm.SavePlan("test", plan)
+				state.Phases[PhaseConfirmation].Status = StatusCompleted
+				return state
+			},
+			targetPhase: PhaseRefactoring,
+			wantErr:     true,
+			errContains: "implementation phase not completed",
+		},
+		{
+			name: "refactoring valid with all prerequisites",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				plan := &Plan{Summary: "test plan"}
+				sm.SavePlan("test", plan)
+				state.Phases[PhaseConfirmation].Status = StatusCompleted
+				state.Phases[PhaseImplementation].Status = StatusCompleted
+				return state
+			},
+			targetPhase: PhaseRefactoring,
+			wantErr:     false,
+		},
+		{
+			name: "pr-split requires all artifacts including PR",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				plan := &Plan{Summary: "test plan"}
+				sm.SavePlan("test", plan)
+				state.Phases[PhaseConfirmation].Status = StatusCompleted
+				state.Phases[PhaseImplementation].Status = StatusCompleted
+				return state
+			},
+			targetPhase: PhasePRSplit,
+			wantErr:     true,
+			errContains: "refactoring phase not completed",
+		},
+		{
+			name: "pr-split valid with all prerequisites",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				plan := &Plan{Summary: "test plan"}
+				sm.SavePlan("test", plan)
+				state.Phases[PhaseConfirmation].Status = StatusCompleted
+				state.Phases[PhaseImplementation].Status = StatusCompleted
+				state.Phases[PhaseRefactoring].Status = StatusCompleted
+				return state
+			},
+			targetPhase: PhasePRSplit,
+			wantErr:     false,
+		},
+		{
+			name: "backward skip without force returns error",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				state.CurrentPhase = PhaseImplementation
+				return state
+			},
+			targetPhase:   PhaseConfirmation,
+			forceBackward: false,
+			wantErr:       true,
+			errContains:   "cannot skip backward",
+		},
+		{
+			name: "backward skip with force is allowed",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				plan := &Plan{Summary: "test plan"}
+				sm.SavePlan("test", plan)
+				state.CurrentPhase = PhaseImplementation
+				return state
+			},
+			targetPhase:   PhaseConfirmation,
+			forceBackward: true,
+			wantErr:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			sm := NewStateManager(tmpDir)
+			validator := NewSkipValidator(sm, tmpDir)
+
+			state := tt.setupState(sm)
+			err := validator.ValidateSkip(state, tt.targetPhase, tt.forceBackward, tt.externalPlanPath)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestSkipValidator_checkArtifact(t *testing.T) {
+	tests := []struct {
+		name             string
+		setupState       func(sm StateManager) *WorkflowState
+		artifact         ArtifactType
+		externalPlanPath string
+		wantSatisfied    bool
+		wantReason       string
+	}{
+		{
+			name: "plan artifact satisfied with existing file",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				plan := &Plan{Summary: "test plan"}
+				sm.SavePlan("test", plan)
+				return state
+			},
+			artifact:      ArtifactPlan,
+			wantSatisfied: true,
+			wantReason:    "",
+		},
+		{
+			name: "plan artifact satisfied with external path",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			artifact:         ArtifactPlan,
+			externalPlanPath: "/path/to/plan.json",
+			wantSatisfied:    true,
+			wantReason:       "",
+		},
+		{
+			name: "plan artifact not satisfied",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			artifact:      ArtifactPlan,
+			wantSatisfied: false,
+			wantReason:    "plan.json not found",
+		},
+		{
+			name: "approval artifact satisfied",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				state.Phases[PhaseConfirmation].Status = StatusCompleted
+				return state
+			},
+			artifact:      ArtifactApproval,
+			wantSatisfied: true,
+			wantReason:    "",
+		},
+		{
+			name: "approval artifact not satisfied",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			artifact:      ArtifactApproval,
+			wantSatisfied: false,
+			wantReason:    "confirmation phase not completed",
+		},
+		{
+			name: "implementation artifact satisfied",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				state.Phases[PhaseImplementation].Status = StatusCompleted
+				return state
+			},
+			artifact:      ArtifactImplementation,
+			wantSatisfied: true,
+			wantReason:    "",
+		},
+		{
+			name: "implementation artifact not satisfied",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			artifact:      ArtifactImplementation,
+			wantSatisfied: false,
+			wantReason:    "implementation phase not completed",
+		},
+		{
+			name: "pr artifact satisfied",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				state.Phases[PhaseRefactoring].Status = StatusCompleted
+				return state
+			},
+			artifact:      ArtifactPR,
+			wantSatisfied: true,
+			wantReason:    "",
+		},
+		{
+			name: "pr artifact not satisfied",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			artifact:      ArtifactPR,
+			wantSatisfied: false,
+			wantReason:    "refactoring phase not completed",
+		},
+		{
+			name: "unknown artifact type",
+			setupState: func(sm StateManager) *WorkflowState {
+				state, _ := sm.InitState("test", "test description", WorkflowTypeFeature)
+				return state
+			},
+			artifact:      ArtifactType("unknown"),
+			wantSatisfied: false,
+			wantReason:    "unknown artifact type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			sm := NewStateManager(tmpDir)
+			validator := NewSkipValidator(sm, tmpDir)
+
+			state := tt.setupState(sm)
+			satisfied, reason := validator.checkArtifact(state, tt.artifact, tt.externalPlanPath)
+
+			assert.Equal(t, tt.wantSatisfied, satisfied)
+			if !tt.wantSatisfied {
+				assert.Contains(t, reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestGetPhaseOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		phase Phase
+		want  int
+	}{
+		{
+			name:  "planning is 0",
+			phase: PhasePlanning,
+			want:  0,
+		},
+		{
+			name:  "confirmation is 1",
+			phase: PhaseConfirmation,
+			want:  1,
+		},
+		{
+			name:  "implementation is 2",
+			phase: PhaseImplementation,
+			want:  2,
+		},
+		{
+			name:  "refactoring is 3",
+			phase: PhaseRefactoring,
+			want:  3,
+		},
+		{
+			name:  "pr-split is 4",
+			phase: PhasePRSplit,
+			want:  4,
+		},
+		{
+			name:  "completed is 5",
+			phase: PhaseCompleted,
+			want:  5,
+		},
+		{
+			name:  "failed is -1",
+			phase: PhaseFailed,
+			want:  -1,
+		},
+		{
+			name:  "unknown is -1",
+			phase: Phase("unknown"),
+			want:  -1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getPhaseOrder(tt.phase)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCalculateSkippedPhases(t *testing.T) {
+	tests := []struct {
+		name    string
+		current Phase
+		target  Phase
+		want    []Phase
+	}{
+		{
+			name:    "planning to implementation skips confirmation",
+			current: PhasePlanning,
+			target:  PhaseImplementation,
+			want:    []Phase{PhaseConfirmation},
+		},
+		{
+			name:    "planning to refactoring skips confirmation and implementation",
+			current: PhasePlanning,
+			target:  PhaseRefactoring,
+			want:    []Phase{PhaseConfirmation, PhaseImplementation},
+		},
+		{
+			name:    "confirmation to pr-split skips implementation and refactoring",
+			current: PhaseConfirmation,
+			target:  PhasePRSplit,
+			want:    []Phase{PhaseImplementation, PhaseRefactoring},
+		},
+		{
+			name:    "adjacent phases skip nothing",
+			current: PhasePlanning,
+			target:  PhaseConfirmation,
+			want:    nil,
+		},
+		{
+			name:    "same phase skips nothing",
+			current: PhasePlanning,
+			target:  PhasePlanning,
+			want:    nil,
+		},
+		{
+			name:    "backward skip returns empty",
+			current: PhaseImplementation,
+			target:  PhasePlanning,
+			want:    nil,
+		},
+		{
+			name:    "failed phase returns empty",
+			current: PhaseFailed,
+			target:  PhasePlanning,
+			want:    nil,
+		},
+		{
+			name:    "to failed phase returns empty",
+			current: PhasePlanning,
+			target:  PhaseFailed,
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calculateSkippedPhases(tt.current, tt.target)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
