@@ -99,23 +99,38 @@ Examples:
 				return fmt.Errorf("cannot use --update-pr and --split-pr together")
 			}
 
-			// Validate skip-to flag
+			// Validate skip-to flag and convert to Phase
+			var skipToPhase workflow.Phase
 			if skipTo != "" {
-				validPhases := map[string]bool{
-					"planning":       true,
-					"confirmation":   true,
-					"implementation": true,
-					"refactoring":    true,
-					"pr-split":       true,
+				validPhases := map[string]workflow.Phase{
+					"planning":       workflow.PhasePlanning,
+					"confirmation":   workflow.PhaseConfirmation,
+					"implementation": workflow.PhaseImplementation,
+					"refactoring":    workflow.PhaseRefactoring,
+					"pr-split":       workflow.PhasePRSplit,
 				}
-				if !validPhases[skipTo] {
+				phase, ok := validPhases[skipTo]
+				if !ok {
 					return fmt.Errorf("invalid --skip-to value: %s (must be one of: planning, confirmation, implementation, refactoring, pr-split)", skipTo)
 				}
+				skipToPhase = phase
 			}
 
 			// Validate with-plan requires skip-to
 			if withPlan != "" && skipTo == "" {
 				return fmt.Errorf("--with-plan requires --skip-to to be specified")
+			}
+
+			// Validate with-plan not used with planning phase
+			if withPlan != "" && skipTo == "planning" {
+				return fmt.Errorf("--with-plan cannot be used when skipping to planning phase (plan is generated during planning)")
+			}
+
+			// Validate with-plan file exists
+			if withPlan != "" {
+				if _, err := os.Stat(withPlan); os.IsNotExist(err) {
+					return fmt.Errorf("plan file does not exist: %s", withPlan)
+				}
 			}
 
 			var wfType workflow.WorkflowType
@@ -139,7 +154,18 @@ Examples:
 				updatePRPtr = &updatePR
 			}
 
-			if err := orchestrator.Start(ctx, name, description, wfType, updatePRPtr); err != nil {
+			// Create StartOptions with all fields
+			opts := workflow.StartOptions{
+				Name:          name,
+				Description:   description,
+				Type:          wfType,
+				UpdatePR:      updatePRPtr,
+				SkipTo:        skipToPhase,
+				ExternalPlan:  withPlan,
+				ForceBackward: forceBackward,
+			}
+
+			if err := orchestrator.StartWithOptions(ctx, opts); err != nil {
 				fmt.Printf("\n%s %s\n", workflow.Red("✗"), err.Error())
 				return err
 			}
@@ -254,18 +280,21 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			// Validate skip-to flag
+			// Validate skip-to flag and convert to Phase
+			var skipToPhase workflow.Phase
 			if skipTo != "" {
-				validPhases := map[string]bool{
-					"planning":       true,
-					"confirmation":   true,
-					"implementation": true,
-					"refactoring":    true,
-					"pr-split":       true,
+				validPhases := map[string]workflow.Phase{
+					"planning":       workflow.PhasePlanning,
+					"confirmation":   workflow.PhaseConfirmation,
+					"implementation": workflow.PhaseImplementation,
+					"refactoring":    workflow.PhaseRefactoring,
+					"pr-split":       workflow.PhasePRSplit,
 				}
-				if !validPhases[skipTo] {
+				phase, ok := validPhases[skipTo]
+				if !ok {
 					return fmt.Errorf("invalid --skip-to value: %s (must be one of: planning, confirmation, implementation, refactoring, pr-split)", skipTo)
 				}
+				skipToPhase = phase
 			}
 
 			orchestrator, err := createOrchestrator()
@@ -274,7 +303,15 @@ Examples:
 			}
 
 			ctx := context.Background()
-			if err := orchestrator.Resume(ctx, name); err != nil {
+
+			// Create ResumeOptions with all fields
+			opts := workflow.ResumeOptions{
+				Name:          name,
+				SkipTo:        skipToPhase,
+				ForceBackward: forceBackward,
+			}
+
+			if err := orchestrator.ResumeWithOptions(ctx, opts); err != nil {
 				fmt.Printf("\n%s %s\n", workflow.Red("✗"), err.Error())
 				return err
 			}
