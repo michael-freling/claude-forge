@@ -5323,3 +5323,193 @@ func TestOrchestrator_executePRCreation_PromptTooLong(t *testing.T) {
 		})
 	}
 }
+
+
+func TestOrchestrator_handleSkipToPhase(t *testing.T) {
+	tests := []struct {
+		name             string
+		currentPhase     Phase
+		targetPhase      Phase
+		forceBackward    bool
+		externalPlanPath string
+		setupState       func(*WorkflowState)
+		setupMocks       func(*MockStateManager, string)
+		wantErr          bool
+		errContains      string
+		validateState    func(*testing.T, *WorkflowState)
+	}{
+		{
+			name:             "skip forward with external plan - planning to confirmation",
+			currentPhase:     PhasePlanning,
+			targetPhase:      PhaseConfirmation,
+			externalPlanPath: "/tmp/plan.json",
+			setupState: func(state *WorkflowState) {
+				state.Phases[PhasePlanning].Status = StatusInProgress
+				state.Phases[PhaseConfirmation].Status = StatusPending
+			},
+			setupMocks: func(sm *MockStateManager, planPath string) {
+				sm.On("WorkflowDir", "test-workflow").Return("/tmp/workflow")
+				sm.On("SavePlan", "test-workflow", mock.AnythingOfType("*workflow.Plan")).Return(nil)
+				sm.On("SavePlanMarkdown", "test-workflow", mock.AnythingOfType("string")).Return(nil)
+			},
+			wantErr: false,
+			validateState: func(t *testing.T, state *WorkflowState) {
+				assert.Equal(t, PhaseConfirmation, state.CurrentPhase)
+				assert.True(t, state.ExternalPlanUsed)
+				// No phases skipped when going from 0 to 1
+				assert.Len(t, state.SkippedPhases, 0)
+				assert.Equal(t, StatusInProgress, state.Phases[PhaseConfirmation].Status)
+				require.Len(t, state.PhaseHistory, 1)
+				assert.Equal(t, "skip", state.PhaseHistory[0].TransitionType)
+			},
+		},
+		{
+			name:         "skip forward planning to implementation - skips confirmation",
+			currentPhase: PhasePlanning,
+			targetPhase:  PhaseImplementation,
+			externalPlanPath: "/tmp/plan.json",
+			setupState: func(state *WorkflowState) {
+				state.Phases[PhasePlanning].Status = StatusInProgress
+				state.Phases[PhaseConfirmation].Status = StatusCompleted
+				state.Phases[PhaseImplementation].Status = StatusPending
+			},
+			setupMocks: func(sm *MockStateManager, planPath string) {
+				sm.On("WorkflowDir", "test-workflow").Return("/tmp/workflow")
+				sm.On("SavePlan", "test-workflow", mock.AnythingOfType("*workflow.Plan")).Return(nil)
+				sm.On("SavePlanMarkdown", "test-workflow", mock.AnythingOfType("string")).Return(nil)
+			},
+			wantErr: false,
+			validateState: func(t *testing.T, state *WorkflowState) {
+				assert.Equal(t, PhaseImplementation, state.CurrentPhase)
+				assert.True(t, state.ExternalPlanUsed)
+				// Only confirmation is skipped (between 0 and 2)
+				assert.Contains(t, state.SkippedPhases, PhaseConfirmation)
+				assert.Len(t, state.SkippedPhases, 1)
+				assert.Equal(t, StatusSkipped, state.Phases[PhaseConfirmation].Status)
+				assert.Equal(t, StatusInProgress, state.Phases[PhaseImplementation].Status)
+			},
+		},
+		{
+			name:         "validation fails when prerequisites missing",
+			currentPhase: PhasePlanning,
+			targetPhase:  PhaseImplementation,
+			setupState: func(state *WorkflowState) {
+				state.Phases[PhasePlanning].Status = StatusInProgress
+				state.Phases[PhaseConfirmation].Status = StatusPending
+				state.Phases[PhaseImplementation].Status = StatusPending
+			},
+			setupMocks: func(sm *MockStateManager, planPath string) {
+				sm.On("WorkflowDir", "test-workflow").Return("/tmp/workflow")
+			},
+			wantErr:     true,
+			errContains: "missing prerequisites",
+		},
+		{
+			name:         "validation fails when skipping to COMPLETED",
+			currentPhase: PhasePlanning,
+			targetPhase:  PhaseCompleted,
+			setupState: func(state *WorkflowState) {
+			},
+			setupMocks: func(sm *MockStateManager, planPath string) {
+			},
+			wantErr:     true,
+			errContains: "cannot skip to COMPLETED",
+		},
+		{
+			name:          "validation fails for backward skip without force",
+			currentPhase:  PhaseImplementation,
+			targetPhase:   PhasePlanning,
+			forceBackward: false,
+			setupState: func(state *WorkflowState) {
+			},
+			setupMocks: func(sm *MockStateManager, planPath string) {
+				// No mocks needed - validation fails early
+			},
+			wantErr:     true,
+			errContains: "cannot skip backward",
+		},
+		{
+			name:          "validation succeeds for backward skip with force",
+			currentPhase:  PhaseImplementation,
+			targetPhase:   PhasePlanning,
+			forceBackward: true,
+			setupState: func(state *WorkflowState) {
+			},
+			setupMocks: func(sm *MockStateManager, planPath string) {
+				// Planning has no prerequisites, so no mocks needed
+			},
+			wantErr: false,
+			validateState: func(t *testing.T, state *WorkflowState) {
+				assert.Equal(t, PhasePlanning, state.CurrentPhase)
+				assert.Equal(t, StatusInProgress, state.Phases[PhasePlanning].Status)
+				// Backward skip doesn't mark phases as skipped
+				assert.Len(t, state.SkippedPhases, 0)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var planPath string
+			if tt.externalPlanPath != "" {
+				tmpDir := t.TempDir()
+				plan := &Plan{
+					Summary: "Test plan",
+					Phases: []PlanPhase{
+						{Name: "Phase 1", Description: "Test phase"},
+					},
+					WorkStreams: []WorkStream{
+						{Name: "Stream 1", Tasks: []string{"Task 1"}},
+					},
+				}
+				planBytes, err := json.Marshal(plan)
+				require.NoError(t, err)
+				planPath = tmpDir + "/plan.json"
+				err = os.WriteFile(planPath, planBytes, 0644)
+				require.NoError(t, err)
+			}
+
+			mockSM := new(MockStateManager)
+			tt.setupMocks(mockSM, planPath)
+
+			state := &WorkflowState{
+				Name:         "test-workflow",
+				CurrentPhase: tt.currentPhase,
+				Phases: map[Phase]*PhaseState{
+					PhasePlanning:       {Status: StatusCompleted},
+					PhaseConfirmation:   {Status: StatusCompleted},
+					PhaseImplementation: {Status: StatusCompleted},
+					PhaseRefactoring:    {Status: StatusPending},
+				},
+				SkippedPhases: []Phase{},
+				PhaseHistory:  []PhaseTransition{},
+			}
+
+			if tt.setupState != nil {
+				tt.setupState(state)
+			}
+
+			o := &Orchestrator{
+				stateManager: mockSM,
+				config:       DefaultConfig("/tmp/workflows"),
+				logger:       NewLogger(LogLevelNormal),
+			}
+
+			err := o.handleSkipToPhase(state, tt.targetPhase, tt.forceBackward, planPath)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+			} else {
+				require.NoError(t, err)
+				if tt.validateState != nil {
+					tt.validateState(t, state)
+				}
+			}
+
+			mockSM.AssertExpectations(t)
+		})
+	}
+}
