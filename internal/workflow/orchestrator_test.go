@@ -5324,7 +5324,6 @@ func TestOrchestrator_executePRCreation_PromptTooLong(t *testing.T) {
 	}
 }
 
-
 func TestOrchestrator_handleSkipToPhase(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -5364,9 +5363,9 @@ func TestOrchestrator_handleSkipToPhase(t *testing.T) {
 			},
 		},
 		{
-			name:         "skip forward planning to implementation - skips confirmation",
-			currentPhase: PhasePlanning,
-			targetPhase:  PhaseImplementation,
+			name:             "skip forward planning to implementation - skips confirmation",
+			currentPhase:     PhasePlanning,
+			targetPhase:      PhaseImplementation,
 			externalPlanPath: "/tmp/plan.json",
 			setupState: func(state *WorkflowState) {
 				state.Phases[PhasePlanning].Status = StatusInProgress
