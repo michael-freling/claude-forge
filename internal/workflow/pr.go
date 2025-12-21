@@ -89,7 +89,7 @@ func (p *prManager) getCurrentBranch(ctx context.Context) (string, error) {
 
 // GetCurrentBranchPR returns the PR number for the current branch
 func (p *prManager) GetCurrentBranchPR(ctx context.Context) (int, error) {
-	prNumberStr, err := p.ghRunner.PRView(ctx, p.workingDir, "number", ".number")
+	prNumberStr, err := p.ghRunner.PRView(ctx, p.workingDir, 0, "number", ".number")
 	if err != nil {
 		if strings.Contains(err.Error(), "no pull requests found") {
 			return 0, nil
@@ -141,7 +141,7 @@ func (p *prManager) ValidatePRForUpdate(ctx context.Context, prNumber int) (*PRV
 		return nil, fmt.Errorf("PR number must be positive, got %d", prNumber)
 	}
 
-	jsonOutput, err := p.ghRunner.PRView(ctx, p.workingDir, "number,state,headRefName,baseRefName,mergeable", ".")
+	jsonOutput, err := p.ghRunner.PRView(ctx, p.workingDir, prNumber, "number,state,headRefName,baseRefName,mergeable", ".")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PR info for #%d: %w", prNumber, err)
 	}

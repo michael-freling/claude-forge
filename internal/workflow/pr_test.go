@@ -289,7 +289,7 @@ func TestPRManager_GetCurrentBranchPR(t *testing.T) {
 		{
 			name: "returns PR number successfully",
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("123", nil)
 			},
 			want: 123,
@@ -297,7 +297,7 @@ func TestPRManager_GetCurrentBranchPR(t *testing.T) {
 		{
 			name: "returns 0 when no PR found",
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("", fmt.Errorf("no pull requests found for branch"))
 			},
 			want: 0,
@@ -305,7 +305,7 @@ func TestPRManager_GetCurrentBranchPR(t *testing.T) {
 		{
 			name: "returns 0 when PR number is empty string",
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("", nil)
 			},
 			want: 0,
@@ -313,7 +313,7 @@ func TestPRManager_GetCurrentBranchPR(t *testing.T) {
 		{
 			name: "fails when PR number is invalid",
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("abc", nil)
 			},
 			wantErr:     true,
@@ -322,7 +322,7 @@ func TestPRManager_GetCurrentBranchPR(t *testing.T) {
 		{
 			name: "fails when gh command fails with other error",
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("", fmt.Errorf("GraphQL error"))
 			},
 			wantErr:     true,
@@ -372,7 +372,7 @@ func TestPRManager_EnsurePR(t *testing.T) {
 			body:         "Test body",
 			setupGitMock: func(m *MockGitRunner) {},
 			setupGhMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("123", nil)
 			},
 			want: 123,
@@ -386,7 +386,7 @@ func TestPRManager_EnsurePR(t *testing.T) {
 					Return("feature-branch", nil)
 			},
 			setupGhMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("", fmt.Errorf("no pull requests found"))
 				m.On("PRCreate", mock.Anything, "/test/repo", "New PR", "PR body", "feature-branch", "").
 					Return("https://github.com/owner/repo/pull/456", nil)
@@ -399,7 +399,7 @@ func TestPRManager_EnsurePR(t *testing.T) {
 			body:         "Test body",
 			setupGitMock: func(m *MockGitRunner) {},
 			setupGhMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("", fmt.Errorf("GraphQL error"))
 			},
 			wantErr:     true,
@@ -414,7 +414,7 @@ func TestPRManager_EnsurePR(t *testing.T) {
 					Return("", fmt.Errorf("git error"))
 			},
 			setupGhMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number", ".number").
+				m.On("PRView", mock.Anything, "/test/repo", 0, "number", ".number").
 					Return("", fmt.Errorf("no pull requests found"))
 			},
 			wantErr:     true,
@@ -534,7 +534,7 @@ func TestPRManager_ValidatePRForUpdate(t *testing.T) {
 			name:     "validates open and mergeable PR successfully",
 			prNumber: 123,
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number,state,headRefName,baseRefName,mergeable", ".").
+				m.On("PRView", mock.Anything, "/test/repo", 123, "number,state,headRefName,baseRefName,mergeable", ".").
 					Return(`{"number":123,"state":"OPEN","headRefName":"feature-branch","baseRefName":"main","mergeable":"MERGEABLE"}`, nil)
 			},
 			want: &PRValidationResult{
@@ -549,7 +549,7 @@ func TestPRManager_ValidatePRForUpdate(t *testing.T) {
 			name:     "validates open PR with unknown mergeable status",
 			prNumber: 456,
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number,state,headRefName,baseRefName,mergeable", ".").
+				m.On("PRView", mock.Anything, "/test/repo", 456, "number,state,headRefName,baseRefName,mergeable", ".").
 					Return(`{"number":456,"state":"OPEN","headRefName":"bugfix","baseRefName":"main","mergeable":"UNKNOWN"}`, nil)
 			},
 			want: &PRValidationResult{
@@ -580,7 +580,7 @@ func TestPRManager_ValidatePRForUpdate(t *testing.T) {
 			name:     "fails when gh command fails",
 			prNumber: 123,
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number,state,headRefName,baseRefName,mergeable", ".").
+				m.On("PRView", mock.Anything, "/test/repo", 123, "number,state,headRefName,baseRefName,mergeable", ".").
 					Return("", fmt.Errorf("PR not found"))
 			},
 			wantErr:     true,
@@ -590,7 +590,7 @@ func TestPRManager_ValidatePRForUpdate(t *testing.T) {
 			name:     "fails when JSON parsing fails",
 			prNumber: 123,
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number,state,headRefName,baseRefName,mergeable", ".").
+				m.On("PRView", mock.Anything, "/test/repo", 123, "number,state,headRefName,baseRefName,mergeable", ".").
 					Return(`{invalid json}`, nil)
 			},
 			wantErr:     true,
@@ -600,7 +600,7 @@ func TestPRManager_ValidatePRForUpdate(t *testing.T) {
 			name:     "fails when PR is closed",
 			prNumber: 123,
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number,state,headRefName,baseRefName,mergeable", ".").
+				m.On("PRView", mock.Anything, "/test/repo", 123, "number,state,headRefName,baseRefName,mergeable", ".").
 					Return(`{"number":123,"state":"CLOSED","headRefName":"feature","baseRefName":"main","mergeable":"MERGEABLE"}`, nil)
 			},
 			wantErr:     true,
@@ -610,7 +610,7 @@ func TestPRManager_ValidatePRForUpdate(t *testing.T) {
 			name:     "fails when PR is merged",
 			prNumber: 456,
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number,state,headRefName,baseRefName,mergeable", ".").
+				m.On("PRView", mock.Anything, "/test/repo", 456, "number,state,headRefName,baseRefName,mergeable", ".").
 					Return(`{"number":456,"state":"MERGED","headRefName":"feature","baseRefName":"main","mergeable":"MERGEABLE"}`, nil)
 			},
 			wantErr:     true,
@@ -620,7 +620,7 @@ func TestPRManager_ValidatePRForUpdate(t *testing.T) {
 			name:     "fails when PR has conflicts",
 			prNumber: 789,
 			setupMock: func(m *MockGhRunner) {
-				m.On("PRView", mock.Anything, "/test/repo", "number,state,headRefName,baseRefName,mergeable", ".").
+				m.On("PRView", mock.Anything, "/test/repo", 789, "number,state,headRefName,baseRefName,mergeable", ".").
 					Return(`{"number":789,"state":"OPEN","headRefName":"feature","baseRefName":"main","mergeable":"CONFLICTING"}`, nil)
 			},
 			wantErr:     true,

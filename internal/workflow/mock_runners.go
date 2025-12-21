@@ -152,8 +152,8 @@ func (m *MockGhRunner) PRClose(ctx context.Context, dir string, prNumber int) er
 	return args.Error(0)
 }
 
-func (m *MockGhRunner) PRView(ctx context.Context, dir string, jsonFields string, jqQuery string) (string, error) {
-	args := m.Called(ctx, dir, jsonFields, jqQuery)
+func (m *MockGhRunner) PRView(ctx context.Context, dir string, prNumber int, jsonFields string, jqQuery string) (string, error) {
+	args := m.Called(ctx, dir, prNumber, jsonFields, jqQuery)
 	return args.String(0), args.Error(1)
 }
 

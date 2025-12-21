@@ -23,8 +23,8 @@ type GhRunner interface {
 	PREdit(ctx context.Context, dir string, prNumber int, body string) error
 	// PRClose closes a PR
 	PRClose(ctx context.Context, dir string, prNumber int) error
-	// PRView returns PR info as JSON
-	PRView(ctx context.Context, dir string, jsonFields string, jqQuery string) (output string, err error)
+	// PRView returns PR info as JSON. If prNumber is 0, it views the current branch's PR.
+	PRView(ctx context.Context, dir string, prNumber int, jsonFields string, jqQuery string) (output string, err error)
 	// PRChecks returns CI check status as JSON
 	PRChecks(ctx context.Context, dir string, prNumber int, jsonFields string) (output string, err error)
 	// GetPRBaseBranch returns the base branch name for a pull request
@@ -103,9 +103,13 @@ func (g *ghRunner) PRClose(ctx context.Context, dir string, prNumber int) error 
 	return nil
 }
 
-// PRView returns PR info as JSON
-func (g *ghRunner) PRView(ctx context.Context, dir string, jsonFields string, jqQuery string) (string, error) {
-	args := []string{"pr", "view", "--json", jsonFields, "-q", jqQuery}
+// PRView returns PR info as JSON. If prNumber is 0, it views the current branch's PR.
+func (g *ghRunner) PRView(ctx context.Context, dir string, prNumber int, jsonFields string, jqQuery string) (string, error) {
+	args := []string{"pr", "view"}
+	if prNumber > 0 {
+		args = append(args, fmt.Sprintf("%d", prNumber))
+	}
+	args = append(args, "--json", jsonFields, "-q", jqQuery)
 
 	stdout, stderr, err := g.runner.RunInDir(ctx, dir, "gh", args...)
 	if err != nil {

@@ -131,6 +131,7 @@ func TestGhRunner_PRView(t *testing.T) {
 	tests := []struct {
 		name        string
 		dir         string
+		prNumber    int
 		jsonFields  string
 		jqQuery     string
 		setupMock   func(*MockRunner)
@@ -139,8 +140,9 @@ func TestGhRunner_PRView(t *testing.T) {
 		errContains string
 	}{
 		{
-			name:       "views PR successfully",
+			name:       "views current branch PR successfully",
 			dir:        "/test/repo",
+			prNumber:   0,
 			jsonFields: "number,title",
 			jqQuery:    ".number",
 			setupMock: func(m *MockRunner) {
@@ -152,8 +154,23 @@ func TestGhRunner_PRView(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:       "views specific PR by number",
+			dir:        "/test/repo",
+			prNumber:   456,
+			jsonFields: "number,state",
+			jqQuery:    ".",
+			setupMock: func(m *MockRunner) {
+				m.EXPECT().
+					RunInDir(gomock.Any(), "/test/repo", "gh", "pr", "view", "456", "--json", "number,state", "-q", ".").
+					Return(`{"number":456,"state":"OPEN"}`, "", nil)
+			},
+			want:    `{"number":456,"state":"OPEN"}`,
+			wantErr: false,
+		},
+		{
 			name:       "fails when gh command fails",
 			dir:        "/test/repo",
+			prNumber:   0,
 			jsonFields: "number,title",
 			jqQuery:    ".number",
 			setupMock: func(m *MockRunner) {
@@ -177,7 +194,7 @@ func TestGhRunner_PRView(t *testing.T) {
 			ghRunner := NewGhRunner(mockRunner)
 			ctx := context.Background()
 
-			got, err := ghRunner.PRView(ctx, tt.dir, tt.jsonFields, tt.jqQuery)
+			got, err := ghRunner.PRView(ctx, tt.dir, tt.prNumber, tt.jsonFields, tt.jqQuery)
 
 			if tt.wantErr {
 				require.Error(t, err)

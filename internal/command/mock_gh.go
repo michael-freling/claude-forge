@@ -144,18 +144,18 @@ func (mr *MockGhRunnerMockRecorder) PREdit(ctx, dir, prNumber, body any) *gomock
 }
 
 // PRView mocks base method.
-func (m *MockGhRunner) PRView(ctx context.Context, dir, jsonFields, jqQuery string) (string, error) {
+func (m *MockGhRunner) PRView(ctx context.Context, dir string, prNumber int, jsonFields, jqQuery string) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "PRView", ctx, dir, jsonFields, jqQuery)
+	ret := m.ctrl.Call(m, "PRView", ctx, dir, prNumber, jsonFields, jqQuery)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // PRView indicates an expected call of PRView.
-func (mr *MockGhRunnerMockRecorder) PRView(ctx, dir, jsonFields, jqQuery any) *gomock.Call {
+func (mr *MockGhRunnerMockRecorder) PRView(ctx, dir, prNumber, jsonFields, jqQuery any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PRView", reflect.TypeOf((*MockGhRunner)(nil).PRView), ctx, dir, jsonFields, jqQuery)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PRView", reflect.TypeOf((*MockGhRunner)(nil).PRView), ctx, dir, prNumber, jsonFields, jqQuery)
 }
 
 // RunRerun mocks base method.
