@@ -311,3 +311,30 @@ func TestClaudeVersion(t *testing.T) {
 	version := ClaudeVersion(t)
 	require.NotEmpty(t, version)
 }
+
+func TestTempRepo_Commit_NothingStaged(t *testing.T) {
+	RequireGit(t)
+
+	repo := NewTempRepo(t)
+
+	// Commit with nothing staged should fail
+	err := repo.Commit("empty commit")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to commit")
+}
+
+func TestCleanupDir_NonExistentDir(t *testing.T) {
+	// Cleaning up a non-existent directory should succeed (os.RemoveAll is idempotent)
+	CleanupDir(t, "/tmp/nonexistent-test-dir-abc123xyz")
+}
+
+func TestTempRepo_CreateBranch_InvalidName(t *testing.T) {
+	RequireGit(t)
+
+	repo := NewTempRepo(t)
+
+	// Branch names with spaces are invalid in git
+	err := repo.CreateBranch("invalid branch name")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create branch")
+}

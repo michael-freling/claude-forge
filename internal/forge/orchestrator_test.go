@@ -373,3 +373,145 @@ func TestStart_CommandArgs(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, sess)
 }
+
+func TestStart_ResumeSession(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Contains(t, opts.Cmd, "--resume")
+			assert.Contains(t, opts.Cmd, "abc12345")
+			// --continue should NOT be set when ResumeID is provided
+			assert.NotContains(t, opts.Cmd, "--continue")
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		ResumeID:   "abc12345",
+		ProjectDir: projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
+func TestStart_ContinueSession(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Contains(t, opts.Cmd, "--continue")
+			assert.NotContains(t, opts.Cmd, "--resume")
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		Continue:   true,
+		ProjectDir: projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
+func TestBuild_ConfigLoadFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	homeDir := t.TempDir()
+
+	// Create config dir with an invalid config file
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(":::invalid yaml"), 0o644))
+
+	orch := NewOrchestrator(mockCM, homeDir)
+	orch.Log = func(format string, args ...any) {}
+
+	err := orch.Build(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load config")
+}
+
+func TestBuild_PullImageFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	// First image pull succeeds, second fails
+	gomock.InOrder(
+		mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil),
+		mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(fmt.Errorf("network timeout")),
+	)
+
+	err := orch.Build(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to pull image")
+	assert.Contains(t, err.Error(), "network timeout")
+}
+
+func TestStart_ImageExistsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(false, fmt.Errorf("docker daemon error"))
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to check image")
+}
+
+func TestStop_ListContainersError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+
+	mockCM.EXPECT().ListForgeContainers(gomock.Any()).Return(nil, fmt.Errorf("list error"))
+
+	err := orch.Stop(context.Background(), projectDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to list containers")
+}
+
+func TestStop_NonGitDirectory(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	nonGitDir := t.TempDir()
+
+	err := orch.Stop(context.Background(), nonGitDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to identify project")
+}

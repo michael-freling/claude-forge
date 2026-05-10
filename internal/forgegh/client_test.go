@@ -548,6 +548,149 @@ func TestResolveNumber(t *testing.T) {
 	}
 }
 
+func TestClient_FetchSchema_Non200Status(t *testing.T) {
+	// Gateway returns a non-200 status code for the schema endpoint
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/schema" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("internal server error"))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	schema, err := client.fetchSchema()
+
+	require.Error(t, err)
+	assert.Nil(t, schema)
+	assert.Contains(t, err.Error(), "schema request failed with status 500")
+}
+
+func TestClient_FetchSchema_InvalidJSON(t *testing.T) {
+	// Gateway returns 200 but with invalid JSON
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/schema" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("not valid json{{{"))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(srv.URL)
+	schema, err := client.fetchSchema()
+
+	require.Error(t, err)
+	assert.Nil(t, schema)
+	assert.Contains(t, err.Error(), "failed to decode schema")
+}
+
+func TestClient_FetchSchema_ConnectionError(t *testing.T) {
+	// Client configured with an invalid URL that will fail to connect
+	client := newTestClient("http://127.0.0.1:1")
+	schema, err := client.fetchSchema()
+
+	require.Error(t, err)
+	assert.Nil(t, schema)
+	assert.Contains(t, err.Error(), "failed to connect to gateway")
+}
+
+func TestClient_MergePR_WithOptions(t *testing.T) {
+	var capturedBody map[string]any
+
+	gw := testGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"merged":true}`))
+	})
+	defer gw.Close()
+
+	client := newTestClient(gw.URL)
+	err := client.Run([]string{
+		"pr", "merge", "42",
+		"--repo", "owner/repo",
+		"--method", "squash",
+		"--subject", "feat: merged PR",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "squash", capturedBody["merge_method"])
+	assert.Equal(t, "feat: merged PR", capturedBody["commit_title"])
+}
+
+func TestClient_ReleaseList(t *testing.T) {
+	var capturedPath string
+
+	gw := testGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"tag_name":"v1.0.0"}]`))
+	})
+	defer gw.Close()
+
+	client := newTestClient(gw.URL)
+	err := client.Run([]string{"release", "list", "--repo", "owner/repo"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "/api/github/repos/owner/repo/releases", capturedPath)
+}
+
+func TestClient_RunList(t *testing.T) {
+	var capturedPath string
+
+	gw := testGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"check_runs":[]}`))
+	})
+	defer gw.Close()
+
+	client := newTestClient(gw.URL)
+	err := client.Run([]string{"run", "list", "abc123", "--repo", "owner/repo"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "/api/github/repos/owner/repo/commits/abc123/check-runs", capturedPath)
+}
+
+func TestClient_NonJSONResponse(t *testing.T) {
+	gw := testGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("plain text response"))
+	})
+	defer gw.Close()
+
+	var buf bytes.Buffer
+	client := newTestClient(gw.URL)
+	client.stdout = &buf
+
+	err := client.Run([]string{"pr", "list", "--repo", "owner/repo"})
+
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "plain text response")
+}
+
+func TestParseArgs_FlagWithoutValue(t *testing.T) {
+	// Test a flag at the end with no value following it
+	cmd, err := parseArgs([]string{"pr", "list", "--json"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "pr", cmd.Entity)
+	assert.Equal(t, "list", cmd.Action)
+	assert.Equal(t, "", cmd.Flags["json"])
+}
+
+func TestCommandToOperationName_Fallback(t *testing.T) {
+	// Unknown entity+action should fallback to entity-action concatenation
+	cmd := &parsedCommand{Entity: "workflow", Action: "run"}
+	got := commandToOperationName(cmd)
+	assert.Equal(t, "workflow-run", got)
+}
+
 // newTestClient creates a Client with stdout/stderr captured to discard.
 func newTestClient(gatewayURL string) *Client {
 	c := NewClient(gatewayURL)
