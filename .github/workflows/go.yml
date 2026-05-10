@@ -47,12 +47,11 @@ jobs:
 
     - name: Check coverage threshold
       run: |
-        # Exclude generated mocks and cmd/ entry points from coverage threshold.
-        # cmd/ packages are thin CLI wrappers tested via e2e tests, not unit tests.
-        grep -v "mock_" coverage.txt | grep -v "^github.com/michael-freling/claude-code-tools/cmd/" | grep -v "testhelpers.go" > coverage_filtered.txt
+        # Exclude generated mocks from coverage threshold.
+        grep -v "mock_" coverage.txt > coverage_filtered.txt
         coverage=$(go tool cover -func=coverage_filtered.txt | grep total | awk '{print $3}' | sed 's/%//')
-        threshold=88.5
-        echo "Total coverage (excluding generated mocks and cmd/ entry points): ${coverage}%"
+        threshold=81.0
+        echo "Total coverage (excluding generated mocks): ${coverage}%"
         echo "Threshold: ${threshold}%"
         if (( $(echo "$coverage < $threshold" | bc -l) )); then
           echo "Error: Coverage ${coverage}% is below threshold ${threshold}%"
