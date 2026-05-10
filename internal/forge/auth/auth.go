@@ -13,11 +13,21 @@ type Credentials struct {
 	Token    string
 }
 
-// credentialsFile represents ~/.claude/.credentials.json
+// credentialsFile represents ~/.claude/.credentials.json with the nested format.
 type credentialsFile struct {
+	ClaudeAiOauth oauthCredentials `json:"claudeAiOauth"`
+}
+
+// oauthCredentials holds the OAuth token fields inside the claudeAiOauth key.
+type oauthCredentials struct {
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
-	ExpiresAt    string `json:"expiresAt"`
+	ExpiresAt    int64  `json:"expiresAt"`
+}
+
+// legacyCredentialsFile represents the old flat ~/.claude/.credentials.json format.
+type legacyCredentialsFile struct {
+	AccessToken string `json:"accessToken"`
 }
 
 // Resolve finds Claude Code credentials in this order:
@@ -53,17 +63,31 @@ func Resolve(claudeDir string) (*Credentials, error) {
 		return nil, fmt.Errorf("failed to read credentials file: %w", err)
 	}
 
+	// Try nested format first (claudeAiOauth wrapper)
 	var creds credentialsFile
 	if err := json.Unmarshal(data, &creds); err != nil {
 		return nil, fmt.Errorf("failed to parse credentials file: %w", err)
 	}
 
-	if creds.AccessToken == "" {
+	if creds.ClaudeAiOauth.AccessToken != "" {
+		return &Credentials{
+			AuthType: "oauth",
+			Token:    creds.ClaudeAiOauth.AccessToken,
+		}, nil
+	}
+
+	// Fall back to legacy flat format
+	var legacy legacyCredentialsFile
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return nil, fmt.Errorf("failed to parse credentials file: %w", err)
+	}
+
+	if legacy.AccessToken == "" {
 		return nil, fmt.Errorf("credentials file exists but accessToken is empty")
 	}
 
 	return &Credentials{
 		AuthType: "oauth",
-		Token:    creds.AccessToken,
+		Token:    legacy.AccessToken,
 	}, nil
 }

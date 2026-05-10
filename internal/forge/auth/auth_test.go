@@ -50,7 +50,21 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
-			name: "credentials file with accessToken",
+			name: "credentials file with nested claudeAiOauth format",
+			credFile: `{
+				"claudeAiOauth": {
+					"accessToken": "sk-ant-oat01-nested-token",
+					"refreshToken": "sk-ant-ort01-refresh",
+					"expiresAt": 1778445628191
+				}
+			}`,
+			want: &Credentials{
+				AuthType: "oauth",
+				Token:    "sk-ant-oat01-nested-token",
+			},
+		},
+		{
+			name: "credentials file with legacy flat format",
 			credFile: `{
 				"accessToken": "file-access-token",
 				"refreshToken": "file-refresh-token",
@@ -67,7 +81,13 @@ func TestResolve(t *testing.T) {
 			errContains: "no credentials found",
 		},
 		{
-			name:        "credentials file with empty accessToken",
+			name:        "credentials file with empty accessToken in nested format",
+			credFile:    `{"claudeAiOauth": {"accessToken": "", "refreshToken": "refresh"}}`,
+			wantErr:     true,
+			errContains: "accessToken is empty",
+		},
+		{
+			name:        "credentials file with empty accessToken in legacy format",
 			credFile:    `{"accessToken": "", "refreshToken": "refresh"}`,
 			wantErr:     true,
 			errContains: "accessToken is empty",
@@ -133,10 +153,10 @@ func TestResolve_CredentialsFileUnreadable(t *testing.T) {
 func TestResolve_EnvVarPrecedenceOverFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Write a credentials file
+	// Write a credentials file with nested format
 	err := os.WriteFile(
 		filepath.Join(tmpDir, ".credentials.json"),
-		[]byte(`{"accessToken": "file-token"}`),
+		[]byte(`{"claudeAiOauth": {"accessToken": "file-token"}}`),
 		0o644,
 	)
 	require.NoError(t, err)
