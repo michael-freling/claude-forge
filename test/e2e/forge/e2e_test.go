@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -103,7 +104,12 @@ func TestForgeStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", "What is 2+2? Reply with just the number.")
+	prompt := `Run these two commands and show me the output of each:
+1. git log --oneline -3
+2. gh repo view --json name,owner
+
+Reply with the raw command outputs only, no other text.`
+	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", prompt)
 	cmd.Dir = projectRoot // Must be a git repo with a GitHub remote for project.Identify.
 	cmd.Env = append(os.Environ(),
 		"HOME="+tempHome,
@@ -120,8 +126,13 @@ func TestForgeStart(t *testing.T) {
 		t.Fatalf("claude-forge start timed out after 3 minutes: %v\nOutput:\n%s", err, outputStr)
 	}
 
-	// Step 6: Verify the output contains "4".
-	assert.Contains(t, outputStr, "4", "expected Claude Code output to contain '4'")
+	// Step 6: Verify the output contains git log and gh repo view results.
+	// Git log output should contain a short commit hash (7+ hex chars).
+	commitHashPattern := regexp.MustCompile(`[0-9a-f]{7,}`)
+	assert.Regexp(t, commitHashPattern, outputStr, "expected output to contain a commit hash from git log")
+
+	// gh repo view should return the repo name.
+	assert.Contains(t, outputStr, "claude-code-tools", "expected output to contain repo name from gh repo view")
 
 	// Step 7: Verify containers are cleaned up.
 	dockerClient, err := container.NewClient()
