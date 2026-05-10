@@ -1,0 +1,21 @@
+baseURL: https://michael-freling.github.io/claude-code-tools/
+languageCode: en-us
+title: Claude Code Tools
+theme: hugo-book
+
+params:
+  BookTheme: auto
+  BookToC: true
+  BookSection: docs
+  BookRepo: https://github.com/michael-freling/claude-code-tools
+
+menu:
+  before: []
+
+markup:
+  goldmark:
+    renderer:
+      unsafe: true
+  tableOfContents:
+    startLevel: 2
+    endLevel: 4
