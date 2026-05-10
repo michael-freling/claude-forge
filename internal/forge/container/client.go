@@ -209,12 +209,18 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		}
 	}
 
-	// Config dir mounts (read-only) for settings.json, gitconfig
+	// Config dir file mounts (read-only) for settings.json, gitconfig
 	if opts.ConfigDir != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:     mount.TypeBind,
-			Source:   opts.ConfigDir,
-			Target:   "/home/user/.config/claude-forge",
+			Source:   opts.ConfigDir + "/settings.json",
+			Target:   "/home/user/.claude/settings.json",
+			ReadOnly: true,
+		})
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   opts.ConfigDir + "/gitconfig",
+			Target:   "/home/user/.gitconfig",
 			ReadOnly: true,
 		})
 	}

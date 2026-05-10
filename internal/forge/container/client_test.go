@@ -275,7 +275,8 @@ func TestStartAgent_Mounts(t *testing.T) {
 			assert.True(t, mountTargets["/home/user/.claude/agents"], "claude agents mount missing")
 			assert.True(t, mountTargets["/home/user/.claude/commands"], "claude commands mount missing")
 			assert.True(t, mountTargets["/home/user/.claude/skills"], "claude skills mount missing")
-			assert.True(t, mountTargets["/home/user/.config/claude-forge"], "config dir mount missing")
+			assert.True(t, mountTargets["/home/user/.claude/settings.json"], "settings.json mount missing")
+			assert.True(t, mountTargets["/home/user/.gitconfig"], "gitconfig mount missing")
 			assert.True(t, mountTargets["/home/user/CLAUDE.md"], "home CLAUDE.md mount missing")
 
 			return container.CreateResponse{ID: "c-123"}, nil
