@@ -239,11 +239,12 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 	}
 
 	containerConfig := &container.Config{
-		Image: opts.Image,
-		Env:   env,
-		Cmd:   append([]string{"claude"}, opts.Cmd...),
-		// Entrypoint is set by the Dockerfile (entrypoint.sh handles UID/GID and user switching)
+		Image:      opts.Image,
+		Env:        env,
+		Cmd:        append([]string{"claude"}, opts.Cmd...),
 		WorkingDir: "/work",
+		Tty:        true,
+		OpenStdin:  true,
 	}
 
 	hostConfig := &container.HostConfig{
