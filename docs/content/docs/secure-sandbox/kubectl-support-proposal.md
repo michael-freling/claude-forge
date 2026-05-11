@@ -37,7 +37,7 @@ This proposal adds `kubectl` to the agent in a way that preserves Invariant 1, u
 - `kubectl port-forward` is allowed (it's how developers reach pod ports; without `exec` the blast radius is limited to whatever the pod's port already exposes).
 - Cluster administration (`kubectl edit clusterrole`, namespace creation, node cordon).
 - Cloud-provider auth plugins (`gke-gcloud-auth-plugin`, `aws-iam-authenticator`). Cluster credentials live with the gateway, which uses static ServiceAccount bearer tokens.
-- Changes to the existing GitHub gateway. The K8s and GitHub gateways have asymmetric designs because the upstream security models differ — see §8.
+- Changes to the existing GitHub gateway. This proposal is K8s-only.
 
 ## 3. Threat Model
 
@@ -322,18 +322,7 @@ The gateway holds, for each enabled context: upstream API server URL, upstream C
 
 File is `0600` on the host, owned by the launching user, regenerated every session, mounted read-only into the gateway. The agent never sees this file.
 
-## 8. The GitHub Gateway Stays As-Is
-
-The K8s gateway is a dumb credential-injecting passthrough; the GitHub gateway is a curated REST API (`forge-gh`) on top of GitHub's API. This asymmetry is deliberate, not an accident worth fixing in this proposal:
-
-- **K8s has RBAC at the API server.** A bearer token's identity is checked against `(verb, resource, namespace)` natively. The gateway can be a passthrough because the policy point is upstream.
-- **GitHub has no equivalent.** A token grants whatever scopes the token has; nothing at api.github.com knows "this token should only push to *this* repo." Per-repo write scoping has to be enforced by *something* on the agent's side of api.github.com.
-- **A transparent GitHub proxy would need:** TLS interception with a private CA installed in the agent's trust store, a long REST allowlist *and* a GraphQL query parser (every GraphQL request is `POST /graphql` with the operation in the body — `gh project` and complex `gh pr list` use it). That's a real query analyzer with its own bug surface.
-- **`forge-gh`'s curated REST API sidesteps all three** by mapping `gh <verb>` to gateway-defined operations, with the gateway choosing REST or GraphQL upstream as needed.
-
-Sharing one gateway binary for both protocols (already true) is the right code-level consolidation. Sharing one external API would force one of the two upstreams into a model that doesn't fit it.
-
-## 9. Implementation Sketch
+## 8. Implementation Sketch
 
 | Change | Location |
 |---|---|
@@ -349,9 +338,9 @@ Sharing one gateway binary for both protocols (already true) is the right code-l
 
 The render command's rule generator is pure-data (input: discovery output + carveout config; output: `[]rbacv1.PolicyRule`), so it's testable without a live cluster — feed it canned discovery fixtures.
 
-## 10. Rejected Alternatives
+## 9. Rejected Alternatives
 
-### 10.1 Gateway with Method+Path Filter
+### 9.1 Gateway with Method+Path Filter
 
 The first version of this proposal had the gateway implement an allow/deny list keyed on `(HTTP method, URL path)` mirroring K8s API URL grammar. Rejected because:
 
@@ -360,7 +349,7 @@ The first version of this proposal had the gateway implement an allow/deny list 
 - Required special-casing for WebSocket upgrades (watch, log follow) and hijacked connections.
 - A bug in the filter is a security hole; a bug in RBAC is a Kubernetes CVE.
 
-### 10.2 Mount Kubeconfig in the Agent (with RBAC scoping)
+### 9.2 Mount Kubeconfig in the Agent (with RBAC scoping)
 
 Mount a kubeconfig file in the agent that has the SA token embedded, RBAC-scoped. Rejected because:
 
@@ -368,7 +357,7 @@ Mount a kubeconfig file in the agent that has the SA token embedded, RBAC-scoped
 - Even a scoped token, if leaked, can be used outside the sandbox until expiry.
 - The gateway architecture costs little extra (one container, one extra listener) and earns full Invariant 1 compliance.
 
-### 10.3 Per-Tier Roles (`view`, `edit`, `admin`)
+### 9.3 Per-Tier Roles (`view`, `edit`, `admin`)
 
 Pre-built ClusterRoles for different "tiers" the user can choose from. Rejected for v1 because:
 
@@ -376,14 +365,14 @@ Pre-built ClusterRoles for different "tiers" the user can choose from. Rejected 
 - The built-in `edit` ClusterRole grants secrets access; can't be used as-is.
 - Discovery-driven rendering with the carveouts in §5 covers the common case. Tiers can be added later if real demand appears.
 
-## 11. Open Questions
+## 10. Open Questions
 
 1. **Token refresh for long-lived sessions.** TokenRequest tokens have a finite expiry. v1 uses one token per context per session. v2 should refresh in the gateway before expiry; needs a small refresh loop and a way for the host to participate (or for the gateway to re-read a regenerated `k8s-contexts.json`).
 2. **Audit visibility.** All cluster activity is audit-logged on the cluster as the SA, not as the user. Worth documenting so users can grep audit logs for `claude-forge-agent`.
-3. **CRDs with sensitive `spec` fields.** A `SealedSecret`, `ExternalSecret`, or vault CRD may carry credential material in its spec. The current model grants full CRUD on these (they're just custom resources to RBAC). A future config could let users add per-CRD carveouts to render. v1 documents the limitation.
+3. **CRDs that embed credentials in `spec`.** Most credential-adjacent CRDs are safe to read — `SealedSecret` holds only ciphertext, `ExternalSecret` holds only a reference to the upstream store, cert-manager `Certificate` writes the key material out to a Secret (which RBAC blocks). The narrower concern is CRDs that put plaintext credentials directly in `spec` — for example, some `Issuer`/`ClusterIssuer` configurations with inline ACME or webhook tokens, or backup-operator CRDs with embedded cloud credentials. The current model grants full CRUD on all CRDs. A future config could let users add per-CRD carveouts to render; v1 documents the limitation.
 4. **`port-forward` policy.** Currently allowed. If a pod exposes an admin port (database, redis) the agent can reach it. Accept the risk for v1; revisit if it bites.
 
-## 12. Rollout
+## 11. Rollout
 
 1. Land this proposal doc (current PR).
 2. Implement the gateway K8s proxy as a third listener on `internal/gateway.Server`, plus the agent-side multi-context kubeconfig generation. Ship behind `kubernetes.enabled: false` default.
