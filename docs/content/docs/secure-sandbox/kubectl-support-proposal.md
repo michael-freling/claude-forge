@@ -10,175 +10,310 @@ weight: 3
 
 ## 1. Motivation
 
-Claude Code users frequently need to inspect Kubernetes state while developing — listing pods, viewing logs, describing deployments, debugging failed jobs. Today, `claude-forge` has no `kubectl` in the agent image, so users either:
+Claude Code users frequently need to inspect and modify Kubernetes state while developing — listing pods, viewing logs, scaling deployments, applying manifests. Today, `claude-forge` has no `kubectl` in the agent image, so users either:
 
 1. Drop out of the sandbox to run `kubectl` on the host (breaks the workflow), or
-2. Mount `~/.kube/config` into the container (violates Invariant 1 — agent must never have secrets).
+2. Mount `~/.kube/config` into the container (violates Invariant 1 — agent must never have access to the underlying credentials).
 
-This proposal adds `kubectl` to the agent in a way that preserves Invariant 1 and blocks destructive cluster operations, following the same gateway-mediated pattern already used for git and the GitHub API.
+This proposal adds `kubectl` to the agent in a way that preserves Invariant 1 (the agent never holds a credential), uses standard Kubernetes RBAC for what the agent is allowed to do (no custom path-level filter), and offers a `claude-forge kube render` command that generates the necessary RBAC manifests against the user's actual cluster.
 
 ## 2. Goals and Non-Goals
 
 ### Goals
 
-- The agent can run common `kubectl` read commands (`get`, `describe`, `logs`, `top`, `auth can-i`, `explain`, `api-resources`).
-- The agent can run benign mutations scoped to the current namespace (`apply`, `rollout restart`, `scale`, `port-forward` to a local pod).
-- The agent **cannot** read Secret objects (`kubectl get secret`, `-o yaml` exfiltration).
-- The agent **cannot** read its own kubeconfig or any embedded credentials (`kubectl config view --raw`, exec-plugin tokens, client certificates).
-- The agent **cannot** delete cluster-scoped resources (namespaces, nodes, PVs, CRDs, ClusterRoles, ClusterRoleBindings) or the cluster itself.
-- The agent **cannot** modify RBAC.
-- Failure mode is **deny** — if the gateway can't classify a request, it is rejected.
+- The agent can run `kubectl` against the user's cluster: `get`, `describe`, `logs`, `apply`, `scale`, `rollout`, `top`, `auth can-i`, `explain`, `api-resources`, etc.
+- The agent **cannot** read Secret objects (no `kubectl get secret`).
+- The agent **cannot** mint or read tokens via the TokenRequest API (`serviceaccounts/token`).
+- The agent **cannot** see its own credential (the SA token lives only in the gateway container, not the agent).
+- The agent **cannot** modify RBAC, register admission webhooks, or impersonate other identities.
+- The agent **cannot** delete cluster-scoped resources (namespaces, nodes, persistent volumes, CRDs).
+- The agent **cannot** `kubectl exec` or `kubectl attach` into pods.
+- Failure mode is **deny** — RBAC is allow-only, so anything not explicitly granted is rejected by the API server.
 
 ### Non-Goals
 
-- Multi-cluster context switching from inside the agent. The host selects the active context before launch; the container sees one cluster.
-- `kubectl exec` into pods. Exec opens a shell that can read pod-mounted secrets and bypass the gateway's HTTP-level filters. Excluded from v1.
-- Cluster administration tasks (`kubectl edit clusterrole`, namespace creation, node cordon).
-- Support for cloud-provider auth plugins inside the agent (`gke-gcloud-auth-plugin`, `aws-iam-authenticator`, etc.). These are credentials and live with the gateway, not the agent.
+- Multi-cluster context switching from inside the agent. The host selects one cluster before launch; the container sees one cluster.
+- `kubectl exec` and `kubectl attach`. A pod shell can read pod-mounted secrets and run arbitrary processes inside the cluster network. Excluded from v1.
+- `kubectl port-forward` is allowed (it's how developers reach pod ports; without `exec` the blast radius is limited to whatever the pod's port already exposes).
+- Cluster administration (`kubectl edit clusterrole`, namespace creation, node cordon).
+- Cloud-provider auth plugins (`gke-gcloud-auth-plugin`, `aws-iam-authenticator`). The cluster credentials live with the gateway, not the agent; auth plugins are not needed because the gateway uses a static ServiceAccount token.
 
 ## 3. Threat Model
 
 The agent is an LLM running with `--dangerously-skip-permissions`. Assume any tool available to the agent can and will be invoked, including via prompt injection from repository content, issue comments, or model output. Three classes of harm to prevent:
 
-| # | Harm | Example attack |
-|---|---|---|
-| 1 | Credential exfiltration | `kubectl get secret -A -o yaml` → base64-decode → embed in commit / PR body / log line |
-| 2 | Credential exfiltration via kubeconfig | `cat ~/.kube/config`, `kubectl config view --raw`, reading exec-plugin tokens cached in `~/.kube/cache/` |
-| 3 | Destructive cluster ops | `kubectl delete namespace prod`, `kubectl delete node`, `kubectl delete crd`, `kubectl delete clusterrolebinding` |
-
-Lateral risks worth noting but out of scope for v1: `kubectl exec` (covered above), `kubectl cp` from a pod that mounts a secret, `kubectl proxy` started by the agent itself (would re-expose the API surface unfiltered — the gateway must be the only path).
+| # | Harm | Example attack | Defense |
+|---|---|---|---|
+| 1 | Credential exfiltration via Secrets | `kubectl get secret -A -o yaml`, base64-decode, embed in commit | RBAC denies `secrets` resource |
+| 2 | Credential exfiltration via TokenRequest | `kubectl create token <sa>` to mint a token for a more privileged SA | RBAC denies `serviceaccounts/token` subresource |
+| 3 | Credential exfiltration via kubeconfig | `cat $KUBECONFIG`, `kubectl config view --raw` | Agent's kubeconfig points at gateway, has no token, no CA, no cluster URL — nothing sensitive to leak |
+| 4 | Identity escalation | `kubectl --as=admin get …` | RBAC denies `impersonate` verb |
+| 5 | Destructive cluster ops | `kubectl delete namespace prod`, `kubectl delete node`, `kubectl delete crd` | RBAC grants only read on cluster-scoped resources |
+| 6 | Pod-level credential access | `kubectl exec -- cat /var/run/secrets/...` | RBAC denies `pods/exec` and `pods/attach` |
+| 7 | RBAC tampering | `kubectl create clusterrolebinding …` | RBAC denies the `rbac.authorization.k8s.io` group entirely |
+| 8 | Admission-webhook tampering | `kubectl apply -f malicious-webhook.yaml` | RBAC denies the `admissionregistration.k8s.io` group entirely |
 
 ## 4. Architecture
 
-The same gateway pattern used for GitHub is extended to Kubernetes. The agent never sees a kubeconfig or a cluster CA; it talks to the gateway over plain HTTP on the internal Docker network, and the gateway authenticates outbound to the real API server using credentials mounted only in the gateway container.
-
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Host                                                                │
-│                                                                      │
-│  ~/.kube/config (ro)  ──────────────────────┐                        │
-│                                             ▼                        │
-│  ┌────────────────────────┐    ┌────────────────────────────────┐    │
-│  │ Agent container        │    │ Gateway container              │    │
-│  │                        │    │                                │    │
-│  │ kubectl                │    │ :8090  k8s reverse proxy       │    │
-│  │   --server=            │───▶│        - rewrites Host header  │    │
-│  │   http://gateway:8090  │    │        - injects bearer token  │    │
-│  │                        │    │        - filters by method+path│    │
-│  │ KUBECONFIG=            │    │                                │    │
-│  │   /etc/forge/kubeconfig│    │ ──────────► real K8s API server│    │
-│  │   (no creds, no CA)    │    │                                │    │
-│  └────────────────────────┘    └────────────────────────────────┘    │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Host                                                                     │
+│                                                                           │
+│  ~/.kube/config (user's full kubeconfig)                                  │
+│        │                                                                  │
+│        │ used by claude-forge on host to call TokenRequest                │
+│        │ for the rendered ServiceAccount                                  │
+│        ▼                                                                  │
+│  short-lived SA token  ────────────► gateway env var (KUBE_TOKEN)         │
+│                                                                           │
+│  ┌────────────────────────┐    ┌────────────────────────────────┐         │
+│  │ Agent container        │    │ Gateway container              │         │
+│  │                        │    │                                │         │
+│  │ kubectl                │    │ :8090  k8s reverse proxy       │         │
+│  │   --server=            │───▶│        - injects header:       │         │
+│  │   http://gateway:8090  │    │            Authorization:      │         │
+│  │                        │    │            Bearer $KUBE_TOKEN  │         │
+│  │ KUBECONFIG=            │    │        - rewrites Host         │         │
+│  │   /etc/forge/kubeconfig│    │        - forwards as-is        │         │
+│  │   server: gateway:8090 │    │          (no path filter)      │         │
+│  │   token: ""            │    │                                │         │
+│  │   ca:    ""            │    │ ──────────► real K8s API server│         │
+│  └────────────────────────┘    └────────────────────────────────┘         │
+│                                                                           │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 4.1 Components
 
 **Agent container** gains:
 - `kubectl` binary (latest stable from `dl.k8s.io`).
-- `/etc/forge/kubeconfig` — a generated kubeconfig with one cluster (`server: http://gateway:8090`, no `certificate-authority`, no `token`, no `exec`), one context, and one namespace (the user's selected namespace from the host kubeconfig).
-- `KUBECONFIG=/etc/forge/kubeconfig` set in the container env.
-- **No** `~/.kube/` mount. **No** cloud-provider auth plugins.
+- A generated kubeconfig at `/etc/forge/kubeconfig` with one cluster (`server: http://gateway:8090`), one context, no `token`, no `certificate-authority`. `KUBECONFIG=/etc/forge/kubeconfig` is set.
+- **No** `~/.kube/`, no token, no CA, no cluster identity.
 
 **Gateway container** gains:
-- `~/.kube/config` mounted read-only (gateway already runs with the principle that secrets live here, not in the agent — same pattern as `~/.ssh` and `~/.config/gh`).
-- A new HTTP listener on `:8090` that reverse-proxies to the cluster API server, with a request filter (Section 4.2).
+- A new HTTP listener on `:8090` that reverse-proxies to the cluster API server.
+- `KUBE_TOKEN` env var: the ServiceAccount bearer token, supplied by `claude-forge` at startup.
+- `KUBE_API_SERVER` env var: the real cluster URL.
+- `KUBE_CA_DATA` env var (or mount): the cluster CA cert for TLS verification of the upstream API server.
+- The proxy is **dumb** — it does not inspect or filter request paths. It only:
+  1. Rewrites the request URL to the upstream API server.
+  2. Sets `Authorization: Bearer $KUBE_TOKEN`.
+  3. Forwards the request, including hijacked HTTP for log streaming and other long-lived connections.
 
-### 4.2 Request Filtering
+**Host-side `claude-forge` start flow:**
+1. Read the user's kubeconfig, select the configured context, extract `(server URL, CA data)`.
+2. Call TokenRequest against that cluster for the configured ServiceAccount → short-lived bound token (default expiry, typically 1 hour).
+3. Pass `KUBE_TOKEN`, `KUBE_API_SERVER`, `KUBE_CA_DATA` to the **gateway** container as env vars.
+4. Generate the agent's stub kubeconfig and mount it.
 
-The gateway classifies every incoming request by `(method, path)` against the K8s API URL grammar (`/api/v1/...`, `/apis/<group>/<version>/...`). Allow/deny lists below; anything not matched is **denied**.
+The agent never receives any of these values.
 
-**Always denied** — credential and cluster-control surfaces:
+### 4.2 Why No Path Filter
 
-| Method | Path pattern | Reason |
+The original draft of this proposal had the gateway parse every K8s API URL and apply method+path allow/deny lists. That approach is rejected:
+
+- RBAC already enforces `(verb, resource, name, namespace)` natively at the API server, with audit logging and decades of production use.
+- A custom Go filter is a parallel, hand-maintained policy that can drift from RBAC and has its own bugs.
+- WebSocket upgrades, watch streams, and exec/attach hijacking each require special handling in a path filter; for RBAC they're just subresources.
+- New CRDs added to the cluster automatically work with discovery-driven RBAC rendering; a path filter would need a code change for every new resource.
+
+The gateway's job is reduced to exactly one thing: **inject the credential the agent must not see**. RBAC is the policy layer.
+
+## 5. RBAC Model
+
+### 5.1 Carveouts
+
+Three dimensions, all small:
+
+| Dimension | Carveout | Rationale |
 |---|---|---|
-| `*` | `**/secrets`, `**/secrets/**` | Block secret reads/writes (Invariant 1) |
-| `*` | `**/serviceaccounts/*/token` | Block TokenRequest API |
-| `DELETE` | `/api/v1/namespaces/*` | No namespace deletion |
-| `DELETE` | `/api/v1/nodes/*` | No node deletion |
-| `DELETE` | `/api/v1/persistentvolumes/*` | Cluster-scoped storage |
-| `DELETE` | `/apis/apiextensions.k8s.io/**/customresourcedefinitions/*` | No CRD deletion |
-| `*` (write) | `/apis/rbac.authorization.k8s.io/**` | No RBAC modification |
-| `*` (write) | `/apis/admissionregistration.k8s.io/**` | No admission controller changes |
-| `POST` | `/api/v1/nodes/*/proxy/**` | Block node proxy |
-| `*` | `**/pods/*/exec`, `**/pods/*/attach` | No interactive pod access (v1) |
-| `*` | `**/pods/*/portforward` | Excluded from v1; revisit |
+| **apiGroup** | `rbac.authorization.k8s.io` | Block agent from modifying RBAC itself |
+| **apiGroup** | `admissionregistration.k8s.io` | Block agent from registering admission webhooks |
+| **resource** (in core ``) | `secrets` | Primary credential storage |
+| **subresource** (in core ``) | `serviceaccounts/token` | Block TokenRequest minting |
+| **subresource** (in core ``) | `pods/exec`, `pods/attach` | Block interactive pod access |
+| **verb** | `impersonate` | Block identity escalation |
+| **scope** | All writes on cluster-scoped resources | Block destructive cluster ops (delete namespace/node/PV/CRD) |
 
-**Always allowed** — read-only discovery and observation:
+Anything not in the carveouts gets `verbs: ["*"]` (intersected with what the resource supports, with `impersonate` filtered out).
 
-| Method | Path pattern |
-|---|---|
-| `GET` | `/api`, `/apis`, `/openapi/**`, `/version`, `/healthz`, `/readyz` |
-| `GET` | `/api/v1/namespaces/<scoped-ns>/{pods,services,configmaps,events,...}` (excluding `secrets`) |
-| `GET` | `/apis/apps/v1/namespaces/<scoped-ns>/{deployments,replicasets,statefulsets,daemonsets}` |
-| `GET` | `/api/v1/namespaces/<scoped-ns>/pods/*/log` |
-| `POST` | `/apis/authorization.k8s.io/v1/selfsubjectaccessreviews` (so `kubectl auth can-i` works) |
+### 5.2 Discovery-Driven Rendering
 
-**Conditionally allowed** — namespace-scoped mutations to non-RBAC, non-Secret resources:
+The render command discovers what the cluster actually has via the standard discovery API (`/api`, `/apis/...`). For each `(apiGroup, resource, namespaced, verbs)` returned:
 
-- `POST`/`PUT`/`PATCH`/`DELETE` on namespaced resources within `<scoped-ns>`, excluding the always-denied list.
-- `<scoped-ns>` is the single namespace the gateway was configured with at launch. Cross-namespace mutations are denied even if RBAC would permit them.
+1. Skip if the apiGroup is in the carveout list.
+2. Skip if the `(group, resource)` is in the carveout list.
+3. Skip if the subresource is in the carveout list.
+4. Bucket into `(apiGroup, scope-class)` where scope-class ∈ {namespaced-write, cluster-read}.
+5. Per `apiGroup`: if every kept resource fits one bucket and there are no per-resource carveouts inside the group, emit a single rule with `resources: ["*"]` and `verbs: ["*"]` (or read-only verbs for cluster-read).
+6. Otherwise enumerate the resources within the group, splitting by bucket.
+7. Filter `impersonate` out of any verb list before emission.
 
-### 4.3 Defense in Depth
+### 5.3 Example Output
 
-The proxy is the architectural boundary, but two extra layers reduce the chance of bypass:
-
-1. **Cluster RBAC.** `claude-forge` documentation will recommend the user point their kubeconfig at a least-privilege ServiceAccount (read-only on most resources, no `secrets`, no cluster-scoped writes). If the proxy filter has a bug, RBAC is the second wall.
-2. **PreToolUse hook.** The existing hooks framework (`internal/hooks/`) gains a `kubectl_rule.go` that pattern-matches the agent's bash invocation. It blocks string-level patterns the proxy would also block — `kubectl get secret`, `kubectl delete namespace`, `kubectl config view --raw`, `kubectl --kubeconfig=` (attempt to override the generated config). This catches the obvious cases earlier and produces a clear error message in the agent's transcript instead of an opaque HTTP 403.
-
-Both layers are advisory relative to the proxy. The proxy is the contract; the hook is a usability and clarity aid.
-
-## 5. Configuration
-
-Host-side, in `~/.config/claude-forge/config.yaml`:
+For a typical cluster the rendered ClusterRole is around six to ten rules:
 
 ```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: claude-forge-agent
+rules:
+# Core "" — must enumerate (secrets and sa/token live here)
+- apiGroups: [""]
+  resources:
+    - bindings
+    - configmaps
+    - endpoints
+    - events
+    - limitranges
+    - persistentvolumeclaims
+    - persistentvolumeclaims/status
+    - podtemplates
+    - pods
+    - pods/log
+    - pods/portforward
+    - pods/proxy
+    - replicationcontrollers
+    - replicationcontrollers/scale
+    - resourcequotas
+    - serviceaccounts
+    - services
+    - services/proxy
+  verbs: ["*"]
+# Core "" — cluster-scoped → read-only
+- apiGroups: [""]
+  resources: [namespaces, nodes, persistentvolumes, componentstatuses]
+  verbs: [get, list, watch]
+
+# Other built-in groups, all namespaced, no carveouts → wildcard
+- apiGroups:
+    - apps
+    - autoscaling
+    - batch
+    - coordination.k8s.io
+    - discovery.k8s.io
+    - events.k8s.io
+    - networking.k8s.io
+    - node.k8s.io
+    - policy
+    - scheduling.k8s.io
+  resources: ["*"]
+  verbs: ["*"]
+
+# Cluster-scoped non-core groups → read-only
+- apiGroups:
+    - apiextensions.k8s.io
+    - certificates.k8s.io
+    - flowcontrol.apiserver.k8s.io
+    - storage.k8s.io
+  resources: ["*"]
+  verbs: [get, list, watch]
+
+# Discovered CRD groups (whatever the cluster has installed)
+- apiGroups: [argoproj.io, cert-manager.io, monitoring.coreos.com, ...]
+  resources: ["*"]
+  verbs: ["*"]
+```
+
+The exact `apiGroups` lists depend on what discovery returns from the target cluster.
+
+## 6. The `claude-forge kube render` Command
+
+```
+claude-forge kube render \
+  [--cluster-role-name <name>] \
+  [--service-account-name <name>] \
+  [--service-account-namespace <ns>] \
+  [--kubeconfig <path>] \
+  [--context <ctx>]
+```
+
+**Flags:**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--cluster-role-name` | `claude-forge-agent` | Name of the generated ClusterRole and ClusterRoleBinding |
+| `--service-account-name` | `claude-forge-agent` | Name of the generated ServiceAccount |
+| `--service-account-namespace` | `default` | Namespace to put the ServiceAccount in |
+| `--kubeconfig` | `$KUBECONFIG` or `~/.kube/config` | Whose discovery to call against |
+| `--context` | current context in kubeconfig | Which cluster's discovery to use |
+
+**Output (stdout):** YAML containing exactly three resources, in apply order: `ServiceAccount`, `ClusterRole`, `ClusterRoleBinding`. No `Namespace` is bundled — the user is responsible for ensuring the chosen namespace exists.
+
+**Usage:**
+
+```bash
+# One-time setup against the cluster
+claude-forge kube render --service-account-namespace claude-forge \
+  | kubectl apply -f -
+
+# Then point claude-forge at the same SA in its config (~/.config/claude-forge/config.yaml):
 kubernetes:
-  enabled: false           # opt-in; default off
-  kubeconfig: ~/.kube/config
-  context: ""              # optional; defaults to current-context
-  namespace: ""            # optional; defaults to context's namespace, then "default"
+  enabled: true
+  context: ""                                # default: current
+  service_account_name: claude-forge-agent
+  service_account_namespace: claude-forge
 ```
 
-`claude-forge start` reads this, validates that the chosen context exists, resolves the namespace, and passes both into the gateway as env vars. The agent's generated kubeconfig hard-codes the resolved namespace.
+At every `claude-forge start`, the host calls TokenRequest against that SA to mint a fresh token for the gateway. The token is short-lived; if the session outlives it, the gateway re-requests via a sidecar refresh loop (out of scope for v1 — start with single-token sessions).
 
-CLI override for ad-hoc use:
-
-```
-claude-forge start --kube-namespace=staging
-claude-forge start --no-kube     # disable for this run
-```
-
-## 6. Implementation Sketch
+## 7. Implementation Sketch
 
 | Change | Location |
 |---|---|
 | Install `kubectl` in agent image | `docker/agent/Dockerfile` |
-| Generate stub kubeconfig at container start | `docker/agent/entrypoint.sh` (driven by env vars set by `claude-forge`) |
-| Mount `~/.kube/config` read-only into gateway | `internal/forge/container/client.go` |
-| K8s reverse proxy and filter | new package `internal/gateway/k8sproxy/` |
+| Generate stub kubeconfig at container start | `docker/agent/entrypoint.sh` |
+| Generate ServiceAccount kubeconfig (gateway-side) handling | `internal/forge/kube/` (new package) |
+| K8s reverse proxy (credential injection only) | `internal/gateway/k8sproxy/` (new package) |
 | Wire proxy into gateway server | `internal/gateway/server.go` |
-| `kubectl` PreToolUse rule | new file `internal/hooks/kubectl_rule.go` (+ test) |
+| `kube render` subcommand and discovery-based rule generator | `cmd/claude-forge/kube_render.go` (new) |
+| TokenRequest call at session start | `internal/forge/orchestrator.go` |
 | Config struct fields | `internal/forge/config/config.go` |
-| User docs | new section in `secure-sandbox-architecture.md`, plus a usage section in `README.md` |
+| User docs | new section in `secure-sandbox-architecture.md`; update `README.md` |
 
-Out-of-band: the gateway's container image gains `ca-certificates` if not already present, so it can verify the cluster API server's TLS.
+The render command's rule generator is pure-data (input: discovery output + carveout config; output: `[]rbacv1.PolicyRule`), so it's testable without a live cluster — feed it canned discovery fixtures.
 
-## 7. Open Questions
+## 8. Rejected Alternatives
 
-1. **`kubectl exec` and `kubectl port-forward`.** Both are genuinely useful for debugging but tunnel arbitrary protocols past the HTTP filter. Options for v2: (a) keep them denied; (b) allow `port-forward` only to a fixed allowlist of pod-label selectors; (c) allow `exec` with a shell wrapper that runs the same DCG-style command guard as the agent's bash. Need a separate proposal.
-2. **Cluster API discovery caching.** `kubectl` caches `/openapi/v3` and discovery docs under `~/.kube/cache/discovery/`. With no `~/.kube/`, this lands in `$HOME/.kube/cache/` inside the agent's home. Acceptable, but should be documented so users understand the working files.
-3. **CRDs with credential-like fields.** A custom resource (e.g., `SealedSecret`, `ExternalSecret`) may carry sensitive material in `spec`. The current filter only blocks core `Secret`. Plausible v2: a configurable deny list of `(group, kind)` pairs. For v1, document the limitation.
-4. **WebSocket upgrades on `/api/v1/.../log` follow mode.** `kubectl logs -f` upgrades to a streaming connection. The reverse proxy needs to support hijacked HTTP connections; standard Go `httputil.ReverseProxy` handles this but the filter must run before the upgrade.
-5. **Multi-context users.** Should the gateway expose more than one context (e.g., "dev" and "staging") with separate filters? For v1 we say no — one container, one cluster, one namespace. Users who need both run two `claude-forge` instances.
-6. **PreToolUse rule scope.** Should the hook also block `kubectl proxy`, `kubectl --server=...`, and similar attempts to bypass the configured server? Lean yes; cheap to add.
+### 8.1 Gateway with Method+Path Filter (original draft)
 
-## 8. Rollout
+The first version of this proposal had the gateway implement an allow/deny list keyed on `(HTTP method, URL path)` mirroring K8s API URL grammar. Rejected because:
+
+- Duplicates RBAC, which already exists, is audited, and is enforced at the API server.
+- Hand-maintained list drifts as Kubernetes adds resources; discovery-driven RBAC adapts automatically.
+- Required special-casing for WebSocket upgrades (watch, log follow, exec) and hijacked connections.
+- A bug in the filter is a security hole; a bug in RBAC is a Kubernetes CVE.
+
+### 8.2 Mount Kubeconfig in the Agent (with RBAC scoping)
+
+Considered: mount a kubeconfig file in the agent that has the SA token embedded, RBAC-scoped. Rejected because:
+
+- Violates Invariant 1: the agent has the credential and could exfiltrate it.
+- Even a scoped token, if leaked, can be used outside the sandbox until expiry.
+- The gateway architecture costs little extra (one container that already exists for git/GitHub) and earns full Invariant 1 compliance.
+
+### 8.3 Per-Tier Roles (`view`, `edit`, `admin`)
+
+Considered: ship pre-built ClusterRoles for different "tiers" the user can choose from. Rejected for v1 because:
+
+- Adds a `--tier` flag and forces the user to think about a security model rather than getting one safe default.
+- The built-in `edit` ClusterRole grants secrets access; can't be used as-is.
+- A single sane default (the discovery-driven role above) covers the common case. Tiers can be added later if real demand appears.
+
+## 9. Open Questions
+
+1. **Token refresh for long-lived sessions.** TokenRequest tokens have a finite expiry. v1 uses one token per session. v2 should refresh in the gateway before expiry; needs a small refresh loop and a way for the host to pass the kubeconfig (or a refresh hook) into the gateway.
+2. **Audit visibility.** All cluster activity will be audit-logged on the cluster as the SA, not as the user. Worth documenting so users can grep audit logs for `claude-forge-agent`.
+3. **CRDs with sensitive `spec` fields.** A `SealedSecret`, `ExternalSecret`, or vault CRD may carry credential material in its spec. The current model grants full CRUD on these (they're just custom resources to RBAC). A future config could let users add per-CRD carveouts to render. v1 documents the limitation.
+4. **`port-forward` policy.** Currently allowed. If a pod exposes an admin port (database, redis, etc.) the agent can reach it. Accept the risk for v1; revisit if it bites.
+5. **Multi-context.** One gateway, one cluster, one SA per `claude-forge` instance. Users who need two clusters run two instances. Re-evaluate if this becomes painful.
+
+## 10. Rollout
 
 1. Land this proposal doc (current PR).
-2. Implement the gateway K8s proxy and the agent-side kubeconfig generation behind the `kubernetes.enabled: false` default. Ship as opt-in.
-3. Add the PreToolUse hook.
-4. Dogfood against a throwaway `kind` cluster in CI; add an e2e test that asserts `kubectl get pods` succeeds and `kubectl get secret` fails with 403.
-5. Document the recommended least-privilege ServiceAccount in `secure-sandbox-architecture.md`.
-6. Flip default to enabled once the proxy has settled and the e2e suite is green for two weeks.
+2. Implement the gateway K8s reverse proxy and the agent-side kubeconfig generation behind `kubernetes.enabled: false` default. Ship as opt-in.
+3. Implement `claude-forge kube render` with discovery-driven rendering and carveouts.
+4. Add e2e test: spin up a `kind` cluster in CI, render → apply → start → assert that `kubectl get pods` succeeds, `kubectl get secret` returns 403, `kubectl delete namespace default` returns 403, `kubectl exec` returns 403.
+5. Document the recommended workflow in `secure-sandbox-architecture.md` and `README.md`.
+6. Flip default to enabled after the e2e suite is green for two weeks.
