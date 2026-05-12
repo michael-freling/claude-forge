@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -197,13 +198,19 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		})
 	}
 
-	// Claude dir mounts (read-only) for rules, agents, commands, skills, CLAUDE.md
+	// Claude dir mounts (read-only) for rules, agents, commands, skills, CLAUDE.md.
+	// Resolve symlinks so Docker gets the real path, and skip dirs that don't exist.
 	if opts.ClaudeDir != "" {
 		claudeSubdirs := []string{"rules", "agents", "commands", "skills"}
 		for _, subdir := range claudeSubdirs {
+			source := filepath.Join(opts.ClaudeDir, subdir)
+			resolved, err := filepath.EvalSymlinks(source)
+			if err != nil {
+				continue
+			}
 			mounts = append(mounts, mount.Mount{
 				Type:     mount.TypeBind,
-				Source:   opts.ClaudeDir + "/" + subdir,
+				Source:   resolved,
 				Target:   "/home/user/.claude/" + subdir,
 				ReadOnly: true,
 			})
@@ -231,14 +238,17 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		})
 	}
 
-	// Home CLAUDE.md mount (read-only)
+	// Home CLAUDE.md mount (read-only) — skip if file doesn't exist or is a broken symlink
 	if opts.HomeDir != "" {
-		mounts = append(mounts, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   opts.HomeDir + "/CLAUDE.md",
-			Target:   "/home/user/CLAUDE.md",
-			ReadOnly: true,
-		})
+		claudeMDSource := filepath.Join(opts.HomeDir, "CLAUDE.md")
+		if resolved, err := filepath.EvalSymlinks(claudeMDSource); err == nil {
+			mounts = append(mounts, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   resolved,
+				Target:   "/home/user/CLAUDE.md",
+				ReadOnly: true,
+			})
+		}
 	}
 
 	// Cache directory mounts (read-write)
