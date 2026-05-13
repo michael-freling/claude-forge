@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Credentials holds resolved Claude Code authentication credentials.
@@ -70,6 +71,12 @@ func Resolve(claudeDir string) (*Credentials, error) {
 	}
 
 	if creds.ClaudeAiOauth.AccessToken != "" {
+		if creds.ClaudeAiOauth.ExpiresAt > 0 {
+			expiresAt := time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
+			if time.Now().After(expiresAt) {
+				return nil, fmt.Errorf("OAuth token expired at %s; re-authenticate with 'claude' to refresh it", expiresAt.Format(time.RFC3339))
+			}
+		}
 		return &Credentials{
 			AuthType: "oauth",
 			Token:    creds.ClaudeAiOauth.AccessToken,

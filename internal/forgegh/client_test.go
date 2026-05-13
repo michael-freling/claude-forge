@@ -21,6 +21,7 @@ func testGateway(t *testing.T, apiHandler http.HandlerFunc) *httptest.Server {
 			{Name: "list-prs", Method: "GET", Path: "/repos/{owner}/{repo}/pulls", Description: "List pull requests", Type: "read"},
 			{Name: "create-pr", Method: "POST", Path: "/repos/{owner}/{repo}/pulls", Description: "Create a pull request", Type: "write"},
 			{Name: "get-pr", Method: "GET", Path: "/repos/{owner}/{repo}/pulls/{number}", Description: "Get a pull request", Type: "read"},
+			{Name: "update-pr", Method: "PATCH", Path: "/repos/{owner}/{repo}/pulls/{number}", Description: "Update a pull request", Type: "write"},
 			{Name: "list-pr-comments", Method: "GET", Path: "/repos/{owner}/{repo}/pulls/{number}/comments", Description: "List PR review comments", Type: "read"},
 			{Name: "create-pr-comment", Method: "POST", Path: "/repos/{owner}/{repo}/pulls/{number}/comments", Description: "Create a PR review comment", Type: "write"},
 			{Name: "list-issues", Method: "GET", Path: "/repos/{owner}/{repo}/issues", Description: "List issues", Type: "read"},
@@ -137,6 +138,36 @@ func TestClient_PRCreate(t *testing.T) {
 	assert.Equal(t, "Description here", capturedBody["body"])
 	assert.Equal(t, "feature-branch", capturedBody["head"])
 	assert.Equal(t, "main", capturedBody["base"])
+}
+
+func TestClient_PREdit(t *testing.T) {
+	var capturedPath string
+	var capturedMethod string
+	var capturedBody map[string]any
+
+	gw := testGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedMethod = r.Method
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"number":42,"title":"Updated Title"}`))
+	})
+	defer gw.Close()
+
+	client := newTestClient(gw.URL)
+	err := client.Run([]string{
+		"pr", "edit", "42",
+		"--repo", "owner/repo",
+		"--title", "Updated Title",
+		"--body", "Updated description",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "/api/github/repos/owner/repo/pulls/42", capturedPath)
+	assert.Equal(t, http.MethodPatch, capturedMethod)
+	assert.Equal(t, "Updated Title", capturedBody["title"])
+	assert.Equal(t, "Updated description", capturedBody["body"])
 }
 
 func TestClient_PRMerge(t *testing.T) {
@@ -489,6 +520,7 @@ func TestCommandToOperationName(t *testing.T) {
 		{"pr", "list", "list-prs"},
 		{"pr", "view", "get-pr"},
 		{"pr", "create", "create-pr"},
+		{"pr", "edit", "update-pr"},
 		{"pr", "merge", "merge-pr"},
 		{"pr", "comment", "create-pr-comment"},
 		{"issue", "list", "list-issues"},

@@ -9,8 +9,11 @@ import (
 )
 
 // GitHubAuth handles GitHub authentication for the gateway.
+// When backed by a hosts file, Token() re-reads the file on each call so the
+// gateway picks up refreshed tokens without requiring a restart.
 type GitHubAuth struct {
-	token string
+	staticToken string
+	hostsPath   string
 }
 
 // NewGitHubAuth creates auth by trying methods in order:
@@ -19,7 +22,7 @@ type GitHubAuth struct {
 // 3. Error
 func NewGitHubAuth() (*GitHubAuth, error) {
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		return &GitHubAuth{token: token}, nil
+		return &GitHubAuth{staticToken: token}, nil
 	}
 
 	homeDir, err := os.UserHomeDir()
@@ -28,22 +31,30 @@ func NewGitHubAuth() (*GitHubAuth, error) {
 	}
 
 	hostsPath := filepath.Join(homeDir, ".config", "gh", "hosts.yml")
-	token, err := parseGHHostsFile(hostsPath)
-	if err != nil {
+	// Validate that the file is readable and contains a token at startup.
+	if _, err := parseGHHostsFile(hostsPath); err != nil {
 		return nil, fmt.Errorf("no GITHUB_TOKEN set and failed to read gh hosts file: %w", err)
 	}
 
-	return &GitHubAuth{token: token}, nil
+	return &GitHubAuth{hostsPath: hostsPath}, nil
 }
 
 // NewGitHubAuthFromToken creates auth from an explicit token value.
 func NewGitHubAuthFromToken(token string) *GitHubAuth {
-	return &GitHubAuth{token: token}
+	return &GitHubAuth{staticToken: token}
 }
 
-// Token returns the GitHub token.
+// Token returns the GitHub token. When backed by a hosts file, it re-reads the
+// file to pick up refreshed tokens.
 func (a *GitHubAuth) Token() string {
-	return a.token
+	if a.staticToken != "" {
+		return a.staticToken
+	}
+	token, err := parseGHHostsFile(a.hostsPath)
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 // ghHostsFile represents the structure of ~/.config/gh/hosts.yml.

@@ -47,6 +47,7 @@ func TestAPIServer_Schema(t *testing.T) {
 	assert.True(t, opNames["create-issue"])
 	assert.True(t, opNames["get-repo"])
 	assert.True(t, opNames["merge-pr"])
+	assert.True(t, opNames["update-pr"])
 }
 
 func TestAPIServer_ReadOperationsAllowedForAnyRepo(t *testing.T) {
@@ -149,6 +150,12 @@ func TestAPIServer_WriteOperationsAllowedForProjectRepo(t *testing.T) {
 			method: http.MethodPost,
 			path:   "/api/github/repos/my-owner/my-repo/pulls/1/comments",
 			body:   `{"body":"review comment"}`,
+		},
+		{
+			name:   "update PR in project repo",
+			method: http.MethodPatch,
+			path:   "/api/github/repos/my-owner/my-repo/pulls/1",
+			body:   `{"title":"updated title","body":"updated body"}`,
 		},
 	}
 

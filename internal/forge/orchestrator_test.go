@@ -61,6 +61,7 @@ func TestStart_Success(t *testing.T) {
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Equal(t, projectDir, opts.ProjectDir)
@@ -101,6 +102,7 @@ func TestStart_ImagePull(t *testing.T) {
 	mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil).Times(2)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
 
 	sess, err := orch.Start(context.Background(), StartOptions{
@@ -175,6 +177,35 @@ func TestStart_FailsOnGatewayStart(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to start gateway")
 }
 
+func TestStart_FailsOnGatewayCrash(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(fmt.Errorf("container gw-id exited with code 1"))
+	mockCM.EXPECT().ContainerLogs(gomock.Any(), "gw-id").Return("Error: no GITHUB_TOKEN set", nil)
+
+	// Expect cleanup calls
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(2)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(2)
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gateway container failed to start")
+	assert.Contains(t, err.Error(), "no GITHUB_TOKEN set")
+}
+
 func TestStart_FailsOnAgentStart(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
@@ -187,6 +218,7 @@ func TestStart_FailsOnAgentStart(t *testing.T) {
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("", fmt.Errorf("agent start failed"))
 
 	// Expect cleanup calls
@@ -344,6 +376,7 @@ func TestStart_Interactive(t *testing.T) {
 			mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 			mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 			mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+			mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 			mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 				DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 					assert.Equal(t, tt.wantInteractive, opts.Interactive)
@@ -374,6 +407,7 @@ func TestStart_OAuthCredentials(t *testing.T) {
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Equal(t, "oauth-token-xyz", opts.Env["CLAUDE_CODE_OAUTH_TOKEN"])
@@ -402,6 +436,7 @@ func TestStart_CommandArgs(t *testing.T) {
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Contains(t, opts.Cmd, "--dangerously-skip-permissions")
@@ -434,6 +469,7 @@ func TestStart_ResumeSession(t *testing.T) {
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Contains(t, opts.Cmd, "--resume")
@@ -464,6 +500,7 @@ func TestStart_ContinueSession(t *testing.T) {
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Contains(t, opts.Cmd, "--continue")
@@ -553,6 +590,7 @@ func TestStart_HostModelPropagation(t *testing.T) {
 		mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 		mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 		mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 		mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 			DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 				assert.Equal(t, "claude-opus-4-6", opts.Env["ANTHROPIC_MODEL"])
@@ -579,6 +617,7 @@ func TestStart_HostModelPropagation(t *testing.T) {
 		mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
 		mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 		mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 		mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 			DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 				_, exists := opts.Env["ANTHROPIC_MODEL"]

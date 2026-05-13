@@ -27,6 +27,7 @@ var operations = []Operation{
 	{Name: "list-prs", Method: "GET", Path: "/repos/{owner}/{repo}/pulls", Description: "List pull requests", Type: "read"},
 	{Name: "create-pr", Method: "POST", Path: "/repos/{owner}/{repo}/pulls", Description: "Create a pull request", Type: "write"},
 	{Name: "get-pr", Method: "GET", Path: "/repos/{owner}/{repo}/pulls/{number}", Description: "Get a pull request", Type: "read"},
+	{Name: "update-pr", Method: "PATCH", Path: "/repos/{owner}/{repo}/pulls/{number}", Description: "Update a pull request", Type: "write"},
 	{Name: "list-pr-comments", Method: "GET", Path: "/repos/{owner}/{repo}/pulls/{number}/comments", Description: "List PR review comments", Type: "read"},
 	{Name: "create-pr-comment", Method: "POST", Path: "/repos/{owner}/{repo}/pulls/{number}/comments", Description: "Create a PR review comment", Type: "write"},
 	{Name: "list-issues", Method: "GET", Path: "/repos/{owner}/{repo}/issues", Description: "List issues", Type: "read"},

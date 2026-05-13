@@ -12,6 +12,7 @@ package forge
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	container "github.com/michael-freling/claude-code-tools/internal/forge/container"
 	gomock "go.uber.org/mock/gomock"
@@ -170,6 +171,35 @@ func (m *MockContainerManager) StartGateway(ctx context.Context, opts container.
 func (mr *MockContainerManagerMockRecorder) StartGateway(ctx, opts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartGateway", reflect.TypeOf((*MockContainerManager)(nil).StartGateway), ctx, opts)
+}
+
+// WaitForReady mocks base method.
+func (m *MockContainerManager) WaitForReady(ctx context.Context, containerID string, timeout time.Duration) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "WaitForReady", ctx, containerID, timeout)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// WaitForReady indicates an expected call of WaitForReady.
+func (mr *MockContainerManagerMockRecorder) WaitForReady(ctx, containerID, timeout any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WaitForReady", reflect.TypeOf((*MockContainerManager)(nil).WaitForReady), ctx, containerID, timeout)
+}
+
+// ContainerLogs mocks base method.
+func (m *MockContainerManager) ContainerLogs(ctx context.Context, containerID string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ContainerLogs", ctx, containerID)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ContainerLogs indicates an expected call of ContainerLogs.
+func (mr *MockContainerManagerMockRecorder) ContainerLogs(ctx, containerID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerLogs", reflect.TypeOf((*MockContainerManager)(nil).ContainerLogs), ctx, containerID)
 }
 
 // StopContainer mocks base method.

@@ -171,6 +171,9 @@ func (s *stubContainerManager) StartAgent(_ context.Context, _ container.AgentOp
 func (s *stubContainerManager) StartGateway(_ context.Context, _ container.GatewayOptions) (string, error) {
 	return "gw-id", nil
 }
+func (s *stubContainerManager) WaitForReady(_ context.Context, _ string, _ time.Duration) error {
+	return nil
+}
 func (s *stubContainerManager) StopContainer(_ context.Context, _ string) error   { return nil }
 func (s *stubContainerManager) RemoveContainer(_ context.Context, _ string) error { return nil }
 func (s *stubContainerManager) ListForgeContainers(_ context.Context) ([]container.ContainerInfo, error) {
@@ -179,6 +182,9 @@ func (s *stubContainerManager) ListForgeContainers(_ context.Context) ([]contain
 func (s *stubContainerManager) PullImage(_ context.Context, _ string) error { return nil }
 func (s *stubContainerManager) ImageExists(_ context.Context, _ string) (bool, error) {
 	return true, nil
+}
+func (s *stubContainerManager) ContainerLogs(_ context.Context, _ string) (string, error) {
+	return "", nil
 }
 func (s *stubContainerManager) Close() error { return nil }
 

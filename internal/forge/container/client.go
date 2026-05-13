@@ -24,11 +24,13 @@ type ContainerManager interface {
 	RemoveNetwork(ctx context.Context, name string) error
 	StartAgent(ctx context.Context, opts AgentOptions) (string, error)
 	StartGateway(ctx context.Context, opts GatewayOptions) (string, error)
+	WaitForReady(ctx context.Context, containerID string, timeout time.Duration) error
 	StopContainer(ctx context.Context, name string) error
 	RemoveContainer(ctx context.Context, name string) error
 	ListForgeContainers(ctx context.Context) ([]ContainerInfo, error)
 	PullImage(ctx context.Context, image string) error
 	ImageExists(ctx context.Context, image string) (bool, error)
+	ContainerLogs(ctx context.Context, containerID string) (string, error)
 	Close() error
 }
 
@@ -42,6 +44,8 @@ type DockerAPI interface {
 	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
 	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkRemove(ctx context.Context, networkID string) error
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
@@ -74,6 +78,14 @@ func (w *dockerAPIWrapper) ContainerRemove(ctx context.Context, containerID stri
 
 func (w *dockerAPIWrapper) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 	return w.client.ContainerList(ctx, options)
+}
+
+func (w *dockerAPIWrapper) ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
+	return w.client.ContainerInspect(ctx, containerID)
+}
+
+func (w *dockerAPIWrapper) ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error) {
+	return w.client.ContainerLogs(ctx, containerID, options)
 }
 
 func (w *dockerAPIWrapper) NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error) {
@@ -359,6 +371,56 @@ func (c *Client) StartGateway(ctx context.Context, opts GatewayOptions) (string,
 	}
 
 	return resp.ID, nil
+}
+
+// WaitForReady polls the container state until it is running or exits.
+// Returns an error if the container exits before the timeout.
+func (c *Client) WaitForReady(ctx context.Context, containerID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	pollInterval := 200 * time.Millisecond
+
+	for time.Now().Before(deadline) {
+		info, err := c.docker.ContainerInspect(ctx, containerID)
+		if err != nil {
+			return fmt.Errorf("failed to inspect container %s: %w", containerID, err)
+		}
+
+		if info.State != nil {
+			if info.State.Running {
+				return nil
+			}
+			if info.State.Status == "exited" || info.State.Status == "dead" {
+				return fmt.Errorf("container %s exited with code %d", containerID, info.State.ExitCode)
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+
+	return fmt.Errorf("timed out waiting for container %s to be ready", containerID)
+}
+
+// ContainerLogs returns the stdout/stderr logs from a container.
+func (c *Client) ContainerLogs(ctx context.Context, containerID string) (string, error) {
+	reader, err := c.docker.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Tail:       "20",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get logs for container %s: %w", containerID, err)
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", fmt.Errorf("failed to read logs for container %s: %w", containerID, err)
+	}
+	return string(data), nil
 }
 
 // ContainerInfo holds information about a running container.

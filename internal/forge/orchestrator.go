@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/michael-freling/claude-code-tools/internal/forge/auth"
 	"github.com/michael-freling/claude-code-tools/internal/forge/claudecode"
@@ -169,7 +170,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	if ghToken := os.Getenv("GITHUB_TOKEN"); ghToken != "" {
 		gatewayEnv["GITHUB_TOKEN"] = ghToken
 	}
-	if _, err := o.Containers.StartGateway(ctx, container.GatewayOptions{
+	gatewayID, err := o.Containers.StartGateway(ctx, container.GatewayOptions{
 		Name:        sess.GatewayName,
 		Image:       cfg.Images.Gateway,
 		NetworkName: sess.NetworkName,
@@ -178,9 +179,19 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		Owner:       proj.Owner,
 		Repo:        proj.Repo,
 		Env:         gatewayEnv,
-	}); err != nil {
+	})
+	if err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start gateway: %w", err)
+	}
+
+	if err := o.Containers.WaitForReady(ctx, gatewayID, 5*time.Second); err != nil {
+		logs, _ := o.Containers.ContainerLogs(ctx, gatewayID)
+		o.Cleanup(ctx, sess)
+		if logs != "" {
+			return nil, fmt.Errorf("gateway container failed to start: %w\nGateway logs:\n%s", err, logs)
+		}
+		return nil, fmt.Errorf("gateway container failed to start: %w", err)
 	}
 
 	// Build agent command args

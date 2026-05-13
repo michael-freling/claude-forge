@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,13 +53,13 @@ func TestResolve(t *testing.T) {
 		},
 		{
 			name: "credentials file with nested claudeAiOauth format",
-			credFile: `{
+			credFile: fmt.Sprintf(`{
 				"claudeAiOauth": {
 					"accessToken": "sk-ant-oat01-nested-token",
 					"refreshToken": "sk-ant-ort01-refresh",
-					"expiresAt": 1778445628191
+					"expiresAt": %d
 				}
-			}`,
+			}`, time.Now().Add(24*time.Hour).UnixMilli()),
 			want: &Credentials{
 				AuthType: "oauth",
 				Token:    "sk-ant-oat01-nested-token",
@@ -79,6 +81,32 @@ func TestResolve(t *testing.T) {
 			name:        "no credentials found",
 			wantErr:     true,
 			errContains: "no credentials found",
+		},
+		{
+			name: "credentials file with expired token in nested format",
+			credFile: fmt.Sprintf(`{
+				"claudeAiOauth": {
+					"accessToken": "sk-ant-oat01-expired",
+					"refreshToken": "sk-ant-ort01-refresh",
+					"expiresAt": %d
+				}
+			}`, time.Now().Add(-1*time.Hour).UnixMilli()),
+			wantErr:     true,
+			errContains: "OAuth token expired",
+		},
+		{
+			name: "credentials file with valid non-expired token in nested format",
+			credFile: fmt.Sprintf(`{
+				"claudeAiOauth": {
+					"accessToken": "sk-ant-oat01-valid",
+					"refreshToken": "sk-ant-ort01-refresh",
+					"expiresAt": %d
+				}
+			}`, time.Now().Add(1*time.Hour).UnixMilli()),
+			want: &Credentials{
+				AuthType: "oauth",
+				Token:    "sk-ant-oat01-valid",
+			},
 		},
 		{
 			name:        "credentials file with empty accessToken in nested format",

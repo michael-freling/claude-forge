@@ -4,6 +4,7 @@ package forge_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -157,5 +158,102 @@ Reply with the raw command outputs only, no other text.`
 
 	for _, c := range containers {
 		t.Errorf("forge container still running after exit: %s (image=%s, status=%s)", c.Name, c.Image, c.Status)
+	}
+}
+
+// TestForgeStart_NoGitHubAuth verifies that claude-forge fails with a clear
+// error when the gateway has no GitHub authentication available, and that the
+// agent container is never started.
+func TestForgeStart_NoGitHubAuth(t *testing.T) {
+	// Skip if Docker is not available.
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	if oauthToken == "" {
+		t.Skip("CLAUDE_CODE_OAUTH_TOKEN not set -- required for e2e test")
+	}
+
+	projectRoot := findProjectRoot(t)
+
+	// Build binary
+	binaryPath := filepath.Join(t.TempDir(), "claude-forge")
+	buildBinary := exec.Command("go", "build", "-o", binaryPath, "./cmd/claude-forge/")
+	buildBinary.Dir = projectRoot
+	out, err := buildBinary.CombinedOutput()
+	require.NoError(t, err, "failed to build claude-forge binary: %s", out)
+
+	// Build Docker images
+	agentBinaryPath := filepath.Join(projectRoot, "docker", "agent", "claude-forge")
+	buildAgentBinary := exec.Command("go", "build", "-o", agentBinaryPath, "./cmd/claude-forge/")
+	buildAgentBinary.Dir = projectRoot
+	buildAgentBinary.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
+	out, err = buildAgentBinary.CombinedOutput()
+	require.NoError(t, err, "failed to build agent binary: %s", out)
+	t.Cleanup(func() { os.Remove(agentBinaryPath) })
+
+	agentImageName := "forge-e2e-agent-noauth"
+	gatewayImageName := "forge-e2e-gateway-noauth"
+
+	buildGateway := exec.Command("docker", "build", "-t", gatewayImageName, "-f", "docker/gateway/Dockerfile", ".")
+	buildGateway.Dir = projectRoot
+	out, err = buildGateway.CombinedOutput()
+	require.NoError(t, err, "failed to build gateway image: %s", out)
+
+	buildAgent := exec.Command("docker", "build", "-t", agentImageName, "docker/agent/")
+	buildAgent.Dir = projectRoot
+	out, err = buildAgent.CombinedOutput()
+	require.NoError(t, err, "failed to build agent image: %s", out)
+
+	// Set up temp HOME with NO GitHub auth (no GITHUB_TOKEN, no gh hosts.yml)
+	tempHome := t.TempDir()
+
+	configDir := filepath.Join(tempHome, ".config", "claude-forge")
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+	configContent := fmt.Sprintf("images:\n  agent: %s\n  gateway: %s\n", agentImageName, gatewayImageName)
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	claudeDir := filepath.Join(tempHome, ".claude")
+	for _, subdir := range []string{"rules", "agents", "commands", "skills"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(claudeDir, subdir), 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(tempHome, "CLAUDE.md"), []byte(""), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(tempHome, ".ssh"), 0o700))
+	// Empty .config/gh dir with no hosts.yml — gateway should fail
+	require.NoError(t, os.MkdirAll(filepath.Join(tempHome, ".config", "gh"), 0o755))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", "hello")
+	cmd.Dir = projectRoot
+	cmd.Env = append(os.Environ(),
+		"HOME="+tempHome,
+		"CLAUDE_CODE_OAUTH_TOKEN="+oauthToken,
+		"GITHUB_TOKEN=", // explicitly unset
+	)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+	t.Logf("claude-forge output:\n%s", outputStr)
+
+	require.Error(t, err, "expected error when no GitHub auth is available")
+	assert.Contains(t, outputStr, "gateway container failed to start",
+		"expected error message about gateway failure")
+
+	// Verify all containers are cleaned up
+	dockerClient, err := container.NewClient()
+	require.NoError(t, err)
+	defer dockerClient.Close()
+
+	containers, err := dockerClient.ListForgeContainers(context.Background())
+	require.NoError(t, err)
+
+	for _, c := range containers {
+		t.Errorf("forge container still running after gateway failure: %s (image=%s, status=%s)", c.Name, c.Image, c.Status)
 	}
 }

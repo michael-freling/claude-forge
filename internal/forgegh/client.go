@@ -177,6 +177,8 @@ func commandToOperationName(cmd *parsedCommand) string {
 			return "get-pr"
 		case "create":
 			return "create-pr"
+		case "edit":
+			return "update-pr"
 		case "merge":
 			return "merge-pr"
 		case "comment":
@@ -314,6 +316,19 @@ func (c *Client) buildRequestBody(cmd *parsedCommand, op *operation) string {
 		}
 		if v, ok := cmd.Flags["base"]; ok {
 			bodyMap["base"] = v
+		}
+	case "update-pr":
+		if v, ok := cmd.Flags["title"]; ok {
+			bodyMap["title"] = v
+		}
+		if v, ok := cmd.Flags["body"]; ok {
+			bodyMap["body"] = v
+		}
+		if v, ok := cmd.Flags["base"]; ok {
+			bodyMap["base"] = v
+		}
+		if v, ok := cmd.Flags["state"]; ok {
+			bodyMap["state"] = v
 		}
 	case "create-issue":
 		if v, ok := cmd.Flags["title"]; ok {

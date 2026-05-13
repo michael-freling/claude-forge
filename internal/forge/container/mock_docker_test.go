@@ -73,6 +73,21 @@ func (mr *MockDockerAPIMockRecorder) ContainerCreate(ctx, config, hostConfig, ne
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerCreate", reflect.TypeOf((*MockDockerAPI)(nil).ContainerCreate), ctx, config, hostConfig, networkingConfig, containerName)
 }
 
+// ContainerInspect mocks base method.
+func (m *MockDockerAPI) ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ContainerInspect", ctx, containerID)
+	ret0, _ := ret[0].(container.InspectResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ContainerInspect indicates an expected call of ContainerInspect.
+func (mr *MockDockerAPIMockRecorder) ContainerInspect(ctx, containerID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerInspect", reflect.TypeOf((*MockDockerAPI)(nil).ContainerInspect), ctx, containerID)
+}
+
 // ContainerList mocks base method.
 func (m *MockDockerAPI) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 	m.ctrl.T.Helper()
@@ -86,6 +101,21 @@ func (m *MockDockerAPI) ContainerList(ctx context.Context, options container.Lis
 func (mr *MockDockerAPIMockRecorder) ContainerList(ctx, options any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerList", reflect.TypeOf((*MockDockerAPI)(nil).ContainerList), ctx, options)
+}
+
+// ContainerLogs mocks base method.
+func (m *MockDockerAPI) ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ContainerLogs", ctx, containerID, options)
+	ret0, _ := ret[0].(io.ReadCloser)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ContainerLogs indicates an expected call of ContainerLogs.
+func (mr *MockDockerAPIMockRecorder) ContainerLogs(ctx, containerID, options any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerLogs", reflect.TypeOf((*MockDockerAPI)(nil).ContainerLogs), ctx, containerID, options)
 }
 
 // ContainerRemove mocks base method.
