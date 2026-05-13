@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -1226,6 +1227,187 @@ func TestClose(t *testing.T) {
 
 	err := client.Close()
 	require.NoError(t, err)
+}
+
+func TestWaitForReady(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupMock   func(*MockDockerAPI)
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "returns nil when container is running",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "c-123").
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Running: true},
+						},
+					}, nil)
+			},
+		},
+		{
+			name: "returns error when container exited",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "c-123").
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Status: "exited", ExitCode: 1},
+						},
+					}, nil)
+			},
+			wantErr:     true,
+			errContains: "exited with code 1",
+		},
+		{
+			name: "returns error when container is dead",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "c-123").
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Status: "dead", ExitCode: 137},
+						},
+					}, nil)
+			},
+			wantErr:     true,
+			errContains: "exited with code 137",
+		},
+		{
+			name: "returns error when inspect fails",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "c-123").
+					Return(container.InspectResponse{}, fmt.Errorf("no such container"))
+			},
+			wantErr:     true,
+			errContains: "failed to inspect container",
+		},
+		{
+			name: "times out when container stays in created state",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "c-123").
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Status: "created"},
+						},
+					}, nil).
+					AnyTimes()
+			},
+			wantErr:     true,
+			errContains: "timed out waiting",
+		},
+		{
+			name: "returns error when context is cancelled",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "c-123").
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Status: "created"},
+						},
+					}, nil).
+					AnyTimes()
+			},
+			wantErr:     true,
+			errContains: "context canceled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockAPI := NewMockDockerAPI(ctrl)
+			tt.setupMock(mockAPI)
+
+			client := newClientWithAPI(mockAPI)
+			ctx := context.Background()
+			if tt.name == "returns error when context is cancelled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			err := client.WaitForReady(ctx, "c-123", 1*time.Second)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestContainerLogs(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupMock   func(*MockDockerAPI)
+		wantLogs    string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "returns logs from container",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerLogs(gomock.Any(), "c-123", gomock.Any()).
+					Return(io.NopCloser(strings.NewReader("Error: no GITHUB_TOKEN set")), nil)
+			},
+			wantLogs: "Error: no GITHUB_TOKEN set",
+		},
+		{
+			name: "returns empty string for empty logs",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerLogs(gomock.Any(), "c-123", gomock.Any()).
+					Return(io.NopCloser(strings.NewReader("")), nil)
+			},
+			wantLogs: "",
+		},
+		{
+			name: "returns error when logs fail",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerLogs(gomock.Any(), "c-123", gomock.Any()).
+					Return(nil, fmt.Errorf("container not found"))
+			},
+			wantErr:     true,
+			errContains: "failed to get logs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockAPI := NewMockDockerAPI(ctrl)
+			tt.setupMock(mockAPI)
+
+			client := newClientWithAPI(mockAPI)
+			ctx := context.Background()
+
+			logs, err := client.ContainerLogs(ctx, "c-123")
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantLogs, logs)
+		})
+	}
 }
 
 func TestExtractProjectID(t *testing.T) {
