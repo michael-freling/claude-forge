@@ -130,6 +130,10 @@ Reply with the raw command outputs only, no other text.`
 		t.Fatalf("claude-forge start timed out after 3 minutes: %v\nOutput:\n%s", err, outputStr)
 	}
 
+	if strings.Contains(outputStr, "401") && strings.Contains(outputStr, "Invalid authentication credentials") {
+		t.Skip("CLAUDE_CODE_OAUTH_TOKEN is expired or invalid — skipping e2e test")
+	}
+
 	// Step 6: Verify the output contains git log and gh repo view results.
 	// Git log output should contain a short commit hash (7+ hex chars).
 	commitHashPattern := regexp.MustCompile(`[0-9a-f]{7,}`)
@@ -266,17 +270,29 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", "hello")
-	cmd.Dir = projectRoot
-	cmd.Env = append(os.Environ(),
+	// Build env without GITHUB_TOKEN so the gateway has no GitHub auth.
+	var filteredEnv []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "GITHUB_TOKEN=") {
+			filteredEnv = append(filteredEnv, e)
+		}
+	}
+	filteredEnv = append(filteredEnv,
 		"HOME="+tempHome,
 		"CLAUDE_CODE_OAUTH_TOKEN="+oauthToken,
-		"GITHUB_TOKEN=", // explicitly unset
 	)
+
+	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", "hello")
+	cmd.Dir = projectRoot
+	cmd.Env = filteredEnv
 
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 	t.Logf("claude-forge output:\n%s", outputStr)
+
+	if strings.Contains(outputStr, "401") && strings.Contains(outputStr, "Invalid authentication credentials") {
+		t.Skip("CLAUDE_CODE_OAUTH_TOKEN is expired or invalid — skipping e2e test")
+	}
 
 	require.Error(t, err, "expected error when no GitHub auth is available")
 	assert.Contains(t, outputStr, "gateway container failed to start",
