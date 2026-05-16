@@ -377,10 +377,13 @@ func (c *Client) StartGateway(ctx context.Context, opts GatewayOptions) (string,
 }
 
 // WaitForReady polls the container state until it is running or exits.
+// After the container first appears running, it re-checks after a short
+// stabilization delay to catch processes that crash immediately on startup.
 // Returns an error if the container exits before the timeout.
 func (c *Client) WaitForReady(ctx context.Context, containerID string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	pollInterval := 200 * time.Millisecond
+	stabilizeDelay := 500 * time.Millisecond
 
 	for time.Now().Before(deadline) {
 		info, err := c.docker.ContainerInspect(ctx, containerID)
@@ -390,6 +393,18 @@ func (c *Client) WaitForReady(ctx context.Context, containerID string, timeout t
 
 		if info.State != nil {
 			if info.State.Running {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(stabilizeDelay):
+				}
+				info, err = c.docker.ContainerInspect(ctx, containerID)
+				if err != nil {
+					return fmt.Errorf("failed to inspect container %s: %w", containerID, err)
+				}
+				if info.State != nil && (info.State.Status == "exited" || info.State.Status == "dead") {
+					return fmt.Errorf("container %s exited with code %d", containerID, info.State.ExitCode)
+				}
 				return nil
 			}
 			if info.State.Status == "exited" || info.State.Status == "dead" {

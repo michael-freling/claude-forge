@@ -1250,8 +1250,31 @@ func TestWaitForReady(t *testing.T) {
 						ContainerJSONBase: &container.ContainerJSONBase{
 							State: &container.State{Running: true},
 						},
+					}, nil).
+					Times(2)
+			},
+		},
+		{
+			name: "returns error when container crashes after starting",
+			setupMock: func(m *MockDockerAPI) {
+				first := m.EXPECT().
+					ContainerInspect(gomock.Any(), "c-123").
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Running: true},
+						},
+					}, nil)
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "c-123").
+					After(first).
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Status: "exited", ExitCode: 1},
+						},
 					}, nil)
 			},
+			wantErr:     true,
+			errContains: "exited with code 1",
 		},
 		{
 			name: "returns error when container exited",
