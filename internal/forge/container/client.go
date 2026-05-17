@@ -174,12 +174,12 @@ type AgentOptions struct {
 	HomeDir     string            // host home dir for CLAUDE.md paths
 	Env         map[string]string // environment variables
 	Privileged  bool
-	Interactive  bool       // allocate TTY and stdin (for docker attach)
-	Cmd          []string   // claude args: --dangerously-skip-permissions, --worktree, etc.
-	UID          int        // host user UID (for file ownership mapping)
-	GID          int        // host user GID (for file ownership mapping)
-	CacheDirs    []CacheDir // host dependency cache directories to mount (rw)
-	ExtraMounts  []CacheDir // additional user-specified bind mounts (rw)
+	Interactive bool       // allocate TTY and stdin (for docker attach)
+	Cmd         []string   // claude args: --dangerously-skip-permissions, --worktree, etc.
+	UID         int        // host user UID (for file ownership mapping)
+	GID         int        // host user GID (for file ownership mapping)
+	CacheDirs   []CacheDir // host dependency cache directories to mount (rw)
+	ExtraMounts []CacheDir // additional user-specified bind mounts (rw)
 }
 
 // StartAgent creates and starts an agent container.

@@ -756,3 +756,79 @@ func TestStart_ExtraMounts_NonexistentSource(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mount source path does not exist")
 }
+
+func TestStart_GHTokenFromHostsFile(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	t.Setenv("GITHUB_TOKEN", "") // explicitly unset
+
+	// Write gh hosts.yml
+	ghConfigDir := filepath.Join(homeDir, ".config", "gh")
+	require.NoError(t, os.MkdirAll(ghConfigDir, 0o755))
+	hostsContent := "github.com:\n  oauth_token: gho_from_hosts_file\n  user: testuser\n"
+	require.NoError(t, os.WriteFile(filepath.Join(ghConfigDir, "hosts.yml"), []byte(hostsContent), 0o644))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.GatewayOptions) (string, error) {
+			assert.Equal(t, "gho_from_hosts_file", opts.Env["GITHUB_TOKEN"])
+			return "gw-id", nil
+		})
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		SkipPermissions: true,
+		ProjectDir:      projectDir,
+		UID:             1000,
+		GID:             1000,
+	})
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, sess.AgentName)
+}
+
+func TestReadGHToken(t *testing.T) {
+	t.Run("valid hosts.yml", func(t *testing.T) {
+		dir := t.TempDir()
+		hostsContent := `github.com:
+  oauth_token: gho_test_token_123
+  user: testuser
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsContent), 0o644))
+
+		token := readGHToken(dir)
+		assert.Equal(t, "gho_test_token_123", token)
+	})
+
+	t.Run("file does not exist", func(t *testing.T) {
+		dir := t.TempDir()
+		token := readGHToken(dir)
+		assert.Empty(t, token)
+	})
+
+	t.Run("invalid yaml", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(":::invalid"), 0o644))
+
+		token := readGHToken(dir)
+		assert.Empty(t, token)
+	})
+
+	t.Run("no github.com entry", func(t *testing.T) {
+		dir := t.TempDir()
+		hostsContent := `gitlab.com:
+  oauth_token: glpat_something
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsContent), 0o644))
+
+		token := readGHToken(dir)
+		assert.Empty(t, token)
+	})
+}
