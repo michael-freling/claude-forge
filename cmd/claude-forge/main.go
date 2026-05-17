@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/michael-freling/claude-code-tools/internal/forge"
 	"github.com/michael-freling/claude-code-tools/internal/forge/auth"
+	forgeconfig "github.com/michael-freling/claude-code-tools/internal/forge/config"
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
 	"github.com/michael-freling/claude-code-tools/internal/forge/project"
 	"github.com/michael-freling/claude-code-tools/internal/forge/session"
@@ -71,6 +73,7 @@ containers, Docker networks, and session state.`,
 		newStatusCmd(),
 		newBuildCmd(),
 		newAuthCmd(),
+		newPluginsCmd(),
 		newVersionCmd(),
 		newGatewayCmd(),
 		newForgeGHCmd(),
@@ -406,6 +409,112 @@ entrypoint of the gateway container, not by end users directly.`,
 	cmd.Flags().StringVar(&apiAddr, "api-addr", ":8083", "Address for the API server")
 
 	return cmd
+}
+
+// newPluginsCmd creates the "plugins" subcommand with sync subcommand.
+func newPluginsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "plugins",
+		Short: "Manage forge plugins",
+	}
+	cmd.AddCommand(newPluginsSyncCmd())
+	return cmd
+}
+
+// newPluginsSyncCmd creates the "plugins sync" subcommand that installs host
+// plugins into the running agent container.
+func newPluginsSyncCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "sync",
+		Short: "Sync host plugins into forge's plugin directory",
+		Long: `Reads ~/.claude/plugins/installed_plugins.json from the host, starts a
+temporary container, and runs "claude plugins install" for each plugin.
+Plugins persist in ~/.claude-forge/plugins/ across sessions.`,
+		RunE: pluginsSyncRun,
+	}
+}
+
+var pluginsSyncRun = func(cmd *cobra.Command, args []string) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	plugins, err := readHostPlugins(homeDir)
+	if err != nil {
+		return err
+	}
+	if len(plugins) == 0 {
+		fmt.Println("No plugins found on host.")
+		return nil
+	}
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	cfg, err := forgeconfig.Load(configDir)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	pluginsDir := filepath.Join(homeDir, ".claude-forge", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create plugins directory: %w", err)
+	}
+
+	containerName := "forge-plugins-sync"
+	fmt.Printf("Syncing %d plugins...\n", len(plugins))
+
+	// Start a temporary container with the plugins dir mounted
+	runArgs := []string{
+		"run", "--rm", "--name", containerName,
+		"-v", pluginsDir + ":/home/user/.claude/plugins",
+	}
+
+	// Build install commands: update marketplaces first, then install each plugin
+	var installCmds []string
+	installCmds = append(installCmds, "claude plugins marketplace update")
+	for _, plugin := range plugins {
+		installCmds = append(installCmds, fmt.Sprintf("claude plugins install %s || true", plugin))
+	}
+	shellCmd := strings.Join(installCmds, " && ")
+
+	runArgs = append(runArgs, cfg.Images.Agent, "bash", "-c", shellCmd)
+
+	dockerCmd := exec.Command("docker", runArgs...)
+	dockerCmd.Stdout = os.Stdout
+	dockerCmd.Stderr = os.Stderr
+
+	if err := dockerCmd.Run(); err != nil {
+		return fmt.Errorf("plugin sync failed: %w", err)
+	}
+
+	fmt.Println("Plugin sync complete.")
+	return nil
+}
+
+// readHostPlugins reads the host's installed_plugins.json and returns plugin
+// identifiers in "name@marketplace" format.
+func readHostPlugins(homeDir string) ([]string, error) {
+	pluginsPath := filepath.Join(homeDir, ".claude", "plugins", "installed_plugins.json")
+	data, err := os.ReadFile(pluginsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read installed_plugins.json: %w", err)
+	}
+
+	var file struct {
+		Plugins map[string]any `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, fmt.Errorf("failed to parse installed_plugins.json: %w", err)
+	}
+
+	var plugins []string
+	for key := range file.Plugins {
+		plugins = append(plugins, key)
+	}
+	return plugins, nil
 }
 
 // newForgeGHCmd creates the "forge-gh" subcommand as an explicit alternative

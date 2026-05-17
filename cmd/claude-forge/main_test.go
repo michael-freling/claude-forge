@@ -15,6 +15,7 @@ import (
 
 	"github.com/michael-freling/claude-code-tools/internal/forge"
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,7 @@ func TestNewRootCmd(t *testing.T) {
 
 	expectedSubcommands := []string{
 		"start", "resume", "stop", "status",
-		"build", "auth", "version", "gateway", "forge-gh",
+		"build", "auth", "plugins", "version", "gateway", "forge-gh",
 	}
 
 	subcommandNames := make(map[string]bool)
@@ -674,4 +675,100 @@ func TestStopCmd_NotInGitRepo(t *testing.T) {
 
 	err = cmd.Execute()
 	require.Error(t, err)
+}
+
+func TestReadHostPlugins(t *testing.T) {
+	t.Run("valid plugins file", func(t *testing.T) {
+		homeDir := t.TempDir()
+		pluginsDir := filepath.Join(homeDir, ".claude", "plugins")
+		require.NoError(t, os.MkdirAll(pluginsDir, 0o755))
+
+		content := `{
+			"version": 2,
+			"plugins": {
+				"gopls-lsp@claude-plugins-official": [{"version": "1.0.0"}],
+				"my-plugin@my-marketplace": [{"version": "0.1.0"}]
+			}
+		}`
+		require.NoError(t, os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), []byte(content), 0o644))
+
+		plugins, err := readHostPlugins(homeDir)
+		require.NoError(t, err)
+		assert.Len(t, plugins, 2)
+		assert.Contains(t, plugins, "gopls-lsp@claude-plugins-official")
+		assert.Contains(t, plugins, "my-plugin@my-marketplace")
+	})
+
+	t.Run("no plugins file", func(t *testing.T) {
+		homeDir := t.TempDir()
+		plugins, err := readHostPlugins(homeDir)
+		require.NoError(t, err)
+		assert.Empty(t, plugins)
+	})
+
+	t.Run("empty plugins map", func(t *testing.T) {
+		homeDir := t.TempDir()
+		pluginsDir := filepath.Join(homeDir, ".claude", "plugins")
+		require.NoError(t, os.MkdirAll(pluginsDir, 0o755))
+
+		content := `{"version": 2, "plugins": {}}`
+		require.NoError(t, os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), []byte(content), 0o644))
+
+		plugins, err := readHostPlugins(homeDir)
+		require.NoError(t, err)
+		assert.Empty(t, plugins)
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		homeDir := t.TempDir()
+		pluginsDir := filepath.Join(homeDir, ".claude", "plugins")
+		require.NoError(t, os.MkdirAll(pluginsDir, 0o755))
+
+		require.NoError(t, os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), []byte("not json"), 0o644))
+
+		_, err := readHostPlugins(homeDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse")
+	})
+}
+
+func TestPluginsSyncCmd_NoPlugins(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	cmd := newPluginsSyncCmd()
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestPluginsSyncCmd_WithPlugins(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	pluginsDir := filepath.Join(homeDir, ".claude", "plugins")
+	require.NoError(t, os.MkdirAll(pluginsDir, 0o755))
+	content := `{"version": 2, "plugins": {"gopls-lsp@claude-plugins-official": [{}]}}`
+	require.NoError(t, os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), []byte(content), 0o644))
+
+	// Create config dir so config.Load succeeds
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+
+	original := pluginsSyncRun
+	var capturedPlugins []string
+	pluginsSyncRun = func(cmd *cobra.Command, args []string) error {
+		// Call the real readHostPlugins to verify it works, but skip Docker
+		plugins, err := readHostPlugins(homeDir)
+		if err != nil {
+			return err
+		}
+		capturedPlugins = plugins
+		return nil
+	}
+	t.Cleanup(func() { pluginsSyncRun = original })
+
+	cmd := newPluginsSyncCmd()
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"gopls-lsp@claude-plugins-official"}, capturedPlugins)
 }
