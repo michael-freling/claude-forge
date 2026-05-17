@@ -826,3 +826,33 @@ func TestReadHostMarketplaces(t *testing.T) {
 		assert.Empty(t, info.Names)
 	})
 }
+
+func TestEnablePluginsInSettings(t *testing.T) {
+	t.Run("adds enabledPlugins to existing settings", func(t *testing.T) {
+		dir := t.TempDir()
+		initial := `{
+  "model": "opus",
+  "autoUpdaterStatus": "disabled"
+}`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "settings.json"), []byte(initial), 0o644))
+
+		err := enablePluginsInSettings(dir, []string{"foo@bar", "baz@qux"})
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+		require.NoError(t, err)
+
+		var settings map[string]any
+		require.NoError(t, json.Unmarshal(data, &settings))
+		enabled, ok := settings["enabledPlugins"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, true, enabled["foo@bar"])
+		assert.Equal(t, true, enabled["baz@qux"])
+		assert.Equal(t, "opus", settings["model"])
+	})
+
+	t.Run("returns error when file missing", func(t *testing.T) {
+		err := enablePluginsInSettings(t.TempDir(), []string{"foo@bar"})
+		assert.Error(t, err)
+	})
+}

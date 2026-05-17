@@ -588,8 +588,8 @@ func enablePluginsInSettings(configDir string, plugins []string) error {
 
 // marketplaceInfo holds parsed marketplace data.
 type marketplaceInfo struct {
-	Sources []string          // GitHub repos to add
-	Names   map[string]bool   // names of available (GitHub-sourced) marketplaces
+	Sources []string        // GitHub repos to add
+	Names   map[string]bool // names of available (GitHub-sourced) marketplaces
 }
 
 // readHostMarketplaces reads known_marketplaces.json and returns marketplace info.
