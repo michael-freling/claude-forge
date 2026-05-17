@@ -395,36 +395,66 @@ func TestStart_Interactive(t *testing.T) {
 }
 
 func TestStart_OAuthCredentials(t *testing.T) {
-	ctrl := gomock.NewController(t)
+	t.Run("from env var without credentials file", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		orch, _ := setupOrchestrator(t, mockCM)
 
-	mockCM := NewMockContainerManager(ctrl)
-	orch, _ := setupOrchestrator(t, mockCM)
+		projectDir := setupGitProject(t)
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token-xyz")
 
-	projectDir := setupGitProject(t)
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token-xyz")
+		mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
+		mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+		mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+		mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+				assert.Equal(t, "oauth-token-xyz", opts.Env["CLAUDE_CODE_OAUTH_TOKEN"])
+				_, hasAPIKey := opts.Env["ANTHROPIC_API_KEY"]
+				assert.False(t, hasAPIKey)
+				return "agent-id", nil
+			})
 
-	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
-	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
-	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
-	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
-	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
-			// OAuth tokens are no longer passed as env vars; Claude Code reads
-			// the mounted ~/.claude/.credentials.json file directly for token refresh
-			_, hasOAuth := opts.Env["CLAUDE_CODE_OAUTH_TOKEN"]
-			assert.False(t, hasOAuth, "OAuth token should not be passed as env var")
-			_, hasAPIKey := opts.Env["ANTHROPIC_API_KEY"]
-			assert.False(t, hasAPIKey)
-			return "agent-id", nil
+		sess, err := orch.Start(context.Background(), StartOptions{
+			ProjectDir: projectDir,
 		})
-
-	sess, err := orch.Start(context.Background(), StartOptions{
-		ProjectDir: projectDir,
+		require.NoError(t, err)
+		assert.NotNil(t, sess)
 	})
 
-	require.NoError(t, err)
-	assert.NotNil(t, sess)
+	t.Run("from credentials file", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		orch, homeDir := setupOrchestrator(t, mockCM)
+
+		// Write credentials file so the orchestrator sees it
+		credsJSON := `{"claudeAiOauth":{"accessToken":"file-token","expiresAt":9999999999999}}`
+		require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".claude", ".credentials.json"), []byte(credsJSON), 0o600))
+
+		projectDir := setupGitProject(t)
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+		mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(2)
+		mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+		mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+		mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+				_, hasOAuth := opts.Env["CLAUDE_CODE_OAUTH_TOKEN"]
+				assert.False(t, hasOAuth, "OAuth token should not be passed as env var when credentials file exists")
+				_, hasAPIKey := opts.Env["ANTHROPIC_API_KEY"]
+				assert.False(t, hasAPIKey)
+				return "agent-id", nil
+			})
+
+		sess, err := orch.Start(context.Background(), StartOptions{
+			ProjectDir: projectDir,
+		})
+		require.NoError(t, err)
+		assert.NotNil(t, sess)
+	})
 }
 
 func TestStart_CommandArgs(t *testing.T) {

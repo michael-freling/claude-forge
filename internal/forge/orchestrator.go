@@ -222,8 +222,14 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		"FORGE_PROJECT_OWNER": proj.Owner,
 		"FORGE_PROJECT_REPO":  proj.Repo,
 	}
-	if creds.AuthType == "api_key" {
+	switch creds.AuthType {
+	case "api_key":
 		agentEnv["ANTHROPIC_API_KEY"] = creds.Token
+	case "oauth":
+		credentialsPath := filepath.Join(o.ClaudeDir, ".credentials.json")
+		if _, err := os.Stat(credentialsPath); err != nil {
+			agentEnv["CLAUDE_CODE_OAUTH_TOKEN"] = creds.Token
+		}
 	}
 	if opts.UID > 0 {
 		agentEnv["FORGE_UID"] = fmt.Sprintf("%d", opts.UID)
