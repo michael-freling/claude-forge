@@ -468,8 +468,12 @@ var pluginsSyncRun = func(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Syncing %d plugins...\n", len(plugins))
 
 	// Start a temporary container with the plugins dir mounted
+	uid := os.Getuid()
+	gid := os.Getgid()
 	runArgs := []string{
 		"run", "--rm", "--name", containerName,
+		"-e", fmt.Sprintf("FORGE_UID=%d", uid),
+		"-e", fmt.Sprintf("FORGE_GID=%d", gid),
 		"-v", pluginsDir + ":/home/user/.claude/plugins",
 	}
 
