@@ -37,6 +37,10 @@ var operations = []Operation{
 	{Name: "get-repo", Method: "GET", Path: "/repos/{owner}/{repo}", Description: "Get repository info", Type: "read"},
 	{Name: "list-releases", Method: "GET", Path: "/repos/{owner}/{repo}/releases", Description: "List releases", Type: "read"},
 	{Name: "list-checks", Method: "GET", Path: "/repos/{owner}/{repo}/commits/{ref}/check-runs", Description: "List check runs", Type: "read"},
+	{Name: "list-workflow-runs", Method: "GET", Path: "/repos/{owner}/{repo}/actions/runs", Description: "List workflow runs", Type: "read"},
+	{Name: "get-workflow-run", Method: "GET", Path: "/repos/{owner}/{repo}/actions/runs/{run_id}", Description: "Get a workflow run", Type: "read"},
+	{Name: "list-workflow-run-jobs", Method: "GET", Path: "/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", Description: "List jobs for a workflow run", Type: "read"},
+	{Name: "get-workflow-run-job-logs", Method: "GET", Path: "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs", Description: "Get job logs", Type: "read"},
 	{Name: "merge-pr", Method: "PUT", Path: "/repos/{owner}/{repo}/pulls/{number}/merge", Description: "Merge a pull request", Type: "write"},
 }
 

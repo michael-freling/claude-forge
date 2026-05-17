@@ -172,9 +172,7 @@ Claude-forge does NOT run `claude setup-token` itself. The user must have authen
 
 ### Refresh Token Handling
 
-When reading `~/.claude/.credentials.json`, claude-forge extracts both the `access_token` and `refresh_token`. If the access token is expired, claude-forge uses the refresh token to obtain a new one before starting the container. The refreshed tokens are written back to `~/.claude/.credentials.json`.
-
-Each container instance receives only the access token at startup via environment variable. The credential file itself is NOT mounted into containers.
+The `~/.claude/.credentials.json` file is bind-mounted (read-write) into the container at `/home/user/.claude/.credentials.json`. This allows Claude Code inside the container to refresh expired OAuth tokens autonomously during long-running sessions, using the same refresh flow it uses on the host.
 
 ---
 
@@ -587,7 +585,7 @@ Resolved questions from earlier iterations:
 
 2. **`forge-gh` schema discovery.** Supports all `gh` subcommands via schema discovery. Does NOT support `gh api` style raw API access — only structured commands. If a command isn't in the schema, it returns an error.
 
-3. **Credential refresh race condition.** Not an issue — `~/.claude/.credentials.json` is NOT mounted into containers. Each instance receives only the access token via env var at startup. The CLI reads the credential file on the host at startup time; file locking on the host handles the narrow window where multiple simultaneous starts might race on token refresh.
+3. **Credential refresh.** `~/.claude/.credentials.json` is bind-mounted (read-write) into each container so that Claude Code can refresh expired OAuth tokens autonomously during long-running sessions. The credential file grants access only to the Claude API — the same service the container is already using — so mounting it does not expand the blast radius beyond what the agent already has via its access token.
 
 4. **Agent image management.** Auto-rebuild when remote digest changes (b) + explicit `claude-forge build` command (c).
 

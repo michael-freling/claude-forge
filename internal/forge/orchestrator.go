@@ -16,6 +16,7 @@ import (
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
 	"github.com/michael-freling/claude-code-tools/internal/forge/project"
 	"github.com/michael-freling/claude-code-tools/internal/forge/session"
+	"gopkg.in/yaml.v3"
 )
 
 // Orchestrator manages the lifecycle of claude-forge sessions.
@@ -45,10 +46,11 @@ type StartOptions struct {
 	Prompt          string
 	ResumeID        string
 	Continue        bool
-	Interactive     bool   // allocate TTY for docker attach (false for prompt mode)
-	ProjectDir      string // working directory (defaults to cwd if empty)
-	UID             int    // host user UID
-	GID             int    // host user GID
+	Interactive     bool     // allocate TTY for docker attach (false for prompt mode)
+	ProjectDir      string   // working directory (defaults to cwd if empty)
+	UID             int      // host user UID
+	GID             int      // host user GID
+	Mounts          []string // additional host:container bind mounts
 }
 
 // Session holds information about a running session.
@@ -121,6 +123,12 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to create session directory: %w", err)
 	}
 
+	// Create plugins directory (persists across sessions, managed from inside the container)
+	pluginsDir := filepath.Join(o.HomeDir, ".claude-forge", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create plugins directory: %w", err)
+	}
+
 	// Write/update gitconfig
 	gitUserName := project.GitConfig("user.name")
 	gitUserEmail := project.GitConfig("user.email")
@@ -169,6 +177,8 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	gatewayEnv := map[string]string{}
 	if ghToken := os.Getenv("GITHUB_TOKEN"); ghToken != "" {
 		gatewayEnv["GITHUB_TOKEN"] = ghToken
+	} else if token := readGHToken(ghConfigDir); token != "" {
+		gatewayEnv["GITHUB_TOKEN"] = token
 	}
 	gatewayID, err := o.Containers.StartGateway(ctx, container.GatewayOptions{
 		Name:        sess.GatewayName,
@@ -218,10 +228,14 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		"FORGE_PROJECT_OWNER": proj.Owner,
 		"FORGE_PROJECT_REPO":  proj.Repo,
 	}
-	if creds.AuthType == "api_key" {
+	switch creds.AuthType {
+	case "api_key":
 		agentEnv["ANTHROPIC_API_KEY"] = creds.Token
-	} else {
-		agentEnv["CLAUDE_CODE_OAUTH_TOKEN"] = creds.Token
+	case "oauth":
+		credentialsPath := filepath.Join(o.ClaudeDir, ".credentials.json")
+		if _, err := os.Stat(credentialsPath); err != nil {
+			agentEnv["CLAUDE_CODE_OAUTH_TOKEN"] = creds.Token
+		}
 	}
 	if opts.UID > 0 {
 		agentEnv["FORGE_UID"] = fmt.Sprintf("%d", opts.UID)
@@ -244,6 +258,26 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		})
 	}
 
+	// Parse extra mounts (host:container format)
+	var extraMounts []container.CacheDir
+	for _, m := range opts.Mounts {
+		parts := strings.SplitN(m, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid mount format %q: expected host_path:container_path", m)
+		}
+		source, err := filepath.Abs(parts[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid mount source path %q: %w", parts[0], err)
+		}
+		if _, err := os.Stat(source); err != nil {
+			return nil, fmt.Errorf("mount source path does not exist: %s", source)
+		}
+		extraMounts = append(extraMounts, container.CacheDir{
+			Source: source,
+			Target: parts[1],
+		})
+	}
+
 	// Start agent
 	o.Log("Starting agent: %s", sess.AgentName)
 	if _, err := o.Containers.StartAgent(ctx, container.AgentOptions{
@@ -255,12 +289,14 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		ClaudeDir:   o.ClaudeDir,
 		ConfigDir:   o.ConfigDir,
 		HomeDir:     o.HomeDir,
+		PluginsDir:  pluginsDir,
 		Env:         agentEnv,
 		Interactive: opts.Interactive,
 		Cmd:         agentCmd,
 		UID:         opts.UID,
 		GID:         opts.GID,
 		CacheDirs:   containerCacheDirs,
+		ExtraMounts: extraMounts,
 	}); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start agent: %w", err)
@@ -338,6 +374,28 @@ type StatusEntry = container.ContainerInfo
 // Status returns all running forge containers.
 func (o *Orchestrator) Status(ctx context.Context) ([]StatusEntry, error) {
 	return o.Containers.ListForgeContainers(ctx)
+}
+
+// readGHToken reads the GitHub OAuth token from gh CLI's hosts.yml file.
+// Returns empty string if the file doesn't exist or can't be read.
+func readGHToken(ghConfigDir string) string {
+	hostsPath := filepath.Join(ghConfigDir, "hosts.yml")
+	data, err := os.ReadFile(hostsPath)
+	if err != nil {
+		return ""
+	}
+
+	var hosts map[string]struct {
+		OAuthToken string `yaml:"oauth_token"`
+	}
+	if err := yaml.Unmarshal(data, &hosts); err != nil {
+		return ""
+	}
+
+	if gh, ok := hosts["github.com"]; ok {
+		return gh.OAuthToken
+	}
+	return ""
 }
 
 // Build pulls the latest agent and gateway images.

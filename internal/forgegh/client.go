@@ -208,7 +208,12 @@ func commandToOperationName(cmd *parsedCommand) string {
 	case "run":
 		switch cmd.Action {
 		case "list":
-			return "list-checks"
+			return "list-workflow-runs"
+		case "view":
+			if cmd.Flags["job"] != "" {
+				return "get-workflow-run-job-logs"
+			}
+			return "get-workflow-run"
 		}
 	}
 	return cmd.Entity + "-" + cmd.Action
@@ -228,6 +233,10 @@ func (c *Client) executeOperation(op *operation, cmd *parsedCommand, owner, repo
 	if cmd.Number != "" {
 		apiPath = strings.ReplaceAll(apiPath, "{number}", cmd.Number)
 		apiPath = strings.ReplaceAll(apiPath, "{ref}", cmd.Number)
+		apiPath = strings.ReplaceAll(apiPath, "{run_id}", cmd.Number)
+	}
+	if jobID, ok := cmd.Flags["job"]; ok && jobID != "" {
+		apiPath = strings.ReplaceAll(apiPath, "{job_id}", jobID)
 	}
 
 	url := c.gatewayURL + "/api/github" + apiPath
@@ -290,10 +299,15 @@ func (c *Client) buildQueryParams(cmd *parsedCommand) string {
 	var params []string
 
 	// Map common flags to query params
-	for _, key := range []string{"state", "per_page", "page", "sort", "direction"} {
+	for _, key := range []string{"state", "per_page", "page", "sort", "direction", "branch", "status", "event"} {
 		if val, ok := cmd.Flags[key]; ok && val != "" {
 			params = append(params, key+"="+val)
 		}
+	}
+
+	// --limit maps to per_page for GitHub API
+	if val, ok := cmd.Flags["limit"]; ok && val != "" {
+		params = append(params, "per_page="+val)
 	}
 
 	return strings.Join(params, "&")

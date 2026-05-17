@@ -19,7 +19,8 @@ type Project struct {
 var sshRemoteRegexp = regexp.MustCompile(`^git@[^:]+:([^/]+)/([^/]+?)(?:\.git)?$`)
 
 // httpsRemoteRegexp matches HTTPS remote URLs like https://github.com/owner/repo.git
-var httpsRemoteRegexp = regexp.MustCompile(`^https?://[^/]+/([^/]+)/([^/]+?)(?:\.git)?$`)
+// Also matches gateway-proxied URLs like http://gateway:8080/github.com/owner/repo.git
+var httpsRemoteRegexp = regexp.MustCompile(`^https?://[^/]+/(?:github\.com/)?([^/]+)/([^/]+?)(?:\.git)?$`)
 
 // GitConfig reads a git config value from the host's git configuration.
 // It returns an empty string if the key is not set or git is not available.

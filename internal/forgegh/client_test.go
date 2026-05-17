@@ -31,6 +31,10 @@ func testGateway(t *testing.T, apiHandler http.HandlerFunc) *httptest.Server {
 			{Name: "get-repo", Method: "GET", Path: "/repos/{owner}/{repo}", Description: "Get repository info", Type: "read"},
 			{Name: "list-releases", Method: "GET", Path: "/repos/{owner}/{repo}/releases", Description: "List releases", Type: "read"},
 			{Name: "list-checks", Method: "GET", Path: "/repos/{owner}/{repo}/commits/{ref}/check-runs", Description: "List check runs", Type: "read"},
+			{Name: "list-workflow-runs", Method: "GET", Path: "/repos/{owner}/{repo}/actions/runs", Description: "List workflow runs", Type: "read"},
+			{Name: "get-workflow-run", Method: "GET", Path: "/repos/{owner}/{repo}/actions/runs/{run_id}", Description: "Get a workflow run", Type: "read"},
+			{Name: "list-workflow-run-jobs", Method: "GET", Path: "/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", Description: "List jobs for a workflow run", Type: "read"},
+			{Name: "get-workflow-run-job-logs", Method: "GET", Path: "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs", Description: "Get job logs", Type: "read"},
 			{Name: "merge-pr", Method: "PUT", Path: "/repos/{owner}/{repo}/pulls/{number}/merge", Description: "Merge a pull request", Type: "write"},
 		},
 	}
@@ -529,7 +533,7 @@ func TestCommandToOperationName(t *testing.T) {
 		{"issue", "comment", "create-issue-comment"},
 		{"repo", "view", "get-repo"},
 		{"release", "list", "list-releases"},
-		{"run", "list", "list-checks"},
+		{"run", "list", "list-workflow-runs"},
 	}
 
 	for _, tt := range tests {
@@ -673,20 +677,57 @@ func TestClient_ReleaseList(t *testing.T) {
 }
 
 func TestClient_RunList(t *testing.T) {
+	var capturedPath, capturedQuery string
+
+	gw := testGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"workflow_runs":[]}`))
+	})
+	defer gw.Close()
+
+	client := newTestClient(gw.URL)
+	err := client.Run([]string{"run", "list", "--branch", "main", "--limit", "5", "--repo", "owner/repo"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "/api/github/repos/owner/repo/actions/runs", capturedPath)
+	assert.Contains(t, capturedQuery, "branch=main")
+	assert.Contains(t, capturedQuery, "per_page=5")
+}
+
+func TestClient_RunView(t *testing.T) {
 	var capturedPath string
 
 	gw := testGateway(t, func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"check_runs":[]}`))
+		w.Write([]byte(`{"id":123,"status":"completed","conclusion":"failure"}`))
 	})
 	defer gw.Close()
 
 	client := newTestClient(gw.URL)
-	err := client.Run([]string{"run", "list", "abc123", "--repo", "owner/repo"})
+	err := client.Run([]string{"run", "view", "12345", "--repo", "owner/repo"})
 
 	require.NoError(t, err)
-	assert.Equal(t, "/api/github/repos/owner/repo/commits/abc123/check-runs", capturedPath)
+	assert.Equal(t, "/api/github/repos/owner/repo/actions/runs/12345", capturedPath)
+}
+
+func TestClient_RunViewJobLogs(t *testing.T) {
+	var capturedPath string
+
+	gw := testGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("2026-05-17T00:00:00Z FAIL TestForgeStart"))
+	})
+	defer gw.Close()
+
+	client := newTestClient(gw.URL)
+	err := client.Run([]string{"run", "view", "--job", "98765", "--repo", "owner/repo"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "/api/github/repos/owner/repo/actions/jobs/98765/logs", capturedPath)
 }
 
 func TestClient_NonJSONResponse(t *testing.T) {

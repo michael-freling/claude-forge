@@ -11,7 +11,7 @@ Documentation and research for secure AI coding agent environments.
 
 Research for securing AI coding agent environments.
 
-[Read the research →]({{< relref "/docs/secure-sandbox/secure-sandbox-environments" >}})
+[Read the research →]({{< relref "/docs/secure-sandbox/architecture/secure-sandbox-environments" >}})
 
 ## Getting Started
 

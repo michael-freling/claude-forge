@@ -22,6 +22,7 @@ func TestBuildContainerConfig_FullOptions(t *testing.T) {
 	for _, subdir := range []string{"rules", "agents", "commands", "skills", "plugins"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".claude", subdir), 0o755))
 	}
+	require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".claude", ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"tk"}}`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(`{}`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "gitconfig"), []byte("[user]\n"), 0o644))
 
@@ -59,8 +60,8 @@ func TestBuildContainerConfig_FullOptions(t *testing.T) {
 	assert.Contains(t, cfg.Cmd, "hello world")
 
 	// Mounts: project dir + session dir + home CLAUDE.md + .claude/CLAUDE.md +
-	// 5 subdirs + settings.json + gitconfig = 11
-	assert.Len(t, cfg.Mounts, 11)
+	// 5 subdirs + .credentials.json + settings.json + gitconfig = 12
+	assert.Len(t, cfg.Mounts, 12)
 
 	// Verify project dir mount
 	assert.Equal(t, projectDir, cfg.Mounts[0].Source)
@@ -91,15 +92,20 @@ func TestBuildContainerConfig_FullOptions(t *testing.T) {
 		assert.True(t, cfg.Mounts[idx].ReadOnly)
 	}
 
+	// Verify credentials mount (read-write)
+	assert.Equal(t, filepath.Join(homeDir, ".claude", ".credentials.json"), cfg.Mounts[9].Source)
+	assert.Equal(t, "/home/user/.claude/.credentials.json", cfg.Mounts[9].Target)
+	assert.False(t, cfg.Mounts[9].ReadOnly)
+
 	// Verify settings.json mount
-	assert.Equal(t, filepath.Join(configDir, "settings.json"), cfg.Mounts[9].Source)
-	assert.Equal(t, "/home/user/.claude/settings.json", cfg.Mounts[9].Target)
-	assert.True(t, cfg.Mounts[9].ReadOnly)
+	assert.Equal(t, filepath.Join(configDir, "settings.json"), cfg.Mounts[10].Source)
+	assert.Equal(t, "/home/user/.claude/settings.json", cfg.Mounts[10].Target)
+	assert.True(t, cfg.Mounts[10].ReadOnly)
 
 	// Verify gitconfig mount
-	assert.Equal(t, filepath.Join(configDir, "gitconfig"), cfg.Mounts[10].Source)
-	assert.Equal(t, "/home/user/.gitconfig", cfg.Mounts[10].Target)
-	assert.True(t, cfg.Mounts[10].ReadOnly)
+	assert.Equal(t, filepath.Join(configDir, "gitconfig"), cfg.Mounts[11].Source)
+	assert.Equal(t, "/home/user/.gitconfig", cfg.Mounts[11].Target)
+	assert.True(t, cfg.Mounts[11].ReadOnly)
 
 	// Gitconfig content
 	assert.Contains(t, cfg.Gitconfig, "Test User")
@@ -141,7 +147,8 @@ func TestBuildContainerConfig_OAuthAuth(t *testing.T) {
 	cfg, err := BuildContainerConfig(opts)
 
 	require.NoError(t, err)
-	assert.Equal(t, "oauth-token-123", cfg.Env["CLAUDE_CODE_OAUTH_TOKEN"])
+	// OAuth tokens are not passed as env vars; Claude Code reads the mounted credentials file
+	assert.Empty(t, cfg.Env["CLAUDE_CODE_OAUTH_TOKEN"])
 	assert.Empty(t, cfg.Env["ANTHROPIC_API_KEY"])
 }
 

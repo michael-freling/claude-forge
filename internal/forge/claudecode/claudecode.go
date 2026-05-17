@@ -91,6 +91,8 @@ func validate(opts Options) error {
 }
 
 // buildEnv constructs the environment variable map for the container.
+// OAuth tokens are not set here — Claude Code reads ~/.claude/.credentials.json
+// (bind-mounted into the container) so it can refresh tokens autonomously.
 func buildEnv(opts Options) map[string]string {
 	env := map[string]string{
 		"HOME":                "/home/user",
@@ -98,8 +100,6 @@ func buildEnv(opts Options) map[string]string {
 	}
 	if opts.AuthType == "api_key" {
 		env["ANTHROPIC_API_KEY"] = opts.AuthToken
-	} else {
-		env["CLAUDE_CODE_OAUTH_TOKEN"] = opts.AuthToken
 	}
 	if opts.UID > 0 {
 		env["FORGE_UID"] = fmt.Sprintf("%d", opts.UID)
@@ -187,6 +187,17 @@ func buildMounts(opts Options) []MountConfig {
 					ReadOnly: true,
 				})
 			}
+		}
+	}
+
+	// ~/.claude/.credentials.json (read-write so Claude Code can refresh OAuth tokens)
+	if opts.HomeDir != "" {
+		credPath := filepath.Join(opts.HomeDir, ".claude", ".credentials.json")
+		if pathExists(credPath) {
+			mounts = append(mounts, MountConfig{
+				Source: credPath,
+				Target: "/home/user/.claude/.credentials.json",
+			})
 		}
 	}
 

@@ -51,6 +51,14 @@ func TestIdentify(t *testing.T) {
 				Repo:  "claude-code-tools",
 			},
 		},
+		{
+			name:      "Gateway-proxied URL",
+			remoteURL: "http://gateway:8080/github.com/michael-freling/claude-code-tools.git",
+			want: &Project{
+				Owner: "michael-freling",
+				Repo:  "claude-code-tools",
+			},
+		},
 	}
 
 	for _, tt := range tests {

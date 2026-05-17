@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/michael-freling/claude-code-tools/internal/forge"
 	"github.com/michael-freling/claude-code-tools/internal/forge/auth"
+	forgeconfig "github.com/michael-freling/claude-code-tools/internal/forge/config"
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
 	"github.com/michael-freling/claude-code-tools/internal/forge/project"
 	"github.com/michael-freling/claude-code-tools/internal/forge/session"
@@ -71,6 +73,7 @@ containers, Docker networks, and session state.`,
 		newStatusCmd(),
 		newBuildCmd(),
 		newAuthCmd(),
+		newPluginsCmd(),
 		newVersionCmd(),
 		newGatewayCmd(),
 		newForgeGHCmd(),
@@ -95,7 +98,7 @@ func newOrchestrator() (*forge.Orchestrator, func(), error) {
 }
 
 // startSession runs the common logic for the start and resume commands.
-func startSession(skipPermissions, worktree bool, prompt, resumeID string, continueSession bool) error {
+func startSession(skipPermissions, worktree bool, prompt, resumeID string, continueSession bool, mounts []string) error {
 	orch, cleanup, err := createOrchestrator()
 	if err != nil {
 		return err
@@ -116,6 +119,7 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID string, conti
 		Interactive:     interactive,
 		UID:             hostUID,
 		GID:             hostGID,
+		Mounts:          mounts,
 	})
 	if err != nil {
 		return err
@@ -163,6 +167,7 @@ func newStartCmd() *cobra.Command {
 		worktree          bool
 		noSkipPermissions bool
 		prompt            string
+		mounts            []string
 	)
 
 	cmd := &cobra.Command{
@@ -173,13 +178,14 @@ By default, --dangerously-skip-permissions is enabled. Use --no-skip-permissions
 to disable it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", false)
+			return startSession(skipPermissions, worktree, prompt, "", false, mounts)
 		},
 	}
 
 	cmd.Flags().BoolVar(&worktree, "worktree", false, "Enable worktree mode for Claude Code")
 	cmd.Flags().BoolVar(&noSkipPermissions, "no-skip-permissions", false, "Disable --dangerously-skip-permissions")
 	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Initial prompt to send to Claude Code")
+	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
 
 	return cmd
 }
@@ -235,10 +241,10 @@ is continued.`,
 			}
 
 			if len(args) == 1 {
-				return startSession(true, false, "", args[0], false)
+				return startSession(true, false, "", args[0], false, nil)
 			}
 
-			return startSession(true, false, "", "", true)
+			return startSession(true, false, "", "", true, nil)
 		},
 	}
 
@@ -403,6 +409,239 @@ entrypoint of the gateway container, not by end users directly.`,
 	cmd.Flags().StringVar(&apiAddr, "api-addr", ":8083", "Address for the API server")
 
 	return cmd
+}
+
+// newPluginsCmd creates the "plugins" subcommand with sync subcommand.
+func newPluginsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "plugins",
+		Short: "Manage forge plugins",
+	}
+	cmd.AddCommand(newPluginsSyncCmd())
+	return cmd
+}
+
+// newPluginsSyncCmd creates the "plugins sync" subcommand that installs host
+// plugins into the running agent container.
+func newPluginsSyncCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "sync",
+		Short: "Sync host plugins into forge's plugin directory",
+		Long: `Reads ~/.claude/plugins/installed_plugins.json from the host, starts a
+temporary container, and runs "claude plugins install" for each plugin.
+Plugins persist in ~/.claude-forge/plugins/ across sessions.`,
+		RunE: pluginsSyncRun,
+	}
+}
+
+var pluginsSyncRun = func(cmd *cobra.Command, args []string) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	plugins, err := readHostPlugins(homeDir)
+	if err != nil {
+		return err
+	}
+	if len(plugins) == 0 {
+		fmt.Println("No plugins found on host.")
+		return nil
+	}
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	cfg, err := forgeconfig.Load(configDir)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	pluginsDir := filepath.Join(homeDir, ".claude-forge", "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create plugins directory: %w", err)
+	}
+
+	// Read host marketplace sources to add them inside the container
+	hostPluginsDir := filepath.Join(homeDir, ".claude", "plugins")
+	mpInfo := readHostMarketplaces(hostPluginsDir)
+
+	// Filter plugins: skip those from unavailable marketplaces, deduplicate by name
+	var syncPlugins []string
+	seenNames := make(map[string]bool)
+	for _, plugin := range plugins {
+		parts := strings.SplitN(plugin, "@", 2)
+		name := parts[0]
+		marketplace := ""
+		if len(parts) == 2 {
+			marketplace = parts[1]
+		}
+		if marketplace != "" && !mpInfo.Names[marketplace] {
+			fmt.Printf("Skipping %s (marketplace %q not available remotely)\n", plugin, marketplace)
+			continue
+		}
+		if seenNames[name] {
+			continue
+		}
+		seenNames[name] = true
+		syncPlugins = append(syncPlugins, plugin)
+	}
+
+	if len(syncPlugins) == 0 {
+		fmt.Println("No syncable plugins found.")
+		return nil
+	}
+
+	containerName := "forge-plugins-sync"
+	fmt.Printf("Syncing %d plugins...\n", len(syncPlugins))
+
+	// Start a temporary container with the plugins dir mounted
+	uid := os.Getuid()
+	gid := os.Getgid()
+	runArgs := []string{
+		"run", "--rm", "--name", containerName,
+		"-e", fmt.Sprintf("FORGE_UID=%d", uid),
+		"-e", fmt.Sprintf("FORGE_GID=%d", gid),
+		"-v", pluginsDir + ":/home/user/.claude/plugins",
+	}
+
+	// Build commands: add marketplaces, update, then install each plugin
+	var installCmds []string
+	for _, src := range mpInfo.Sources {
+		installCmds = append(installCmds, fmt.Sprintf("claude plugins marketplace add %s || true", src))
+	}
+	installCmds = append(installCmds, "claude plugins marketplace update")
+	for _, plugin := range syncPlugins {
+		installCmds = append(installCmds, fmt.Sprintf("claude plugins install %s || true", plugin))
+	}
+	shellCmd := strings.Join(installCmds, " && ")
+
+	runArgs = append(runArgs, cfg.Images.Agent, "bash", "-c", shellCmd)
+
+	dockerCmd := exec.Command("docker", runArgs...)
+	dockerCmd.Stdout = os.Stdout
+	dockerCmd.Stderr = os.Stderr
+
+	if err := dockerCmd.Run(); err != nil {
+		return fmt.Errorf("plugin sync failed: %w", err)
+	}
+
+	// Write enabledPlugins to settings.json so the agent container picks them up
+	if err := enablePluginsInSettings(configDir, syncPlugins); err != nil {
+		return fmt.Errorf("failed to update settings: %w", err)
+	}
+
+	fmt.Println("Plugin sync complete.")
+	return nil
+}
+
+// readHostPlugins reads the host's installed_plugins.json and returns plugin
+// identifiers in "name@marketplace" format.
+func readHostPlugins(homeDir string) ([]string, error) {
+	pluginsPath := filepath.Join(homeDir, ".claude", "plugins", "installed_plugins.json")
+	data, err := os.ReadFile(pluginsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read installed_plugins.json: %w", err)
+	}
+
+	var file struct {
+		Plugins map[string]any `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, fmt.Errorf("failed to parse installed_plugins.json: %w", err)
+	}
+
+	var plugins []string
+	for key := range file.Plugins {
+		plugins = append(plugins, key)
+	}
+	return plugins, nil
+}
+
+// enablePluginsInSettings reads settings.json from configDir, adds an
+// enabledPlugins map for all synced plugins, and writes it back.
+func enablePluginsInSettings(configDir string, plugins []string) error {
+	settingsPath := filepath.Join(configDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return err
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return err
+	}
+
+	enabled := make(map[string]bool)
+	for _, p := range plugins {
+		enabled[p] = true
+	}
+	settings["enabledPlugins"] = enabled
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(settingsPath, append(out, '\n'), 0o644)
+}
+
+// marketplaceInfo holds parsed marketplace data.
+type marketplaceInfo struct {
+	Sources []string        // GitHub repos to add
+	Names   map[string]bool // names of available (GitHub-sourced) marketplaces
+}
+
+// readHostMarketplaces reads known_marketplaces.json and returns marketplace info.
+func readHostMarketplaces(hostPluginsDir string) marketplaceInfo {
+	info := marketplaceInfo{Names: make(map[string]bool)}
+
+	data, err := os.ReadFile(filepath.Join(hostPluginsDir, "known_marketplaces.json"))
+	if err != nil {
+		return info
+	}
+
+	var marketplaces map[string]struct {
+		Source struct {
+			Source string `json:"source"`
+			Repo   string `json:"repo"`
+			Path   string `json:"path"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(data, &marketplaces); err != nil {
+		return info
+	}
+
+	for name, m := range marketplaces {
+		switch m.Source.Source {
+		case "github":
+			if m.Source.Repo != "" {
+				info.Sources = append(info.Sources, m.Source.Repo)
+				info.Names[name] = true
+			}
+		case "directory":
+			if repo := extractGitHubRepo(m.Source.Path); repo != "" {
+				info.Sources = append(info.Sources, repo)
+				info.Names[name] = true
+			}
+		}
+	}
+	return info
+}
+
+// extractGitHubRepo parses "owner/repo" from a path containing "github.com/{owner}/{repo}".
+func extractGitHubRepo(path string) string {
+	const marker = "github.com/"
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := path[idx+len(marker):]
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 // newForgeGHCmd creates the "forge-gh" subcommand as an explicit alternative

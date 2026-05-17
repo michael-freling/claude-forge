@@ -274,7 +274,7 @@ func TestStartAgent_Mounts(t *testing.T) {
 	} {
 		require.NoError(t, os.MkdirAll(dir, 0o755))
 	}
-	// Create required config files and CLAUDE.md
+	// Create required config files, credentials, and CLAUDE.md
 	for _, f := range []string{
 		filepath.Join(configDir, "settings.json"),
 		filepath.Join(configDir, ".claude.json"),
@@ -283,6 +283,7 @@ func TestStartAgent_Mounts(t *testing.T) {
 	} {
 		require.NoError(t, os.WriteFile(f, []byte("{}"), 0o644))
 	}
+	require.NoError(t, os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"tk"}}`), 0o644))
 
 	opts := AgentOptions{
 		Name:        "forge-agent-project-session",
@@ -308,6 +309,7 @@ func TestStartAgent_Mounts(t *testing.T) {
 			assert.Contains(t, mountsByTarget, "/home/user/.claude/agents", "claude agents mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/.claude/commands", "claude commands mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/.claude/skills", "claude skills mount missing")
+			assert.Contains(t, mountsByTarget, "/home/user/.claude/.credentials.json", "credentials mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/.claude/settings.json", "settings.json mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/.gitconfig", "gitconfig mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/CLAUDE.md", "home CLAUDE.md mount missing")
