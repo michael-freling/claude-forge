@@ -63,7 +63,6 @@ type Session struct {
 	NetworkName   string
 	SessionID     string
 	ProjectID     string
-	ProjectDir    string
 }
 
 // Start creates a new claude-forge session: loads config, identifies the project,
@@ -120,7 +119,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		GitHubMCPName: fmt.Sprintf("forge-github-mcp-%s-%s", proj.ID, sessionID),
 		SessionID:     sessionID,
 		ProjectID:     proj.ID,
-		ProjectDir:    projectDir,
 	}
 
 	// Create session directory
@@ -378,69 +376,7 @@ func (o *Orchestrator) Cleanup(ctx context.Context, sess *Session) {
 	_ = o.Containers.StopContainer(ctx, sess.GatewayName)
 	_ = o.Containers.RemoveContainer(ctx, sess.GatewayName)
 	_ = o.Containers.RemoveNetwork(ctx, sess.NetworkName)
-	if sess.ProjectDir != "" {
-		repairWorktreeLinks(sess.ProjectDir)
-	}
 	o.Log("Cleanup complete.")
-}
-
-// repairWorktreeLinks converts relative gitdir paths in .git/worktrees/ to
-// absolute paths. The container's git (2.45+) creates worktrees with
-// worktree.useRelativePaths=true for container/host portability, but host git
-// versions older than 2.45 cannot read relative paths in
-// .git/worktrees/<name>/gitdir, causing "error obtaining VCS status: exit
-// status 128". This rewrites them to absolute host paths after the container
-// exits so the host git can work with the worktrees.
-func repairWorktreeLinks(projectDir string) {
-	worktreesDir := filepath.Join(projectDir, ".git", "worktrees")
-	entries, err := os.ReadDir(worktreesDir)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		entryDir := filepath.Join(worktreesDir, entry.Name())
-		gitdirPath := filepath.Join(entryDir, "gitdir")
-		content, err := os.ReadFile(gitdirPath)
-		if err != nil {
-			continue
-		}
-
-		linkPath := strings.TrimSpace(string(content))
-		if filepath.IsAbs(linkPath) {
-			continue
-		}
-
-		absPath := filepath.Clean(filepath.Join(entryDir, linkPath))
-		if _, err := os.Stat(absPath); err != nil {
-			continue
-		}
-		_ = os.WriteFile(gitdirPath, []byte(absPath+"\n"), 0o644)
-
-		// Also fix the worktree's .git file (points back to .git/worktrees/<name>)
-		wtContent, err := os.ReadFile(absPath)
-		if err != nil {
-			continue
-		}
-		wtStr := strings.TrimSpace(string(wtContent))
-		const prefix = "gitdir: "
-		if !strings.HasPrefix(wtStr, prefix) {
-			continue
-		}
-		wtLink := strings.TrimPrefix(wtStr, prefix)
-		if filepath.IsAbs(wtLink) {
-			continue
-		}
-		wtAbsPath := filepath.Clean(filepath.Join(filepath.Dir(absPath), wtLink))
-		if _, err := os.Stat(wtAbsPath); err != nil {
-			continue
-		}
-		_ = os.WriteFile(absPath, []byte(prefix+wtAbsPath+"\n"), 0o644)
-	}
 }
 
 // Stop stops all running containers for the project in the given directory.
