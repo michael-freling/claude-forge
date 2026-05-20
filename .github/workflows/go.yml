@@ -45,6 +45,7 @@ jobs:
     - name: Calculate coverage
       run: go tool cover -func=coverage.txt
 
+    # NEVER lower this threshold. Coverage must stay at or above 90%.
     - name: Check coverage threshold
       run: |
         # Exclude generated mocks from coverage threshold.

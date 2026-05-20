@@ -1,0 +1,88 @@
+name: GitHub MCP
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'github-mcp/**'
+      - 'docker/github-mcp/**'
+      - '.github/workflows/github-mcp.yml'
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'github-mcp/**'
+      - 'docker/github-mcp/**'
+      - '.github/workflows/github-mcp.yml'
+
+defaults:
+  run:
+    working-directory: github-mcp
+
+jobs:
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+        cache-dependency-path: github-mcp/go.sum
+
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v7
+      with:
+        version: v2.6.2
+        working-directory: github-mcp
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+        cache-dependency-path: github-mcp/go.sum
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Test
+      run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+    - name: Calculate coverage
+      run: go tool cover -func=coverage.txt
+
+    # NEVER lower this threshold. Coverage must stay at or above 90%.
+    - name: Check coverage threshold
+      run: |
+        grep -v "main.go" coverage.txt > coverage_filtered.txt
+        coverage=$(go tool cover -func=coverage_filtered.txt | grep total | awk '{print $3}' | sed 's/%//')
+        threshold=90.0
+        echo "Total coverage (excluding main.go): ${coverage}%"
+        echo "Threshold: ${threshold}%"
+        if (( $(echo "$coverage < $threshold" | bc -l) )); then
+          echo "Error: Coverage ${coverage}% is below threshold ${threshold}%"
+          exit 1
+        else
+          echo "Coverage ${coverage}% meets threshold ${threshold}%"
+        fi
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+        cache-dependency-path: github-mcp/go.sum
+
+    - name: Build Docker image
+      working-directory: .
+      run: docker build -t github-mcp-test -f docker/github-mcp/Dockerfile .
