@@ -398,3 +398,67 @@ func TestUnknownMethod(t *testing.T) {
 	assert.Equal(t, -32601, resp.Error.Code)
 	assert.Contains(t, resp.Error.Message, "method not found")
 }
+
+func TestToolsCall_MissingName(t *testing.T) {
+	server := newTestServer("http://unused")
+	resp := mcpCall(t, server, "tools/call", map[string]any{"arguments": map[string]any{}})
+	require.NotNil(t, resp)
+	assert.NotNil(t, resp.Error)
+	assert.Equal(t, -32602, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "missing tool name")
+}
+
+func TestToolsCall_NilArguments(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[]`))
+	}))
+	defer gh.Close()
+
+	server := newTestServer(gh.URL)
+	resp := mcpCall(t, server, "tools/call", map[string]any{
+		"name": "github_pr_list",
+	})
+	require.NotNil(t, resp)
+	assert.Nil(t, resp.Error)
+}
+
+func TestToolsCall_BuildRequestError(t *testing.T) {
+	server := newTestServer("http://unused")
+	resp := mcpCall(t, server, "tools/call", map[string]any{
+		"name":      "github_pr_get",
+		"arguments": map[string]any{},
+	})
+	require.NotNil(t, resp)
+	assert.Nil(t, resp.Error)
+	result, ok := resp.Result.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, result["isError"])
+}
+
+func TestServeHTTP_GETMethodNotAllowed(t *testing.T) {
+	server := newTestServer("http://unused")
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
+
+func TestToolsCall_GitHubAPIReturnsError(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer gh.Close()
+
+	server := newTestServer(gh.URL)
+	resp := mcpCall(t, server, "tools/call", map[string]any{
+		"name":      "github_repo_get",
+		"arguments": map[string]any{},
+	})
+	require.NotNil(t, resp)
+	assert.Nil(t, resp.Error)
+	result, ok := resp.Result.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, result["isError"])
+}
