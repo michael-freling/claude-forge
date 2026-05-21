@@ -153,6 +153,26 @@ func TestLoad_UnreadableFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to read config file")
 }
 
+func TestLoad_ExplicitEmptyGitHubMCPAndKubeImage(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	configYAML := `images:
+  github_mcp: ""
+kubernetes:
+  image: ""
+`
+	err := os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configYAML), 0o644)
+	require.NoError(t, err)
+
+	got, err := Load(tmpDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, DefaultAgentImage, got.Images.Agent)
+	assert.Equal(t, DefaultGatewayImage, got.Images.Gateway)
+	assert.Equal(t, DefaultGitHubMCPImage, got.Images.GitHubMCP)
+	assert.Equal(t, DefaultKubernetesMCPImage, got.Kubernetes.Image)
+}
+
 func TestLoad_PartialGatewayOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 
