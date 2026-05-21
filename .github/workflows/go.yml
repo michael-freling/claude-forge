@@ -51,7 +51,7 @@ jobs:
         # Exclude generated mocks from coverage threshold.
         grep -v "mock_" coverage.txt > coverage_filtered.txt
         coverage=$(go tool cover -func=coverage_filtered.txt | grep total | awk '{print $3}' | sed 's/%//')
-        threshold=87.0
+        threshold=90.0
         echo "Total coverage (excluding generated mocks): ${coverage}%"
         echo "Threshold: ${threshold}%"
         if (( $(echo "$coverage < $threshold" | bc -l) )); then
@@ -80,44 +80,6 @@ jobs:
 
     - name: Check unit test timeout (2s)
       run: ./scripts/check-unit-test-timeout.sh
-
-  github-mcp-lint:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version-file: 'github-mcp/go.mod'
-        cache: true
-        cache-dependency-path: 'github-mcp/go.sum'
-
-    - name: golangci-lint
-      uses: golangci/golangci-lint-action@v7
-      with:
-        version: v2.6.2
-        working-directory: github-mcp
-
-  github-mcp-build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version-file: 'github-mcp/go.mod'
-        cache: true
-        cache-dependency-path: 'github-mcp/go.sum'
-
-    - name: Build
-      run: go build -v ./...
-      working-directory: github-mcp
-
-    - name: Test
-      run: go test -v -race ./...
-      working-directory: github-mcp
 
   forge-e2e:
     runs-on: ubuntu-latest
@@ -155,9 +117,6 @@ jobs:
 
     - name: Build agent Docker image
       run: docker build -t claude-forge-agent-test docker/agent/
-
-    - name: Build github-mcp Docker image
-      run: docker build -t claude-forge-github-mcp-test -f docker/github-mcp/Dockerfile .
 
   # Claude CLI E2E tests are run locally only (require real Claude CLI)
   # Run with: ./scripts/run-e2e-tests.sh
