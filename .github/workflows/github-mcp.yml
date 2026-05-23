@@ -5,13 +5,13 @@ on:
     branches: [ "main" ]
     paths:
       - 'github-mcp/**'
-      - 'docker/github-mcp/**'
+      - 'github-mcp/Dockerfile'
       - '.github/workflows/github-mcp.yml'
   push:
     branches: [ "main" ]
     paths:
       - 'github-mcp/**'
-      - 'docker/github-mcp/**'
+      - 'github-mcp/Dockerfile'
       - '.github/workflows/github-mcp.yml'
 
 defaults:
@@ -85,4 +85,4 @@ jobs:
 
     - name: Build Docker image
       working-directory: .
-      run: docker build -t github-mcp-test -f docker/github-mcp/Dockerfile .
+      run: docker build -t github-mcp-test github-mcp/

@@ -1,9 +1,9 @@
 # Build stage
 FROM golang:1.26-alpine AS build
 WORKDIR /src
-COPY github-mcp/go.mod github-mcp/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
-COPY github-mcp/ .
+COPY . .
 RUN CGO_ENABLED=0 go build -o /github-mcp .
 
 # Runtime stage

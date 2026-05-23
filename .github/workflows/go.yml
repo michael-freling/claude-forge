@@ -119,7 +119,7 @@ jobs:
       run: docker build -t claude-forge-agent-test docker/agent/
 
     - name: Build github-mcp Docker image
-      run: docker build -t claude-forge-github-mcp-test -f docker/github-mcp/Dockerfile .
+      run: docker build -t claude-forge-github-mcp-test github-mcp/
 
   # Claude CLI E2E tests are run locally only (require real Claude CLI)
   # Run with: ./scripts/run-e2e-tests.sh
