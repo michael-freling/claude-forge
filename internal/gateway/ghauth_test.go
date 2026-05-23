@@ -154,6 +154,27 @@ func TestGitHubAuth_TokenRefresh(t *testing.T) {
 	assert.Equal(t, "new_refreshed_token", auth.Token())
 }
 
+func TestGitHubAuth_Token_HostsFileDeleted(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	ghDir := filepath.Join(tmpHome, ".config", "gh")
+	require.NoError(t, os.MkdirAll(ghDir, 0o755))
+
+	hostsPath := filepath.Join(ghDir, "hosts.yml")
+	require.NoError(t, os.WriteFile(hostsPath, []byte("github.com:\n    oauth_token: temp_token\n    user: testuser\n"), 0o600))
+
+	auth, err := NewGitHubAuth()
+	require.NoError(t, err)
+	assert.Equal(t, "temp_token", auth.Token())
+
+	require.NoError(t, os.Remove(hostsPath))
+
+	assert.Equal(t, "", auth.Token())
+}
+
 func TestParseGHHostsFile_FileNotFound(t *testing.T) {
 	_, err := parseGHHostsFile("/nonexistent/path/hosts.yml")
 
