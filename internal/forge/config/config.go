@@ -26,14 +26,20 @@ const (
 type Config struct {
 	Images     ImagesConfig     `yaml:"images"`
 	Defaults   DefaultsConfig   `yaml:"defaults"`
+	GitHubMCP  GitHubMCPConfig  `yaml:"github_mcp"`
 	Kubernetes KubernetesConfig `yaml:"kubernetes"`
 }
 
 // ImagesConfig holds Docker image configuration.
 type ImagesConfig struct {
-	Agent     string `yaml:"agent"`
-	Gateway   string `yaml:"gateway"`
-	GitHubMCP string `yaml:"github_mcp"`
+	Agent   string `yaml:"agent"`
+	Gateway string `yaml:"gateway"`
+}
+
+// GitHubMCPConfig holds GitHub MCP sidecar configuration.
+type GitHubMCPConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Image   string `yaml:"image"`
 }
 
 // DefaultsConfig holds default behavior configuration.
@@ -62,9 +68,11 @@ type KubeContextEntry struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Images: ImagesConfig{
-			Agent:     DefaultAgentImage,
-			Gateway:   DefaultGatewayImage,
-			GitHubMCP: DefaultGitHubMCPImage,
+			Agent:   DefaultAgentImage,
+			Gateway: DefaultGatewayImage,
+		},
+		GitHubMCP: GitHubMCPConfig{
+			Image: DefaultGitHubMCPImage,
 		},
 		Kubernetes: KubernetesConfig{
 			Image: DefaultKubernetesMCPImage,
@@ -98,8 +106,8 @@ func Load(configDir string) (*Config, error) {
 	if cfg.Images.Gateway == "" {
 		cfg.Images.Gateway = DefaultGatewayImage
 	}
-	if cfg.Images.GitHubMCP == "" {
-		cfg.Images.GitHubMCP = DefaultGitHubMCPImage
+	if cfg.GitHubMCP.Image == "" {
+		cfg.GitHubMCP.Image = DefaultGitHubMCPImage
 	}
 	if cfg.Kubernetes.Image == "" {
 		cfg.Kubernetes.Image = DefaultKubernetesMCPImage

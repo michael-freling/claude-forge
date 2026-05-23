@@ -14,6 +14,8 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, DefaultAgentImage, cfg.Images.Agent)
 	assert.Equal(t, DefaultGatewayImage, cfg.Images.Gateway)
+	assert.Equal(t, DefaultGitHubMCPImage, cfg.GitHubMCP.Image)
+	assert.False(t, cfg.GitHubMCP.Enabled)
 	assert.False(t, cfg.Defaults.SkipPermissions)
 	assert.False(t, cfg.Defaults.Worktree)
 }
@@ -37,13 +39,15 @@ defaults:
 `,
 			want: &Config{
 				Images: ImagesConfig{
-					Agent:     "custom-agent:v1",
-					Gateway:   "custom-gateway:v2",
-					GitHubMCP: DefaultGitHubMCPImage,
+					Agent:   "custom-agent:v1",
+					Gateway: "custom-gateway:v2",
 				},
 				Defaults: DefaultsConfig{
 					SkipPermissions: true,
 					Worktree:        true,
+				},
+				GitHubMCP: GitHubMCPConfig{
+					Image: DefaultGitHubMCPImage,
 				},
 				Kubernetes: KubernetesConfig{
 					Image: DefaultKubernetesMCPImage,
@@ -57,13 +61,15 @@ defaults:
 `,
 			want: &Config{
 				Images: ImagesConfig{
-					Agent:     DefaultAgentImage,
-					Gateway:   DefaultGatewayImage,
-					GitHubMCP: DefaultGitHubMCPImage,
+					Agent:   DefaultAgentImage,
+					Gateway: DefaultGatewayImage,
 				},
 				Defaults: DefaultsConfig{
 					SkipPermissions: true,
 					Worktree:        false,
+				},
+				GitHubMCP: GitHubMCPConfig{
+					Image: DefaultGitHubMCPImage,
 				},
 				Kubernetes: KubernetesConfig{
 					Image: DefaultKubernetesMCPImage,
@@ -77,9 +83,11 @@ defaults:
 `,
 			want: &Config{
 				Images: ImagesConfig{
-					Agent:     "my-agent:latest",
-					Gateway:   DefaultGatewayImage,
-					GitHubMCP: DefaultGitHubMCPImage,
+					Agent:   "my-agent:latest",
+					Gateway: DefaultGatewayImage,
+				},
+				GitHubMCP: GitHubMCPConfig{
+					Image: DefaultGitHubMCPImage,
 				},
 				Kubernetes: KubernetesConfig{
 					Image: DefaultKubernetesMCPImage,
@@ -98,6 +106,26 @@ defaults:
   gateway: ""
 `,
 			want: DefaultConfig(),
+		},
+		{
+			name: "github_mcp enabled with custom image",
+			configYAML: `github_mcp:
+  enabled: true
+  image: custom-mcp:v1
+`,
+			want: &Config{
+				Images: ImagesConfig{
+					Agent:   DefaultAgentImage,
+					Gateway: DefaultGatewayImage,
+				},
+				GitHubMCP: GitHubMCPConfig{
+					Enabled: true,
+					Image:   "custom-mcp:v1",
+				},
+				Kubernetes: KubernetesConfig{
+					Image: DefaultKubernetesMCPImage,
+				},
+			},
 		},
 		{
 			name:        "invalid YAML",
@@ -143,7 +171,6 @@ func TestLoad_UnreadableFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
-	// Create a directory where the file should be, causing a read error
 	err := os.MkdirAll(configPath, 0o755)
 	require.NoError(t, err)
 
@@ -156,8 +183,8 @@ func TestLoad_UnreadableFile(t *testing.T) {
 func TestLoad_ExplicitEmptyGitHubMCPAndKubeImage(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	configYAML := `images:
-  github_mcp: ""
+	configYAML := `github_mcp:
+  image: ""
 kubernetes:
   image: ""
 `
@@ -169,7 +196,7 @@ kubernetes:
 	require.NoError(t, err)
 	assert.Equal(t, DefaultAgentImage, got.Images.Agent)
 	assert.Equal(t, DefaultGatewayImage, got.Images.Gateway)
-	assert.Equal(t, DefaultGitHubMCPImage, got.Images.GitHubMCP)
+	assert.Equal(t, DefaultGitHubMCPImage, got.GitHubMCP.Image)
 	assert.Equal(t, DefaultKubernetesMCPImage, got.Kubernetes.Image)
 }
 
