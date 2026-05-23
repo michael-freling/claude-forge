@@ -65,7 +65,7 @@ func TestBuildRules_SkipsDeniedSubresources(t *testing.T) {
 func TestBuildRules_ClusterScopedReadOnly(t *testing.T) {
 	resources := []APIResource{
 		{APIGroup: "", Resource: "namespaces", Namespaced: false, Verbs: []string{"*"}},
-		{APIGroup: "", Resource: "nodes", Namespaced: false, Verbs: []string{"*"}},
+		{APIGroup: "", Resource: "persistentvolumes", Namespaced: false, Verbs: []string{"*"}},
 		{APIGroup: "", Resource: "pods", Namespaced: true, Verbs: []string{"*"}},
 	}
 
@@ -73,7 +73,6 @@ func TestBuildRules_ClusterScopedReadOnly(t *testing.T) {
 
 	require.Len(t, rules, 2)
 
-	// Find the cluster-scoped rule
 	var clusterRule *PolicyRule
 	var nsRule *PolicyRule
 	for i, r := range rules {
@@ -87,6 +86,42 @@ func TestBuildRules_ClusterScopedReadOnly(t *testing.T) {
 
 	require.NotNil(t, clusterRule)
 	assert.Equal(t, ReadOnlyVerbs(), clusterRule.Verbs)
+	assert.Contains(t, clusterRule.Resources, "persistentvolumes")
+
+	require.NotNil(t, nsRule)
+	assert.Equal(t, []string{"*"}, nsRule.Verbs)
+}
+
+func TestBuildRules_WritableClusterResources(t *testing.T) {
+	resources := []APIResource{
+		{APIGroup: "", Resource: "nodes", Namespaced: false, Verbs: []string{"*"}},
+		{APIGroup: "", Resource: "namespaces", Namespaced: false, Verbs: []string{"*"}},
+		{APIGroup: "", Resource: "pods", Namespaced: true, Verbs: []string{"*"}},
+	}
+
+	rules := buildRules(resources)
+
+	require.Len(t, rules, 3)
+
+	var nodesRule, readOnlyRule, nsRule *PolicyRule
+	for i, r := range rules {
+		if contains(r.Resources, "nodes") {
+			nodesRule = &rules[i]
+		}
+		if contains(r.Resources, "namespaces") {
+			readOnlyRule = &rules[i]
+		}
+		if contains(r.Resources, "pods") {
+			nsRule = &rules[i]
+		}
+	}
+
+	require.NotNil(t, nodesRule)
+	assert.Equal(t, []string{""}, nodesRule.APIGroups)
+	assert.Equal(t, FilterVerbs([]string{"*"}), nodesRule.Verbs)
+
+	require.NotNil(t, readOnlyRule)
+	assert.Equal(t, ReadOnlyVerbs(), readOnlyRule.Verbs)
 
 	require.NotNil(t, nsRule)
 	assert.Equal(t, []string{"*"}, nsRule.Verbs)

@@ -35,6 +35,12 @@ func TestFilterVerbs(t *testing.T) {
 	assert.Equal(t, []string{"*"}, result)
 }
 
+func TestIsWritableClusterResource(t *testing.T) {
+	assert.True(t, IsWritableClusterResource("nodes"))
+	assert.False(t, IsWritableClusterResource("namespaces"))
+	assert.False(t, IsWritableClusterResource("persistentvolumes"))
+}
+
 func TestReadOnlyVerbs(t *testing.T) {
 	assert.Equal(t, []string{"get", "list", "watch"}, ReadOnlyVerbs())
 }

@@ -112,12 +112,30 @@ func buildRules(resources []APIResource) []PolicyRule {
 		})
 	}
 	if len(coreClustered) > 0 {
-		res := sortedMapKeys(coreClustered)
-		rules = append(rules, PolicyRule{
-			APIGroups: []string{""},
-			Resources: res,
-			Verbs:     ReadOnlyVerbs(),
-		})
+		var writableRes, readOnlyRes []string
+		for res := range coreClustered {
+			if IsWritableClusterResource(res) {
+				writableRes = append(writableRes, res)
+			} else {
+				readOnlyRes = append(readOnlyRes, res)
+			}
+		}
+		sort.Strings(writableRes)
+		sort.Strings(readOnlyRes)
+		if len(writableRes) > 0 {
+			rules = append(rules, PolicyRule{
+				APIGroups: []string{""},
+				Resources: writableRes,
+				Verbs:     fullVerbs,
+			})
+		}
+		if len(readOnlyRes) > 0 {
+			rules = append(rules, PolicyRule{
+				APIGroups: []string{""},
+				Resources: readOnlyRes,
+				Verbs:     ReadOnlyVerbs(),
+			})
+		}
 	}
 
 	// Non-core groups: use resources: ["*"], merge groups with same scope

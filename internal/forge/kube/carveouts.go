@@ -40,6 +40,25 @@ func DeniedVerbs() []string {
 	}
 }
 
+// WritableClusterResources returns core-group cluster-scoped resources that
+// need write access (e.g. nodes for cordon/drain).
+func WritableClusterResources() []string {
+	return []string{
+		"nodes",
+	}
+}
+
+// IsWritableClusterResource checks if a core-group cluster-scoped resource
+// should receive full verbs instead of read-only.
+func IsWritableClusterResource(resource string) bool {
+	for _, w := range WritableClusterResources() {
+		if resource == w {
+			return true
+		}
+	}
+	return false
+}
+
 // ReadOnlyVerbs returns the verbs allowed for cluster-scoped resources.
 func ReadOnlyVerbs() []string {
 	return []string{"get", "list", "watch"}
