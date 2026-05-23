@@ -31,6 +31,7 @@ func TestBuildRules_SkipsDeniedAPIGroups(t *testing.T) {
 func TestBuildRules_SkipsDeniedResources(t *testing.T) {
 	resources := []APIResource{
 		{APIGroup: "", Resource: "secrets", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "", Resource: "serviceaccounts", Namespaced: true, Verbs: []string{"*"}},
 		{APIGroup: "", Resource: "configmaps", Namespaced: true, Verbs: []string{"*"}},
 		{APIGroup: "", Resource: "pods", Namespaced: true, Verbs: []string{"*"}},
 	}
@@ -41,6 +42,7 @@ func TestBuildRules_SkipsDeniedResources(t *testing.T) {
 	assert.Contains(t, rules[0].Resources, "configmaps")
 	assert.Contains(t, rules[0].Resources, "pods")
 	assert.NotContains(t, rules[0].Resources, "secrets")
+	assert.NotContains(t, rules[0].Resources, "serviceaccounts")
 }
 
 func TestBuildRules_SkipsDeniedSubresources(t *testing.T) {
@@ -99,6 +101,64 @@ func TestBuildRules_FiltersImpersonateVerb(t *testing.T) {
 
 	require.Len(t, rules, 1)
 	assert.NotContains(t, rules[0].Verbs, "impersonate")
+}
+
+func TestBuildRules_NonCoreGroupsUseWildcardResources(t *testing.T) {
+	resources := []APIResource{
+		{APIGroup: "apps", Resource: "deployments", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "apps", Resource: "replicasets", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "batch", Resource: "jobs", Namespaced: true, Verbs: []string{"*"}},
+	}
+
+	rules := buildRules(resources)
+
+	require.Len(t, rules, 1)
+	assert.Equal(t, []string{"*"}, rules[0].Resources)
+	assert.Contains(t, rules[0].APIGroups, "apps")
+	assert.Contains(t, rules[0].APIGroups, "batch")
+}
+
+func TestBuildRules_MergesGroupsByScope(t *testing.T) {
+	resources := []APIResource{
+		// Namespaced-only groups
+		{APIGroup: "apps", Resource: "deployments", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "batch", Resource: "jobs", Namespaced: true, Verbs: []string{"*"}},
+		// Cluster-only group
+		{APIGroup: "storage.k8s.io", Resource: "storageclasses", Namespaced: false, Verbs: []string{"*"}},
+		// Mixed group (both scopes)
+		{APIGroup: "networking.k8s.io", Resource: "ingresses", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "networking.k8s.io", Resource: "ingressclasses", Namespaced: false, Verbs: []string{"*"}},
+	}
+
+	rules := buildRules(resources)
+
+	require.Len(t, rules, 3)
+
+	var nsRule, clusterRule, bothRule *PolicyRule
+	for i, r := range rules {
+		if contains(r.APIGroups, "apps") {
+			nsRule = &rules[i]
+		}
+		if contains(r.APIGroups, "storage.k8s.io") {
+			clusterRule = &rules[i]
+		}
+		if contains(r.APIGroups, "networking.k8s.io") {
+			bothRule = &rules[i]
+		}
+	}
+
+	require.NotNil(t, nsRule)
+	assert.Contains(t, nsRule.APIGroups, "batch")
+	assert.Equal(t, []string{"*"}, nsRule.Resources)
+	assert.Equal(t, FilterVerbs([]string{"*"}), nsRule.Verbs)
+
+	require.NotNil(t, clusterRule)
+	assert.Equal(t, []string{"*"}, clusterRule.Resources)
+	assert.Equal(t, ReadOnlyVerbs(), clusterRule.Verbs)
+
+	require.NotNil(t, bothRule)
+	assert.Equal(t, []string{"*"}, bothRule.Resources)
+	assert.Equal(t, FilterVerbs([]string{"*"}), bothRule.Verbs)
 }
 
 func TestRenderFromResources_GeneratesValidYAML(t *testing.T) {

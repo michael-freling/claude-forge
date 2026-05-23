@@ -52,63 +52,134 @@ type PolicyRule struct {
 	Verbs     []string
 }
 
+// hasCoreCarveouts returns true if the API group has per-resource deny rules,
+// meaning resources must be enumerated instead of using a wildcard.
+func hasCoreCarveouts(group string) bool {
+	return group == ""
+}
+
 func buildRules(resources []APIResource) []PolicyRule {
-	// Group resources by (apiGroup, namespaced/cluster-scoped)
-	namespacedByGroup := make(map[string][]string)
-	clusterByGroup := make(map[string][]string)
+	type groupScope struct {
+		hasNamespaced bool
+		hasCluster    bool
+	}
+
+	groups := make(map[string]*groupScope)
+	coreNamespaced := make(map[string]bool)
+	coreClustered := make(map[string]bool)
 
 	for _, r := range resources {
 		if IsAPIGroupDenied(r.APIGroup) {
 			continue
 		}
-		// Check core-group carveouts
-		if r.APIGroup == "" {
+		if IsSubresourceDenied(r.Resource) {
+			continue
+		}
+		if hasCoreCarveouts(r.APIGroup) {
 			if IsResourceDenied(r.Resource) {
 				continue
 			}
-			if IsSubresourceDenied(r.Resource) {
-				continue
+			if r.Namespaced {
+				coreNamespaced[r.Resource] = true
+			} else {
+				coreClustered[r.Resource] = true
 			}
-		}
-		// Check subresource carveouts for any group
-		if strings.Contains(r.Resource, "/") && IsSubresourceDenied(r.Resource) {
 			continue
 		}
 
+		gs, ok := groups[r.APIGroup]
+		if !ok {
+			gs = &groupScope{}
+			groups[r.APIGroup] = gs
+		}
 		if r.Namespaced {
-			namespacedByGroup[r.APIGroup] = append(namespacedByGroup[r.APIGroup], r.Resource)
+			gs.hasNamespaced = true
 		} else {
-			clusterByGroup[r.APIGroup] = append(clusterByGroup[r.APIGroup], r.Resource)
+			gs.hasCluster = true
 		}
 	}
 
 	var rules []PolicyRule
+	fullVerbs := FilterVerbs([]string{"*"})
 
-	// Emit namespaced rules with full verbs
-	groups := sortedKeys(namespacedByGroup)
-	for _, group := range groups {
-		resources := namespacedByGroup[group]
-		sort.Strings(resources)
+	// Core "" group: enumerate resources explicitly (has per-resource carveouts)
+	if len(coreNamespaced) > 0 {
+		res := sortedMapKeys(coreNamespaced)
 		rules = append(rules, PolicyRule{
-			APIGroups: []string{group},
-			Resources: resources,
-			Verbs:     FilterVerbs([]string{"*"}),
+			APIGroups: []string{""},
+			Resources: res,
+			Verbs:     fullVerbs,
 		})
 	}
-
-	// Emit cluster-scoped rules with read-only verbs
-	groups = sortedKeys(clusterByGroup)
-	for _, group := range groups {
-		resources := clusterByGroup[group]
-		sort.Strings(resources)
+	if len(coreClustered) > 0 {
+		res := sortedMapKeys(coreClustered)
 		rules = append(rules, PolicyRule{
-			APIGroups: []string{group},
-			Resources: resources,
+			APIGroups: []string{""},
+			Resources: res,
 			Verbs:     ReadOnlyVerbs(),
 		})
 	}
 
+	// Non-core groups: use resources: ["*"], merge groups with same scope
+	var namespacedGroups []string
+	var clusterGroups []string
+	var bothGroups []string
+
+	for group, gs := range groups {
+		switch {
+		case gs.hasNamespaced && gs.hasCluster:
+			bothGroups = append(bothGroups, group)
+		case gs.hasNamespaced:
+			namespacedGroups = append(namespacedGroups, group)
+		case gs.hasCluster:
+			clusterGroups = append(clusterGroups, group)
+		}
+	}
+
+	sort.Strings(namespacedGroups)
+	sort.Strings(clusterGroups)
+	sort.Strings(bothGroups)
+
+	// Groups with only namespaced resources → wildcard with full verbs
+	if len(namespacedGroups) > 0 {
+		rules = append(rules, PolicyRule{
+			APIGroups: namespacedGroups,
+			Resources: []string{"*"},
+			Verbs:     fullVerbs,
+		})
+	}
+
+	// Groups with only cluster-scoped resources → wildcard with read-only
+	if len(clusterGroups) > 0 {
+		rules = append(rules, PolicyRule{
+			APIGroups: clusterGroups,
+			Resources: []string{"*"},
+			Verbs:     ReadOnlyVerbs(),
+		})
+	}
+
+	// Groups with both scopes: emit two rules (full verbs for the group, but
+	// cluster-scoped resources are also covered since K8s RBAC can't split
+	// by scope within a single rule). These groups get full verbs on all
+	// resources — same as the proposal's approach for mixed groups.
+	if len(bothGroups) > 0 {
+		rules = append(rules, PolicyRule{
+			APIGroups: bothGroups,
+			Resources: []string{"*"},
+			Verbs:     fullVerbs,
+		})
+	}
+
 	return rules
+}
+
+func sortedMapKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func renderYAML(opts RenderOptions, rules []PolicyRule) string {
@@ -255,13 +326,4 @@ func parseAPIResources(output string) ([]APIResource, error) {
 	}
 
 	return resources, nil
-}
-
-func sortedKeys(m map[string][]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

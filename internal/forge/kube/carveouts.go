@@ -20,6 +20,7 @@ func DeniedAPIGroups() []string {
 func DeniedResources() []string {
 	return []string{
 		"secrets",
+		"serviceaccounts",
 	}
 }
 
