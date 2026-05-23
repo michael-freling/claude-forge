@@ -18,7 +18,6 @@ import (
 	"github.com/michael-freling/claude-code-tools/internal/forge/kube"
 	"github.com/michael-freling/claude-code-tools/internal/forge/project"
 	"github.com/michael-freling/claude-code-tools/internal/forge/session"
-	"github.com/michael-freling/claude-code-tools/internal/forgegh"
 	"github.com/michael-freling/claude-code-tools/internal/gateway"
 	"github.com/spf13/cobra"
 )
@@ -33,24 +32,7 @@ type orchestratorFactoryFunc func() (*forge.Orchestrator, func(), error)
 // Tests override this to inject a mock.
 var createOrchestrator orchestratorFactoryFunc = newOrchestrator
 
-// forgeGHGatewayURL is the gateway URL used by the forge-gh client.
-// Tests override this to inject a non-routable address.
-var forgeGHGatewayURL = "http://gateway:8083"
-
 func main() {
-	// Busybox-style multi-call binary: if invoked as "gh" or "forge-gh",
-	// act as the forge-gh GitHub CLI wrapper.
-	basename := filepath.Base(os.Args[0])
-	if basename == "gh" || basename == "forge-gh" {
-		client := forgegh.NewClient(forgeGHGatewayURL)
-		if err := client.Run(os.Args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	// Normal CLI mode.
 	rootCmd := newRootCmd()
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -77,7 +59,6 @@ containers, Docker networks, and session state.`,
 		newPluginsCmd(),
 		newVersionCmd(),
 		newGatewayCmd(),
-		newForgeGHCmd(),
 		newKubeCmd(),
 	)
 
@@ -379,13 +360,12 @@ func newGatewayCmd() *cobra.Command {
 		owner     string
 		repo      string
 		proxyAddr string
-		apiAddr   string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "gateway",
 		Short: "Start the gateway server (for container use)",
-		Long: `Start the gateway proxy and API server. This is typically invoked as the
+		Long: `Start the gateway proxy server. This is typically invoked as the
 entrypoint of the gateway container, not by end users directly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if owner == "" || repo == "" {
@@ -400,15 +380,14 @@ entrypoint of the gateway container, not by end users directly.`,
 				return fmt.Errorf("failed to create gateway server: %w", err)
 			}
 
-			fmt.Printf("Gateway starting: proxy=%s api=%s owner=%s repo=%s\n", proxyAddr, apiAddr, owner, repo)
-			return srv.Run(proxyAddr, apiAddr)
+			fmt.Printf("Gateway starting: proxy=%s owner=%s repo=%s\n", proxyAddr, owner, repo)
+			return srv.Run(proxyAddr)
 		},
 	}
 
 	cmd.Flags().StringVar(&owner, "owner", "", "Allowed GitHub repository owner")
 	cmd.Flags().StringVar(&repo, "repo", "", "Allowed GitHub repository name")
 	cmd.Flags().StringVar(&proxyAddr, "proxy-addr", ":8080", "Address for the git proxy server")
-	cmd.Flags().StringVar(&apiAddr, "api-addr", ":8083", "Address for the API server")
 
 	return cmd
 }
@@ -702,17 +681,3 @@ The output can be piped directly to kubectl apply:
 	return cmd
 }
 
-// newForgeGHCmd creates the "forge-gh" subcommand as an explicit alternative
-// to the os.Args[0] detection for running as the GitHub CLI wrapper.
-func newForgeGHCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "forge-gh",
-		Short:              "Act as GitHub CLI wrapper (for container use)",
-		Long:               `Proxy GitHub CLI commands through the gateway API server. This is used inside the agent container as an alternative to the busybox-style os.Args[0] detection.`,
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client := forgegh.NewClient(forgeGHGatewayURL)
-			return client.Run(args)
-		},
-	}
-}

@@ -27,7 +27,7 @@ func TestNewRootCmd(t *testing.T) {
 
 	expectedSubcommands := []string{
 		"start", "resume", "stop", "status",
-		"build", "auth", "plugins", "version", "gateway", "forge-gh", "kube",
+		"build", "auth", "plugins", "version", "gateway", "kube",
 	}
 
 	subcommandNames := make(map[string]bool)
@@ -98,10 +98,6 @@ func TestNewGatewayCmd(t *testing.T) {
 	proxyAddrFlag := cmd.Flags().Lookup("proxy-addr")
 	require.NotNil(t, proxyAddrFlag)
 	assert.Equal(t, ":8080", proxyAddrFlag.DefValue)
-
-	apiAddrFlag := cmd.Flags().Lookup("api-addr")
-	require.NotNil(t, apiAddrFlag)
-	assert.Equal(t, ":8083", apiAddrFlag.DefValue)
 }
 
 func TestNewVersionCmd(t *testing.T) {
@@ -147,13 +143,6 @@ func TestNewBuildCmd(t *testing.T) {
 func TestNewAuthCmd(t *testing.T) {
 	cmd := newAuthCmd()
 	assert.Equal(t, "auth", cmd.Use)
-}
-
-func TestNewForgeGHCmd(t *testing.T) {
-	cmd := newForgeGHCmd()
-
-	assert.Equal(t, "forge-gh", cmd.Use)
-	assert.True(t, cmd.DisableFlagParsing)
 }
 
 // --- stubContainerManager implements container.ContainerManager for testing ---
@@ -573,18 +562,6 @@ func TestAuthCmd_WithShortToken(t *testing.T) {
 	assert.Contains(t, output, "Token: [present]")
 }
 
-func TestForgeGHCmd_Execute_NoGateway(t *testing.T) {
-	original := forgeGHGatewayURL
-	forgeGHGatewayURL = "http://127.0.0.1:1" // port 1 is always refused
-	t.Cleanup(func() { forgeGHGatewayURL = original })
-
-	cmd := newForgeGHCmd()
-	cmd.SetArgs([]string{"pr", "list"})
-
-	err := cmd.Execute()
-	require.Error(t, err)
-}
-
 func TestBuildCmd_PullError(t *testing.T) {
 	errCM := &errorContainerManager{err: fmt.Errorf("pull image error")}
 	setupTestOrchestrator(t, errCM)
@@ -621,7 +598,6 @@ func TestGatewayCmd_ServerError(t *testing.T) {
 		"--owner=test-owner",
 		"--repo=test-repo",
 		"--proxy-addr=invalid-address-:::::",
-		"--api-addr=invalid-address-:::::",
 	})
 
 	output := captureStdout(t, func() {

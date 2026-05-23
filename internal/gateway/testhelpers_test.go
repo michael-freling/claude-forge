@@ -23,20 +23,3 @@ func TestNewTestProxy(t *testing.T) {
 	assert.NotNil(t, proxy.httpClient)
 	assert.NotNil(t, proxy.ghAuth)
 }
-
-func TestNewTestAPIServer(t *testing.T) {
-	config := ProxyConfig{
-		AllowedOwner: "test-owner",
-		AllowedRepo:  "test-repo",
-	}
-	ghAuth := NewGitHubAuthFromToken("test-token")
-
-	server := NewTestAPIServer(config, ghAuth, "http://example.com")
-
-	require.NotNil(t, server)
-	assert.Equal(t, "test-owner", server.config.AllowedOwner)
-	assert.Equal(t, "test-repo", server.config.AllowedRepo)
-	assert.Equal(t, "http://example.com", server.upstreamURL)
-	assert.NotNil(t, server.httpClient)
-	assert.NotNil(t, server.ghAuth)
-}

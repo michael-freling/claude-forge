@@ -231,19 +231,6 @@ func TestGitVersion(t *testing.T) {
 	assert.Contains(t, version, "git version")
 }
 
-func TestRequireGH(t *testing.T) {
-	RequireGH(t)
-}
-
-func TestGHVersion(t *testing.T) {
-	RequireGH(t)
-
-	version := GHVersion(t)
-
-	require.NotEmpty(t, version)
-	assert.Contains(t, version, "gh version")
-}
-
 func TestIsCLIAvailable(t *testing.T) {
 	available := IsCLIAvailable()
 
@@ -297,10 +284,6 @@ func TestRequireClaude(t *testing.T) {
 	// This test exercises the RequireClaude path. If claude is available,
 	// the function returns normally. If not, it skips the test.
 	RequireClaude(t)
-}
-
-func TestRequireGHAuth(t *testing.T) {
-	RequireGHAuth(t)
 }
 
 func TestClaudeVersion(t *testing.T) {

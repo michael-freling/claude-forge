@@ -22,7 +22,6 @@ func TestNewServerWithAuth(t *testing.T) {
 
 	require.NotNil(t, server)
 	assert.NotNil(t, server.proxy)
-	assert.NotNil(t, server.apiServer)
 }
 
 func TestNewServer_NoAuth(t *testing.T) {
@@ -53,7 +52,6 @@ func TestNewServer_WithEnvToken(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, server)
 	assert.NotNil(t, server.proxy)
-	assert.NotNil(t, server.apiServer)
 }
 
 func TestServer_RunWithContext_Shutdown(t *testing.T) {
@@ -67,13 +65,11 @@ func TestServer_RunWithContext_Shutdown(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.RunWithContext(ctx, "127.0.0.1:0", "127.0.0.1:0")
+		errCh <- srv.RunWithContext(ctx, "127.0.0.1:0")
 	}()
 
-	// Give servers time to start listening
 	time.Sleep(50 * time.Millisecond)
 
-	// Cancel the context to trigger graceful shutdown
 	cancel()
 
 	select {
@@ -93,13 +89,11 @@ func TestServer_Run_Signal(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.Run("127.0.0.1:0", "127.0.0.1:0")
+		errCh <- srv.Run("127.0.0.1:0")
 	}()
 
-	// Give servers time to start listening
 	time.Sleep(50 * time.Millisecond)
 
-	// Send SIGTERM to trigger the signal handler in Run
 	p, err := os.FindProcess(os.Getpid())
 	require.NoError(t, err)
 	require.NoError(t, p.Signal(syscall.SIGTERM))
@@ -119,7 +113,6 @@ func TestServer_RunWithContext_BadAddress(t *testing.T) {
 		AllowedRepo:  "test-repo",
 	}, ghAuth)
 
-	// Use an invalid address to trigger a server error
-	err := srv.RunWithContext(t.Context(), "127.0.0.1:0", "invalid-address-::::")
+	err := srv.RunWithContext(t.Context(), "invalid-address-::::")
 	require.Error(t, err)
 }

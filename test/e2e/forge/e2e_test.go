@@ -112,11 +112,10 @@ func TestForgeStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	prompt := `Run these four commands and show me the output of each:
+	prompt := `Run these three commands and show me the output of each:
 1. git log --oneline -3
 2. git fetch origin main
-3. gh repo view --json name,owner
-4. go test ./internal/forge/config/...
+3. go test ./internal/forge/config/...
 
 Reply with the raw command outputs only, no other text.`
 	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", prompt)
@@ -151,9 +150,6 @@ Reply with the raw command outputs only, no other text.`
 	assert.False(t,
 		strings.Contains(outputStr, "fatal:") && strings.Contains(outputStr, "fetch"),
 		"expected git fetch to succeed without fatal errors")
-
-	// gh repo view should return the repo name.
-	assert.Contains(t, outputStr, "claude-code-tools", "expected output to contain repo name from gh repo view")
 
 	// go test should show passing output (non-verbose `go test` prints "ok  <pkg>").
 	assert.Contains(t, outputStr, "ok  \tgithub.com/michael-freling/claude-code-tools", "expected output to contain ok from go test")
