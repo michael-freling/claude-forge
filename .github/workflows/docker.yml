@@ -2,7 +2,7 @@ name: Docker Images
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/github-mcp-and-kubernetes-support]
     paths:
       - 'docker/**'
       - 'cmd/claude-forge/**'
