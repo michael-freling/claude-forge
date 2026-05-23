@@ -680,4 +680,3 @@ The output can be piped directly to kubectl apply:
 
 	return cmd
 }
-
