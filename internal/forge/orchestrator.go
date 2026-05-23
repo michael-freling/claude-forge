@@ -155,10 +155,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 
 	// Pull images if not present
-	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway}
-	if cfg.GitHubMCP.Enabled {
-		imagesToPull = append(imagesToPull, cfg.GitHubMCP.Image)
-	}
+	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
 	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
 		imagesToPull = append(imagesToPull, cfg.Kubernetes.Image)
 	}
@@ -215,32 +212,33 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("gateway container failed to start: %w", err)
 	}
 
-	// Start GitHub MCP sidecar if enabled
-	mcpServers := map[string]claudecode.MCPServerConfig{}
-	if cfg.GitHubMCP.Enabled {
-		o.Log("Starting GitHub MCP: %s", sess.GitHubMCPName)
-		mcpID, err := o.Containers.StartGitHubMCP(ctx, container.GitHubMCPOptions{
-			Name:        sess.GitHubMCPName,
-			Image:       cfg.GitHubMCP.Image,
-			NetworkName: sess.NetworkName,
-			Owner:       proj.Owner,
-			Repo:        proj.Repo,
-			Env:         gatewayEnv,
-		})
-		if err != nil {
-			o.Cleanup(ctx, sess)
-			return nil, fmt.Errorf("failed to start github-mcp: %w", err)
-		}
+	// Start GitHub MCP sidecar
+	o.Log("Starting GitHub MCP: %s", sess.GitHubMCPName)
+	mcpID, err := o.Containers.StartGitHubMCP(ctx, container.GitHubMCPOptions{
+		Name:        sess.GitHubMCPName,
+		Image:       cfg.Images.GitHubMCP,
+		NetworkName: sess.NetworkName,
+		Owner:       proj.Owner,
+		Repo:        proj.Repo,
+		Env:         gatewayEnv,
+	})
+	if err != nil {
+		o.Cleanup(ctx, sess)
+		return nil, fmt.Errorf("failed to start github-mcp: %w", err)
+	}
 
-		if err := o.Containers.WaitForReady(ctx, mcpID, 5*time.Second); err != nil {
-			logs, _ := o.Containers.ContainerLogs(ctx, mcpID)
-			o.Cleanup(ctx, sess)
-			if logs != "" {
-				return nil, fmt.Errorf("github-mcp failed to start: %w\nLogs:\n%s", err, logs)
-			}
-			return nil, fmt.Errorf("github-mcp failed to start: %w", err)
+	if err := o.Containers.WaitForReady(ctx, mcpID, 5*time.Second); err != nil {
+		logs, _ := o.Containers.ContainerLogs(ctx, mcpID)
+		o.Cleanup(ctx, sess)
+		if logs != "" {
+			return nil, fmt.Errorf("github-mcp failed to start: %w\nLogs:\n%s", err, logs)
 		}
-		mcpServers["github"] = claudecode.MCPServerConfig{Type: "url", URL: "http://github-mcp:8083/mcp"}
+		return nil, fmt.Errorf("github-mcp failed to start: %w", err)
+	}
+
+	// Write MCP server config to settings.json for the agent
+	mcpServers := map[string]claudecode.MCPServerConfig{
+		"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
 	}
 
 	// Add Kubernetes MCP if enabled
@@ -248,11 +246,9 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:8090/mcp"}
 	}
 
-	if len(mcpServers) > 0 {
-		if err := claudecode.UpdateMCPServers(o.ConfigDir, mcpServers); err != nil {
-			o.Cleanup(ctx, sess)
-			return nil, fmt.Errorf("failed to update MCP settings: %w", err)
-		}
+	if err := claudecode.UpdateMCPServers(o.ConfigDir, mcpServers); err != nil {
+		o.Cleanup(ctx, sess)
+		return nil, fmt.Errorf("failed to update MCP settings: %w", err)
 	}
 
 	// Build agent command args
@@ -556,10 +552,7 @@ func (o *Orchestrator) Build(ctx context.Context) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	images := []string{cfg.Images.Agent, cfg.Images.Gateway}
-	if cfg.GitHubMCP.Enabled {
-		images = append(images, cfg.GitHubMCP.Image)
-	}
+	images := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
 	if cfg.Kubernetes.Enabled {
 		images = append(images, cfg.Kubernetes.Image)
 	}
