@@ -81,7 +81,7 @@ func TestForgeStart(t *testing.T) {
 	out, err = buildAgent.CombinedOutput()
 	require.NoError(t, err, "failed to build agent image: %s", out)
 
-	buildGitHubMCP := exec.Command("docker", "build", "-t", githubMCPImageName, "-f", "docker/github-mcp/Dockerfile", ".")
+	buildGitHubMCP := exec.Command("docker", "build", "-t", githubMCPImageName, "github-mcp/")
 	buildGitHubMCP.Dir = projectRoot
 	out, err = buildGitHubMCP.CombinedOutput()
 	require.NoError(t, err, "failed to build github-mcp image: %s", out)
@@ -257,7 +257,7 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 	out, err = buildAgent.CombinedOutput()
 	require.NoError(t, err, "failed to build agent image: %s", out)
 
-	buildGitHubMCP := exec.Command("docker", "build", "-t", githubMCPImageName, "-f", "docker/github-mcp/Dockerfile", ".")
+	buildGitHubMCP := exec.Command("docker", "build", "-t", githubMCPImageName, "github-mcp/")
 	buildGitHubMCP.Dir = projectRoot
 	out, err = buildGitHubMCP.CombinedOutput()
 	require.NoError(t, err, "failed to build github-mcp image: %s", out)
