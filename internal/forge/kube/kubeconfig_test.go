@@ -192,3 +192,30 @@ func TestGenerateKubeconfig_CurrentContext(t *testing.T) {
 
 	assert.Equal(t, "ctx-b", out.CurrentContext)
 }
+
+func TestListContexts(t *testing.T) {
+	t.Run("returns context names", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		kubeconfigPath := filepath.Join(tmpDir, "config")
+		require.NoError(t, os.WriteFile(kubeconfigPath, []byte(sampleKubeconfig()), 0o600))
+
+		contexts, err := ListContexts(kubeconfigPath)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ctx-a", "ctx-b"}, contexts)
+	})
+
+	t.Run("returns error for missing file", func(t *testing.T) {
+		_, err := ListContexts("/nonexistent/kubeconfig")
+		assert.Error(t, err)
+	})
+
+	t.Run("returns nil for empty contexts", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		kubeconfigPath := filepath.Join(tmpDir, "config")
+		require.NoError(t, os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\nkind: Config\n"), 0o600))
+
+		contexts, err := ListContexts(kubeconfigPath)
+		require.NoError(t, err)
+		assert.Nil(t, contexts)
+	})
+}

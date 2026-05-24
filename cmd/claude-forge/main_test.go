@@ -26,7 +26,7 @@ func TestNewRootCmd(t *testing.T) {
 	assert.Equal(t, "claude-forge", cmd.Use)
 
 	expectedSubcommands := []string{
-		"start", "resume", "stop", "status",
+		"init", "start", "resume", "stop", "status",
 		"build", "auth", "plugins", "version", "gateway", "kube",
 	}
 
@@ -935,5 +935,125 @@ func TestEnablePluginsInSettings(t *testing.T) {
 	t.Run("returns error when file missing", func(t *testing.T) {
 		err := enablePluginsInSettings(t.TempDir(), []string{"foo@bar"})
 		assert.Error(t, err)
+	})
+}
+
+func TestBuildConfigTemplate(t *testing.T) {
+	t.Run("without kubeconfig", func(t *testing.T) {
+		homeDir := t.TempDir()
+		content := buildConfigTemplate(homeDir)
+
+		assert.Contains(t, content, "images:")
+		assert.Contains(t, content, "defaults:")
+		assert.Contains(t, content, "# kubernetes:")
+		assert.Contains(t, content, "#   default_context: my-cluster")
+	})
+
+	t.Run("with kubeconfig", func(t *testing.T) {
+		homeDir := t.TempDir()
+		kubeDir := filepath.Join(homeDir, ".kube")
+		require.NoError(t, os.MkdirAll(kubeDir, 0o755))
+		kubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+  - name: prod-cluster
+    cluster:
+      server: https://prod.example.com
+  - name: dev-cluster
+    cluster:
+      server: https://dev.example.com
+contexts:
+  - name: prod
+    context:
+      cluster: prod-cluster
+      user: admin
+  - name: dev
+    context:
+      cluster: dev-cluster
+      user: admin
+current-context: prod
+users:
+  - name: admin
+    user:
+      token: fake
+`
+		require.NoError(t, os.WriteFile(filepath.Join(kubeDir, "config"), []byte(kubeconfig), 0o644))
+
+		content := buildConfigTemplate(homeDir)
+
+		assert.Contains(t, content, "#   default_context: prod")
+		assert.Contains(t, content, "#     - host_context: prod")
+		assert.Contains(t, content, "#     - host_context: dev")
+		assert.Contains(t, content, "#       service_account_name: claude-forge-agent")
+	})
+
+	t.Run("respects KUBECONFIG env", func(t *testing.T) {
+		homeDir := t.TempDir()
+		customPath := filepath.Join(homeDir, "custom-kubeconfig")
+		kubeconfig := `apiVersion: v1
+kind: Config
+contexts:
+  - name: custom-ctx
+    context:
+      cluster: c
+      user: u
+clusters:
+  - name: c
+    cluster:
+      server: https://custom.example.com
+users:
+  - name: u
+    user:
+      token: t
+`
+		require.NoError(t, os.WriteFile(customPath, []byte(kubeconfig), 0o644))
+		t.Setenv("KUBECONFIG", customPath)
+
+		content := buildConfigTemplate(homeDir)
+		assert.Contains(t, content, "#     - host_context: custom-ctx")
+	})
+}
+
+func TestInitCmd(t *testing.T) {
+	t.Run("creates config file", func(t *testing.T) {
+		homeDir := t.TempDir()
+		t.Setenv("HOME", homeDir)
+
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{})
+		require.NoError(t, cmd.Execute())
+
+		configPath := filepath.Join(homeDir, ".config", "claude-forge", "config.yaml")
+		data, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "images:")
+	})
+
+	t.Run("refuses to overwrite without force", func(t *testing.T) {
+		homeDir := t.TempDir()
+		t.Setenv("HOME", homeDir)
+
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{})
+		require.NoError(t, cmd.Execute())
+
+		cmd2 := newInitCmd()
+		cmd2.SetArgs([]string{})
+		err := cmd2.Execute()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "use --force to overwrite")
+	})
+
+	t.Run("overwrites with force", func(t *testing.T) {
+		homeDir := t.TempDir()
+		t.Setenv("HOME", homeDir)
+
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{})
+		require.NoError(t, cmd.Execute())
+
+		cmd2 := newInitCmd()
+		cmd2.SetArgs([]string{"--force"})
+		require.NoError(t, cmd2.Execute())
 	})
 }
