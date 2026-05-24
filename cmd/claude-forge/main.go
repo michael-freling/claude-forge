@@ -177,7 +177,10 @@ to disable it.`,
 
 // newResumeCmd creates the "resume" subcommand.
 func newResumeCmd() *cobra.Command {
-	var list bool
+	var (
+		list   bool
+		mounts []string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "resume [session-id]",
@@ -230,7 +233,7 @@ is continued.`,
 				if err != nil {
 					return err
 				}
-				return startSession(true, false, "", args[0], sess.Subdir, false, nil, sess.WorktreeName())
+				return startSession(true, false, "", args[0], sess.Subdir, false, mounts, sess.WorktreeName())
 			}
 
 			// Continue most recent session, detecting worktree if needed
@@ -242,11 +245,12 @@ is continued.`,
 				return fmt.Errorf("no sessions found to continue")
 			}
 			mostRecent := sessions[0]
-			return startSession(true, false, "", mostRecent.ID, mostRecent.Subdir, false, nil, mostRecent.WorktreeName())
+			return startSession(true, false, "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName())
 		},
 	}
 
 	cmd.Flags().BoolVar(&list, "list", false, "List available sessions")
+	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
 
 	return cmd
 }
