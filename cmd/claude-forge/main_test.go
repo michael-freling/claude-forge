@@ -609,6 +609,7 @@ func writeSessionFile(t *testing.T, path, timestamp, message string) {
 	require.NoError(t, os.WriteFile(path, content, 0o644))
 }
 
+
 func TestAuthCmd_WithAPIKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api-test1234567890abcdef")
 
