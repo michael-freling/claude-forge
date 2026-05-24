@@ -15,9 +15,9 @@ import (
 	"github.com/michael-freling/claude-code-tools/internal/forge/auth"
 	forgeconfig "github.com/michael-freling/claude-code-tools/internal/forge/config"
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
+	"github.com/michael-freling/claude-code-tools/internal/forge/kube"
 	"github.com/michael-freling/claude-code-tools/internal/forge/project"
 	"github.com/michael-freling/claude-code-tools/internal/forge/session"
-	"github.com/michael-freling/claude-code-tools/internal/forgegh"
 	"github.com/michael-freling/claude-code-tools/internal/gateway"
 	"github.com/spf13/cobra"
 )
@@ -32,24 +32,7 @@ type orchestratorFactoryFunc func() (*forge.Orchestrator, func(), error)
 // Tests override this to inject a mock.
 var createOrchestrator orchestratorFactoryFunc = newOrchestrator
 
-// forgeGHGatewayURL is the gateway URL used by the forge-gh client.
-// Tests override this to inject a non-routable address.
-var forgeGHGatewayURL = "http://gateway:8083"
-
 func main() {
-	// Busybox-style multi-call binary: if invoked as "gh" or "forge-gh",
-	// act as the forge-gh GitHub CLI wrapper.
-	basename := filepath.Base(os.Args[0])
-	if basename == "gh" || basename == "forge-gh" {
-		client := forgegh.NewClient(forgeGHGatewayURL)
-		if err := client.Run(os.Args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	// Normal CLI mode.
 	rootCmd := newRootCmd()
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -76,7 +59,7 @@ containers, Docker networks, and session state.`,
 		newPluginsCmd(),
 		newVersionCmd(),
 		newGatewayCmd(),
-		newForgeGHCmd(),
+		newKubeCmd(),
 	)
 
 	return rootCmd
@@ -377,13 +360,12 @@ func newGatewayCmd() *cobra.Command {
 		owner     string
 		repo      string
 		proxyAddr string
-		apiAddr   string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "gateway",
 		Short: "Start the gateway server (for container use)",
-		Long: `Start the gateway proxy and API server. This is typically invoked as the
+		Long: `Start the gateway proxy server. This is typically invoked as the
 entrypoint of the gateway container, not by end users directly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if owner == "" || repo == "" {
@@ -398,15 +380,14 @@ entrypoint of the gateway container, not by end users directly.`,
 				return fmt.Errorf("failed to create gateway server: %w", err)
 			}
 
-			fmt.Printf("Gateway starting: proxy=%s api=%s owner=%s repo=%s\n", proxyAddr, apiAddr, owner, repo)
-			return srv.Run(proxyAddr, apiAddr)
+			fmt.Printf("Gateway starting: proxy=%s owner=%s repo=%s\n", proxyAddr, owner, repo)
+			return srv.Run(proxyAddr)
 		},
 	}
 
 	cmd.Flags().StringVar(&owner, "owner", "", "Allowed GitHub repository owner")
 	cmd.Flags().StringVar(&repo, "repo", "", "Allowed GitHub repository name")
 	cmd.Flags().StringVar(&proxyAddr, "proxy-addr", ":8080", "Address for the git proxy server")
-	cmd.Flags().StringVar(&apiAddr, "api-addr", ":8083", "Address for the API server")
 
 	return cmd
 }
@@ -644,17 +625,58 @@ func extractGitHubRepo(path string) string {
 	return parts[0] + "/" + parts[1]
 }
 
-// newForgeGHCmd creates the "forge-gh" subcommand as an explicit alternative
-// to the os.Args[0] detection for running as the GitHub CLI wrapper.
-func newForgeGHCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "forge-gh",
-		Short:              "Act as GitHub CLI wrapper (for container use)",
-		Long:               `Proxy GitHub CLI commands through the gateway API server. This is used inside the agent container as an alternative to the busybox-style os.Args[0] detection.`,
-		DisableFlagParsing: true,
+// newKubeCmd creates the "kube" subcommand group for Kubernetes integration.
+func newKubeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "kube",
+		Short: "Kubernetes integration commands",
+	}
+	cmd.AddCommand(newKubeRenderCmd())
+	return cmd
+}
+
+// newKubeRenderCmd creates the "kube render" subcommand that generates RBAC
+// manifests for the Kubernetes MCP server's service account.
+func newKubeRenderCmd() *cobra.Command {
+	var (
+		clusterRoleName         string
+		serviceAccountName      string
+		serviceAccountNamespace string
+		kubeconfig              string
+		kubeContext             string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "render",
+		Short: "Generate RBAC manifests for Kubernetes MCP access",
+		Long: `Discovers API resources from the target cluster and generates
+ServiceAccount, ClusterRole, and ClusterRoleBinding YAML manifests with
+safe carveouts (no secrets, no exec, no RBAC tampering).
+
+The output can be piped directly to kubectl apply:
+
+  claude-forge kube render --context dev | kubectl apply -f -`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client := forgegh.NewClient(forgeGHGatewayURL)
-			return client.Run(args)
+			output, err := kube.Render(kube.RenderOptions{
+				ClusterRoleName:         clusterRoleName,
+				ServiceAccountName:      serviceAccountName,
+				ServiceAccountNamespace: serviceAccountNamespace,
+				Kubeconfig:              kubeconfig,
+				Context:                 kubeContext,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Print(output)
+			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&clusterRoleName, "cluster-role-name", "claude-forge-agent", "Name for the generated ClusterRole and ClusterRoleBinding")
+	cmd.Flags().StringVar(&serviceAccountName, "service-account-name", "claude-forge-agent", "Name for the generated ServiceAccount")
+	cmd.Flags().StringVar(&serviceAccountNamespace, "service-account-namespace", "default", "Namespace for the ServiceAccount")
+	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (defaults to $KUBECONFIG or ~/.kube/config)")
+	cmd.Flags().StringVar(&kubeContext, "context", "", "Kubeconfig context to use for API discovery")
+
+	return cmd
 }

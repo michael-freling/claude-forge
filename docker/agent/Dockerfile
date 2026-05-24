@@ -43,10 +43,6 @@ RUN npm install -g @anthropic-ai/claude-code
 # Copy claude-forge binary (built in CI or locally)
 COPY claude-forge /usr/local/bin/claude-forge
 
-# Create symlinks for forge-gh and gh
-RUN ln -s /usr/local/bin/claude-forge /usr/local/bin/forge-gh \
-    && ln -s /usr/local/bin/claude-forge /usr/local/bin/gh
-
 # Create non-root user (entrypoint adjusts UID/GID at startup)
 RUN useradd -m -s /bin/bash user
 

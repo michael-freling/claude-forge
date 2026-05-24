@@ -11,3 +11,4 @@ coverage*.txt
 
 # Claude Code state
 .claude/
+github-mcp/github-mcp

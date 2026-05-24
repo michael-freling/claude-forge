@@ -10,10 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types/mount"
 	"github.com/michael-freling/claude-code-tools/internal/forge/auth"
 	"github.com/michael-freling/claude-code-tools/internal/forge/claudecode"
 	"github.com/michael-freling/claude-code-tools/internal/forge/config"
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
+	"github.com/michael-freling/claude-code-tools/internal/forge/kube"
 	"github.com/michael-freling/claude-code-tools/internal/forge/project"
 	"github.com/michael-freling/claude-code-tools/internal/forge/session"
 	"gopkg.in/yaml.v3"
@@ -55,11 +57,12 @@ type StartOptions struct {
 
 // Session holds information about a running session.
 type Session struct {
-	AgentName   string
-	GatewayName string
-	NetworkName string
-	SessionID   string
-	ProjectID   string
+	AgentName     string
+	GatewayName   string
+	GitHubMCPName string
+	NetworkName   string
+	SessionID     string
+	ProjectID     string
 }
 
 // Start creates a new claude-forge session: loads config, identifies the project,
@@ -110,11 +113,12 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 
 	// Construct names
 	sess := &Session{
-		NetworkName: fmt.Sprintf("forge_net_%s_%s", proj.ID, sessionID),
-		AgentName:   fmt.Sprintf("forge-agent-%s-%s", proj.ID, sessionID),
-		GatewayName: fmt.Sprintf("forge-gateway-%s-%s", proj.ID, sessionID),
-		SessionID:   sessionID,
-		ProjectID:   proj.ID,
+		NetworkName:   fmt.Sprintf("forge_net_%s_%s", proj.ID, sessionID),
+		AgentName:     fmt.Sprintf("forge-agent-%s-%s", proj.ID, sessionID),
+		GatewayName:   fmt.Sprintf("forge-gateway-%s-%s", proj.ID, sessionID),
+		GitHubMCPName: fmt.Sprintf("forge-github-mcp-%s-%s", proj.ID, sessionID),
+		SessionID:     sessionID,
+		ProjectID:     proj.ID,
 	}
 
 	// Create session directory
@@ -151,7 +155,11 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 
 	// Pull images if not present
-	for _, img := range []string{cfg.Images.Agent, cfg.Images.Gateway} {
+	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
+	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+		imagesToPull = append(imagesToPull, cfg.Kubernetes.Image)
+	}
+	for _, img := range imagesToPull {
 		exists, err := o.Containers.ImageExists(ctx, img)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check image %s: %w", img, err)
@@ -202,6 +210,45 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 			return nil, fmt.Errorf("gateway container failed to start: %w\nGateway logs:\n%s", err, logs)
 		}
 		return nil, fmt.Errorf("gateway container failed to start: %w", err)
+	}
+
+	// Start GitHub MCP sidecar
+	o.Log("Starting GitHub MCP: %s", sess.GitHubMCPName)
+	mcpID, err := o.Containers.StartGitHubMCP(ctx, container.GitHubMCPOptions{
+		Name:        sess.GitHubMCPName,
+		Image:       cfg.Images.GitHubMCP,
+		NetworkName: sess.NetworkName,
+		Owner:       proj.Owner,
+		Repo:        proj.Repo,
+		Env:         gatewayEnv,
+	})
+	if err != nil {
+		o.Cleanup(ctx, sess)
+		return nil, fmt.Errorf("failed to start github-mcp: %w", err)
+	}
+
+	if err := o.Containers.WaitForReady(ctx, mcpID, 5*time.Second); err != nil {
+		logs, _ := o.Containers.ContainerLogs(ctx, mcpID)
+		o.Cleanup(ctx, sess)
+		if logs != "" {
+			return nil, fmt.Errorf("github-mcp failed to start: %w\nLogs:\n%s", err, logs)
+		}
+		return nil, fmt.Errorf("github-mcp failed to start: %w", err)
+	}
+
+	// Write MCP server config to settings.json for the agent
+	mcpServers := map[string]claudecode.MCPServerConfig{
+		"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
+	}
+
+	// Add Kubernetes MCP if enabled
+	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:8090/mcp"}
+	}
+
+	if err := claudecode.UpdateMCPServers(o.ConfigDir, mcpServers); err != nil {
+		o.Cleanup(ctx, sess)
+		return nil, fmt.Errorf("failed to update MCP settings: %w", err)
 	}
 
 	// Build agent command args
@@ -278,6 +325,13 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		})
 	}
 
+	// Start Kubernetes MCP shared service if enabled
+	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
+			o.Log("Warning: failed to start Kubernetes MCP: %v", err)
+		}
+	}
+
 	// Start agent
 	o.Log("Starting agent: %s", sess.AgentName)
 	if _, err := o.Containers.StartAgent(ctx, container.AgentOptions{
@@ -302,6 +356,13 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to start agent: %w", err)
 	}
 
+	// Connect agent to shared network for Kubernetes MCP access
+	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+		if err := o.Containers.ConnectNetwork(ctx, "forge-shared", sess.AgentName, nil); err != nil {
+			o.Log("Warning: failed to connect agent to shared network: %v", err)
+		}
+	}
+
 	return sess, nil
 }
 
@@ -310,6 +371,8 @@ func (o *Orchestrator) Cleanup(ctx context.Context, sess *Session) {
 	o.Log("Cleaning up...")
 	_ = o.Containers.StopContainer(ctx, sess.AgentName)
 	_ = o.Containers.RemoveContainer(ctx, sess.AgentName)
+	_ = o.Containers.StopContainer(ctx, sess.GitHubMCPName)
+	_ = o.Containers.RemoveContainer(ctx, sess.GitHubMCPName)
 	_ = o.Containers.StopContainer(ctx, sess.GatewayName)
 	_ = o.Containers.RemoveContainer(ctx, sess.GatewayName)
 	_ = o.Containers.RemoveNetwork(ctx, sess.NetworkName)
@@ -346,12 +409,16 @@ func (o *Orchestrator) Stop(ctx context.Context, projectDir string) error {
 		_ = o.Containers.RemoveContainer(ctx, c.Name)
 	}
 
-	// Extract session IDs and remove networks
+	// Extract session IDs and remove networks.
+	// Container names follow the pattern: forge-<type>-<project-id>-<session-id>
+	// where session-id is the last 8 hex characters.
 	sessionIDs := make(map[string]bool)
+	prefixes := []string{"forge-agent-", "forge-gateway-", "forge-github-mcp-"}
 	for _, c := range matched {
 		name := c.Name
-		name = strings.TrimPrefix(name, "forge-agent-")
-		name = strings.TrimPrefix(name, "forge-gateway-")
+		for _, prefix := range prefixes {
+			name = strings.TrimPrefix(name, prefix)
+		}
 		if len(name) >= 8 {
 			sid := name[len(name)-8:]
 			sessionIDs[sid] = true
@@ -398,6 +465,86 @@ func readGHToken(ghConfigDir string) string {
 	return ""
 }
 
+// startKubernetesMCP ensures the shared Kubernetes MCP service is running.
+func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Config) error {
+	// Ensure shared network exists
+	if _, err := o.Containers.EnsureSharedNetwork(ctx, "forge-shared"); err != nil {
+		return fmt.Errorf("failed to ensure shared network: %w", err)
+	}
+
+	k8sMCPName := "forge-k8s-mcp"
+	running, err := o.Containers.IsContainerRunning(ctx, k8sMCPName)
+	if err != nil {
+		return fmt.Errorf("failed to check k8s-mcp status: %w", err)
+	}
+	if running {
+		o.Log("Kubernetes MCP already running")
+		return nil
+	}
+
+	// Generate kubeconfig with SA tokens
+	kubeconfigDir := filepath.Join(o.ConfigDir, "k8s-mcp")
+	if err := os.MkdirAll(kubeconfigDir, 0o700); err != nil {
+		return fmt.Errorf("failed to create k8s-mcp config dir: %w", err)
+	}
+	kubeconfigOutput := filepath.Join(kubeconfigDir, "kubeconfig")
+
+	homeKubeconfig := filepath.Join(o.HomeDir, ".kube", "config")
+	if kc := os.Getenv("KUBECONFIG"); kc != "" {
+		homeKubeconfig = kc
+	}
+
+	var contexts []kube.ContextConfig
+	for _, c := range cfg.Kubernetes.Contexts {
+		contexts = append(contexts, kube.ContextConfig{
+			HostContext:             c.HostContext,
+			ServiceAccountName:      c.ServiceAccountName,
+			ServiceAccountNamespace: c.ServiceAccountNamespace,
+		})
+	}
+
+	defaultCtx := cfg.Kubernetes.DefaultContext
+	if defaultCtx == "" && len(cfg.Kubernetes.Contexts) > 0 {
+		defaultCtx = cfg.Kubernetes.Contexts[0].HostContext
+	}
+
+	if err := kube.GenerateKubeconfig(contexts, homeKubeconfig, defaultCtx, kubeconfigOutput); err != nil {
+		return fmt.Errorf("failed to generate kubeconfig: %w", err)
+	}
+
+	// Build command for the MCP server
+	cmd := []string{"--transport", "http", "--port", "8090"}
+	if cfg.Kubernetes.ReadOnly {
+		cmd = append(cmd, "--read-only")
+	}
+
+	o.Log("Starting Kubernetes MCP: %s", k8sMCPName)
+	k8sID, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
+		Name:        k8sMCPName,
+		Image:       cfg.Kubernetes.Image,
+		NetworkName: "forge-shared",
+		Alias:       "k8s-mcp",
+		Cmd:         cmd,
+		Mounts: []mount.Mount{
+			{
+				Type:     mount.TypeBind,
+				Source:   kubeconfigOutput,
+				Target:   "/home/user/.kube/config",
+				ReadOnly: true,
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start k8s-mcp: %w", err)
+	}
+
+	if err := o.Containers.WaitForReady(ctx, k8sID, 10*time.Second); err != nil {
+		return fmt.Errorf("k8s-mcp failed to start: %w", err)
+	}
+
+	return nil
+}
+
 // Build pulls the latest agent and gateway images.
 func (o *Orchestrator) Build(ctx context.Context) error {
 	cfg, err := config.Load(o.ConfigDir)
@@ -405,7 +552,11 @@ func (o *Orchestrator) Build(ctx context.Context) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	for _, img := range []string{cfg.Images.Agent, cfg.Images.Gateway} {
+	images := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
+	if cfg.Kubernetes.Enabled {
+		images = append(images, cfg.Kubernetes.Image)
+	}
+	for _, img := range images {
 		o.Log("Pulling image: %s", img)
 		if err := o.Containers.PullImage(ctx, img); err != nil {
 			return fmt.Errorf("failed to pull image %s: %w", img, err)

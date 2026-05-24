@@ -1090,6 +1090,8 @@ func TestListForgeContainers_Filters(t *testing.T) {
 			expectedFilters := filters.NewArgs()
 			expectedFilters.Add("name", "forge-agent-")
 			expectedFilters.Add("name", "forge-gateway-")
+			expectedFilters.Add("name", "forge-github-mcp-")
+			expectedFilters.Add("name", "forge-k8s-mcp")
 			assert.Equal(t, expectedFilters, opts.Filters)
 
 			return []container.Summary{}, nil
@@ -1373,6 +1375,476 @@ func TestWaitForReady(t *testing.T) {
 			}
 
 			require.NoError(t, err)
+		})
+	}
+}
+
+func TestStartGitHubMCP(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        GitHubMCPOptions
+		setupMock   func(*MockDockerAPI)
+		wantID      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "creates and starts github-mcp container",
+			opts: GitHubMCPOptions{
+				Name:        "forge-github-mcp-project-session1",
+				Image:       "github-mcp:latest",
+				NetworkName: "forge_net",
+				Owner:       "michael-freling",
+				Repo:        "claude-code-tools",
+				Env:         map[string]string{"GITHUB_TOKEN": "ghp_test123"},
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(
+						gomock.Any(),
+						gomock.Any(),
+						gomock.Any(),
+						gomock.Any(),
+						"forge-github-mcp-project-session1",
+					).
+					DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
+						assert.Equal(t, "github-mcp:latest", config.Image)
+						assert.Equal(t, []string{"--owner=michael-freling", "--repo=claude-code-tools"}, []string(config.Cmd))
+						assert.Contains(t, config.Env, "GITHUB_TOKEN=ghp_test123")
+						assert.Contains(t, netConfig.EndpointsConfig, "forge_net")
+						assert.Equal(t, []string{"github-mcp"}, netConfig.EndpointsConfig["forge_net"].Aliases)
+
+						return container.CreateResponse{ID: "mcp-123"}, nil
+					})
+				m.EXPECT().
+					ContainerStart(gomock.Any(), "mcp-123", container.StartOptions{}).
+					Return(nil)
+			},
+			wantID: "mcp-123",
+		},
+		{
+			name: "fails when container create fails",
+			opts: GitHubMCPOptions{
+				Name:        "forge-github-mcp-test",
+				Image:       "github-mcp:latest",
+				NetworkName: "forge_net",
+				Owner:       "owner",
+				Repo:        "repo",
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(container.CreateResponse{}, fmt.Errorf("image not found"))
+			},
+			wantErr:     true,
+			errContains: "failed to create github-mcp container",
+		},
+		{
+			name: "fails when container start fails",
+			opts: GitHubMCPOptions{
+				Name:        "forge-github-mcp-test",
+				Image:       "github-mcp:latest",
+				NetworkName: "forge_net",
+				Owner:       "owner",
+				Repo:        "repo",
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(container.CreateResponse{ID: "mcp-123"}, nil)
+				m.EXPECT().
+					ContainerStart(gomock.Any(), "mcp-123", container.StartOptions{}).
+					Return(fmt.Errorf("start failed"))
+			},
+			wantErr:     true,
+			errContains: "failed to start github-mcp container",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockAPI := NewMockDockerAPI(ctrl)
+			tt.setupMock(mockAPI)
+
+			client := newClientWithAPI(mockAPI)
+			ctx := context.Background()
+
+			id, err := client.StartGitHubMCP(ctx, tt.opts)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantID, id)
+		})
+	}
+}
+
+func TestStartSharedService(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        SharedServiceOptions
+		setupMock   func(*MockDockerAPI)
+		wantID      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "creates and starts shared service container",
+			opts: SharedServiceOptions{
+				Name:        "forge-k8s-mcp",
+				Image:       "k8s-mcp:latest",
+				NetworkName: "forge-shared",
+				Alias:       "k8s-mcp",
+				Env:         map[string]string{"KUBECONFIG": "/home/user/.kube/config"},
+				Cmd:         []string{"serve", "--port=8080"},
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(
+						gomock.Any(),
+						gomock.Any(),
+						gomock.Any(),
+						gomock.Any(),
+						"forge-k8s-mcp",
+					).
+					DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
+						assert.Equal(t, "k8s-mcp:latest", config.Image)
+						assert.Equal(t, []string{"serve", "--port=8080"}, []string(config.Cmd))
+						assert.Contains(t, config.Env, "KUBECONFIG=/home/user/.kube/config")
+						assert.Contains(t, netConfig.EndpointsConfig, "forge-shared")
+						assert.Equal(t, []string{"k8s-mcp"}, netConfig.EndpointsConfig["forge-shared"].Aliases)
+
+						return container.CreateResponse{ID: "shared-123"}, nil
+					})
+				m.EXPECT().
+					ContainerStart(gomock.Any(), "shared-123", container.StartOptions{}).
+					Return(nil)
+			},
+			wantID: "shared-123",
+		},
+		{
+			name: "fails when container create fails",
+			opts: SharedServiceOptions{
+				Name:        "forge-k8s-mcp",
+				Image:       "k8s-mcp:latest",
+				NetworkName: "forge-shared",
+				Alias:       "k8s-mcp",
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(container.CreateResponse{}, fmt.Errorf("image not found"))
+			},
+			wantErr:     true,
+			errContains: "failed to create forge-k8s-mcp container",
+		},
+		{
+			name: "fails when container start fails",
+			opts: SharedServiceOptions{
+				Name:        "forge-k8s-mcp",
+				Image:       "k8s-mcp:latest",
+				NetworkName: "forge-shared",
+				Alias:       "k8s-mcp",
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(container.CreateResponse{ID: "shared-123"}, nil)
+				m.EXPECT().
+					ContainerStart(gomock.Any(), "shared-123", container.StartOptions{}).
+					Return(fmt.Errorf("start failed"))
+			},
+			wantErr:     true,
+			errContains: "failed to start forge-k8s-mcp container",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockAPI := NewMockDockerAPI(ctrl)
+			tt.setupMock(mockAPI)
+
+			client := newClientWithAPI(mockAPI)
+			ctx := context.Background()
+
+			id, err := client.StartSharedService(ctx, tt.opts)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantID, id)
+		})
+	}
+}
+
+func TestEnsureSharedNetwork(t *testing.T) {
+	tests := []struct {
+		name        string
+		networkName string
+		setupMock   func(*MockDockerAPI)
+		wantID      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "creates new network when none exists",
+			networkName: "forge-shared",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					NetworkList(gomock.Any(), gomock.Any()).
+					Return([]network.Inspect{}, nil)
+				m.EXPECT().
+					NetworkCreate(gomock.Any(), "forge-shared", network.CreateOptions{Driver: "bridge"}).
+					Return(network.CreateResponse{ID: "net-new-123"}, nil)
+			},
+			wantID: "net-new-123",
+		},
+		{
+			name:        "returns existing network ID when already exists",
+			networkName: "forge-shared",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					NetworkList(gomock.Any(), gomock.Any()).
+					Return([]network.Inspect{
+						{ID: "net-existing-456", Name: "forge-shared"},
+					}, nil)
+			},
+			wantID: "net-existing-456",
+		},
+		{
+			name:        "fails when network list fails",
+			networkName: "forge-shared",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					NetworkList(gomock.Any(), gomock.Any()).
+					Return(nil, fmt.Errorf("daemon error"))
+			},
+			wantErr:     true,
+			errContains: "failed to list networks",
+		},
+		{
+			name:        "fails when network create fails",
+			networkName: "forge-shared",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					NetworkList(gomock.Any(), gomock.Any()).
+					Return([]network.Inspect{}, nil)
+				m.EXPECT().
+					NetworkCreate(gomock.Any(), "forge-shared", network.CreateOptions{Driver: "bridge"}).
+					Return(network.CreateResponse{}, fmt.Errorf("permission denied"))
+			},
+			wantErr:     true,
+			errContains: "failed to create shared network",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockAPI := NewMockDockerAPI(ctrl)
+			tt.setupMock(mockAPI)
+
+			client := newClientWithAPI(mockAPI)
+			ctx := context.Background()
+
+			id, err := client.EnsureSharedNetwork(ctx, tt.networkName)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantID, id)
+		})
+	}
+}
+
+func TestConnectNetwork(t *testing.T) {
+	tests := []struct {
+		name          string
+		networkName   string
+		containerName string
+		aliases       []string
+		setupMock     func(*MockDockerAPI)
+		wantErr       bool
+		errContains   string
+	}{
+		{
+			name:          "connects container to network with aliases",
+			networkName:   "forge-shared",
+			containerName: "forge-agent-project-session1",
+			aliases:       []string{"agent"},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					NetworkConnect(gomock.Any(), "forge-shared", "forge-agent-project-session1", gomock.Any()).
+					DoAndReturn(func(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error {
+						assert.Equal(t, []string{"agent"}, config.Aliases)
+						return nil
+					})
+			},
+		},
+		{
+			name:          "connects container to network without aliases",
+			networkName:   "forge-shared",
+			containerName: "forge-agent-project-session1",
+			aliases:       nil,
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					NetworkConnect(gomock.Any(), "forge-shared", "forge-agent-project-session1", gomock.Any()).
+					DoAndReturn(func(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error {
+						assert.Nil(t, config.Aliases)
+						return nil
+					})
+			},
+		},
+		{
+			name:          "fails when Docker returns error",
+			networkName:   "forge-shared",
+			containerName: "forge-agent-project-session1",
+			aliases:       []string{"agent"},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					NetworkConnect(gomock.Any(), "forge-shared", "forge-agent-project-session1", gomock.Any()).
+					Return(fmt.Errorf("network not found"))
+			},
+			wantErr:     true,
+			errContains: "failed to connect forge-agent-project-session1 to network forge-shared",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockAPI := NewMockDockerAPI(ctrl)
+			tt.setupMock(mockAPI)
+
+			client := newClientWithAPI(mockAPI)
+			ctx := context.Background()
+
+			err := client.ConnectNetwork(ctx, tt.networkName, tt.containerName, tt.aliases)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestIsContainerRunning(t *testing.T) {
+	tests := []struct {
+		name          string
+		containerName string
+		setupMock     func(*MockDockerAPI)
+		want          bool
+		wantErr       bool
+		errContains   string
+	}{
+		{
+			name:          "returns true when container is running",
+			containerName: "forge-k8s-mcp",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "forge-k8s-mcp").
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Running: true},
+						},
+					}, nil)
+			},
+			want: true,
+		},
+		{
+			name:          "returns false when container is not running",
+			containerName: "forge-k8s-mcp",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "forge-k8s-mcp").
+					Return(container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
+							State: &container.State{Running: false, Status: "exited"},
+						},
+					}, nil)
+			},
+			want: false,
+		},
+		{
+			name:          "returns false with no error when container not found",
+			containerName: "forge-k8s-mcp",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "forge-k8s-mcp").
+					Return(container.InspectResponse{}, fmt.Errorf("No such container: forge-k8s-mcp"))
+			},
+			want: false,
+		},
+		{
+			name:          "returns false with no error when not found error",
+			containerName: "forge-k8s-mcp",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "forge-k8s-mcp").
+					Return(container.InspectResponse{}, fmt.Errorf("container not found"))
+			},
+			want: false,
+		},
+		{
+			name:          "returns error for other inspect failures",
+			containerName: "forge-k8s-mcp",
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerInspect(gomock.Any(), "forge-k8s-mcp").
+					Return(container.InspectResponse{}, fmt.Errorf("daemon connection refused"))
+			},
+			wantErr:     true,
+			errContains: "failed to inspect container",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockAPI := NewMockDockerAPI(ctrl)
+			tt.setupMock(mockAPI)
+
+			client := newClientWithAPI(mockAPI)
+			ctx := context.Background()
+
+			got, err := client.IsContainerRunning(ctx, tt.containerName)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

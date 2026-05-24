@@ -37,12 +37,16 @@ defaults:
 `,
 			want: &Config{
 				Images: ImagesConfig{
-					Agent:   "custom-agent:v1",
-					Gateway: "custom-gateway:v2",
+					Agent:     "custom-agent:v1",
+					Gateway:   "custom-gateway:v2",
+					GitHubMCP: DefaultGitHubMCPImage,
 				},
 				Defaults: DefaultsConfig{
 					SkipPermissions: true,
 					Worktree:        true,
+				},
+				Kubernetes: KubernetesConfig{
+					Image: DefaultKubernetesMCPImage,
 				},
 			},
 		},
@@ -53,12 +57,16 @@ defaults:
 `,
 			want: &Config{
 				Images: ImagesConfig{
-					Agent:   DefaultAgentImage,
-					Gateway: DefaultGatewayImage,
+					Agent:     DefaultAgentImage,
+					Gateway:   DefaultGatewayImage,
+					GitHubMCP: DefaultGitHubMCPImage,
 				},
 				Defaults: DefaultsConfig{
 					SkipPermissions: true,
 					Worktree:        false,
+				},
+				Kubernetes: KubernetesConfig{
+					Image: DefaultKubernetesMCPImage,
 				},
 			},
 		},
@@ -69,8 +77,12 @@ defaults:
 `,
 			want: &Config{
 				Images: ImagesConfig{
-					Agent:   "my-agent:latest",
-					Gateway: DefaultGatewayImage,
+					Agent:     "my-agent:latest",
+					Gateway:   DefaultGatewayImage,
+					GitHubMCP: DefaultGitHubMCPImage,
+				},
+				Kubernetes: KubernetesConfig{
+					Image: DefaultKubernetesMCPImage,
 				},
 			},
 		},
@@ -139,6 +151,26 @@ func TestLoad_UnreadableFile(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to read config file")
+}
+
+func TestLoad_ExplicitEmptyGitHubMCPAndKubeImage(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	configYAML := `images:
+  github_mcp: ""
+kubernetes:
+  image: ""
+`
+	err := os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configYAML), 0o644)
+	require.NoError(t, err)
+
+	got, err := Load(tmpDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, DefaultAgentImage, got.Images.Agent)
+	assert.Equal(t, DefaultGatewayImage, got.Images.Gateway)
+	assert.Equal(t, DefaultGitHubMCPImage, got.Images.GitHubMCP)
+	assert.Equal(t, DefaultKubernetesMCPImage, got.Kubernetes.Image)
 }
 
 func TestLoad_PartialGatewayOnly(t *testing.T) {

@@ -23,8 +23,13 @@ import (
 type ContainerManager interface {
 	CreateNetwork(ctx context.Context, name string) (string, error)
 	RemoveNetwork(ctx context.Context, name string) error
+	EnsureSharedNetwork(ctx context.Context, name string) (string, error)
+	ConnectNetwork(ctx context.Context, networkName, containerName string, aliases []string) error
 	StartAgent(ctx context.Context, opts AgentOptions) (string, error)
 	StartGateway(ctx context.Context, opts GatewayOptions) (string, error)
+	StartGitHubMCP(ctx context.Context, opts GitHubMCPOptions) (string, error)
+	StartSharedService(ctx context.Context, opts SharedServiceOptions) (string, error)
+	IsContainerRunning(ctx context.Context, name string) (bool, error)
 	WaitForReady(ctx context.Context, containerID string, timeout time.Duration) error
 	StopContainer(ctx context.Context, name string) error
 	RemoveContainer(ctx context.Context, name string) error
@@ -49,6 +54,8 @@ type DockerAPI interface {
 	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkRemove(ctx context.Context, networkID string) error
+	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
+	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Inspect, error)
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
 	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
 	Close() error
@@ -95,6 +102,14 @@ func (w *dockerAPIWrapper) NetworkCreate(ctx context.Context, name string, optio
 
 func (w *dockerAPIWrapper) NetworkRemove(ctx context.Context, networkID string) error {
 	return w.client.NetworkRemove(ctx, networkID)
+}
+
+func (w *dockerAPIWrapper) NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error {
+	return w.client.NetworkConnect(ctx, networkID, containerID, config)
+}
+
+func (w *dockerAPIWrapper) NetworkList(ctx context.Context, options network.ListOptions) ([]network.Inspect, error) {
+	return w.client.NetworkList(ctx, options)
 }
 
 func (w *dockerAPIWrapper) ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error) {
@@ -407,6 +422,150 @@ func (c *Client) StartGateway(ctx context.Context, opts GatewayOptions) (string,
 	return resp.ID, nil
 }
 
+// GitHubMCPOptions holds configuration for starting a GitHub MCP sidecar container.
+type GitHubMCPOptions struct {
+	Name        string            // container name: forge-github-mcp-<project-id>-<session-id>
+	Image       string            // github-mcp image
+	NetworkName string            // Docker network to attach to
+	Owner       string            // allowed repo owner
+	Repo        string            // allowed repo name
+	Env         map[string]string // environment variables (GITHUB_TOKEN)
+}
+
+// StartGitHubMCP creates and starts a GitHub MCP sidecar container.
+func (c *Client) StartGitHubMCP(ctx context.Context, opts GitHubMCPOptions) (string, error) {
+	env := make([]string, 0, len(opts.Env))
+	for k, v := range opts.Env {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	containerConfig := &container.Config{
+		Image: opts.Image,
+		Env:   env,
+		Cmd:   []string{"--owner=" + opts.Owner, "--repo=" + opts.Repo},
+	}
+
+	hostConfig := &container.HostConfig{}
+
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			opts.NetworkName: {
+				Aliases: []string{"github-mcp"},
+			},
+		},
+	}
+
+	resp, err := c.docker.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, opts.Name)
+	if err != nil {
+		return "", fmt.Errorf("failed to create github-mcp container: %w", err)
+	}
+
+	if err := c.docker.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", fmt.Errorf("failed to start github-mcp container: %w", err)
+	}
+
+	return resp.ID, nil
+}
+
+// SharedServiceOptions holds configuration for starting a shared singleton service container.
+type SharedServiceOptions struct {
+	Name        string            // container name, e.g. "forge-k8s-mcp"
+	Image       string            // Docker image
+	NetworkName string            // shared network name
+	Alias       string            // network alias, e.g. "k8s-mcp"
+	Env         map[string]string // environment variables
+	Mounts      []mount.Mount     // bind mounts
+	Cmd         []string          // container command
+}
+
+// StartSharedService creates and starts a shared singleton service container.
+func (c *Client) StartSharedService(ctx context.Context, opts SharedServiceOptions) (string, error) {
+	env := make([]string, 0, len(opts.Env))
+	for k, v := range opts.Env {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	containerConfig := &container.Config{
+		Image: opts.Image,
+		Env:   env,
+		Cmd:   opts.Cmd,
+	}
+
+	hostConfig := &container.HostConfig{
+		Mounts: opts.Mounts,
+	}
+
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			opts.NetworkName: {
+				Aliases: []string{opts.Alias},
+			},
+		},
+	}
+
+	resp, err := c.docker.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, opts.Name)
+	if err != nil {
+		return "", fmt.Errorf("failed to create %s container: %w", opts.Name, err)
+	}
+
+	if err := c.docker.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", fmt.Errorf("failed to start %s container: %w", opts.Name, err)
+	}
+
+	return resp.ID, nil
+}
+
+// EnsureSharedNetwork creates a shared Docker network if it doesn't already exist.
+// Returns the network ID.
+func (c *Client) EnsureSharedNetwork(ctx context.Context, name string) (string, error) {
+	// Check if network already exists
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("name", "^"+name+"$")
+	networks, err := c.docker.NetworkList(ctx, network.ListOptions{Filters: filterArgs})
+	if err != nil {
+		return "", fmt.Errorf("failed to list networks: %w", err)
+	}
+	for _, n := range networks {
+		if n.Name == name {
+			return n.ID, nil
+		}
+	}
+
+	// Create new network
+	resp, err := c.docker.NetworkCreate(ctx, name, network.CreateOptions{
+		Driver: "bridge",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create shared network %s: %w", name, err)
+	}
+	return resp.ID, nil
+}
+
+// ConnectNetwork connects a container to a Docker network with optional aliases.
+func (c *Client) ConnectNetwork(ctx context.Context, networkName, containerName string, aliases []string) error {
+	config := &network.EndpointSettings{}
+	if len(aliases) > 0 {
+		config.Aliases = aliases
+	}
+	if err := c.docker.NetworkConnect(ctx, networkName, containerName, config); err != nil {
+		return fmt.Errorf("failed to connect %s to network %s: %w", containerName, networkName, err)
+	}
+	return nil
+}
+
+// IsContainerRunning checks if a container with the given name exists and is running.
+// Returns false (no error) if the container doesn't exist.
+func (c *Client) IsContainerRunning(ctx context.Context, name string) (bool, error) {
+	info, err := c.docker.ContainerInspect(ctx, name)
+	if err != nil {
+		if strings.Contains(err.Error(), "No such container") || strings.Contains(err.Error(), "not found") {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to inspect container %s: %w", name, err)
+	}
+	return info.State != nil && info.State.Running, nil
+}
+
 // WaitForReady polls the container state until it is running or exits.
 // After the container first appears running, it re-checks after a short
 // stabilization delay to catch processes that crash immediately on startup.
@@ -502,6 +661,8 @@ func (c *Client) ListForgeContainers(ctx context.Context) ([]ContainerInfo, erro
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("name", "forge-agent-")
 	filterArgs.Add("name", "forge-gateway-")
+	filterArgs.Add("name", "forge-github-mcp-")
+	filterArgs.Add("name", "forge-k8s-mcp")
 
 	containers, err := c.docker.ContainerList(ctx, container.ListOptions{
 		All:     true,

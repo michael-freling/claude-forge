@@ -411,6 +411,52 @@ func DetectCacheDirs(homeDir string) []CacheDir {
 	return result
 }
 
+// MCPServerConfig represents an MCP server entry in settings.json.
+type MCPServerConfig struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+}
+
+// UpdateMCPServers reads settings.json from configDir, merges the given
+// mcpServers map, and writes back. Creates the file with defaults if missing.
+func UpdateMCPServers(configDir string, servers map[string]MCPServerConfig) error {
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	settingsPath := filepath.Join(configDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read settings.json: %w", err)
+		}
+		data = []byte(DefaultSettings())
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return fmt.Errorf("failed to parse settings.json: %w", err)
+	}
+
+	mcpServers := make(map[string]any)
+	if existing, ok := settings["mcpServers"].(map[string]any); ok {
+		mcpServers = existing
+	}
+	for name, cfg := range servers {
+		mcpServers[name] = map[string]any{
+			"type": cfg.Type,
+			"url":  cfg.URL,
+		}
+	}
+	settings["mcpServers"] = mcpServers
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal settings.json: %w", err)
+	}
+	return os.WriteFile(settingsPath, append(out, '\n'), 0o644)
+}
+
 // pathExists returns true if the given path exists on the filesystem.
 func pathExists(path string) bool {
 	_, err := os.Stat(path)

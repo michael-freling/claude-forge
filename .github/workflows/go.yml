@@ -45,6 +45,7 @@ jobs:
     - name: Calculate coverage
       run: go tool cover -func=coverage.txt
 
+    # NEVER lower this threshold. Coverage must stay at or above 90%.
     - name: Check coverage threshold
       run: |
         # Exclude generated mocks from coverage threshold.
@@ -116,6 +117,9 @@ jobs:
 
     - name: Build agent Docker image
       run: docker build -t claude-forge-agent-test docker/agent/
+
+    - name: Build github-mcp Docker image
+      run: docker build -t claude-forge-github-mcp-test github-mcp/
 
   # Claude CLI E2E tests are run locally only (require real Claude CLI)
   # Run with: ./scripts/run-e2e-tests.sh

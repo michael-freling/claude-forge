@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -824,5 +825,178 @@ func TestDetectCacheDirs(t *testing.T) {
 				assert.Equal(t, filepath.Join(forgeCacheBase, "pip"), cd.Source)
 			}
 		}
+	})
+}
+
+func TestUpdateMCPServers(t *testing.T) {
+	t.Run("creates mcpServers in new settings.json", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "config")
+
+		servers := map[string]MCPServerConfig{
+			"my-server": {Type: "sse", URL: "http://localhost:3000/sse"},
+		}
+
+		err := UpdateMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+		require.NoError(t, err)
+
+		var settings map[string]any
+		require.NoError(t, json.Unmarshal(data, &settings))
+
+		// Default keys from DefaultSettings should be present
+		assert.Equal(t, "disabled", settings["autoUpdaterStatus"])
+		assert.Equal(t, true, settings["skipDangerousModePermissionPrompt"])
+
+		// mcpServers should contain our server
+		mcpServers, ok := settings["mcpServers"].(map[string]any)
+		require.True(t, ok, "mcpServers should be a map")
+
+		server, ok := mcpServers["my-server"].(map[string]any)
+		require.True(t, ok, "my-server should be a map")
+		assert.Equal(t, "sse", server["type"])
+		assert.Equal(t, "http://localhost:3000/sse", server["url"])
+	})
+
+	t.Run("merges mcpServers into existing settings with other keys", func(t *testing.T) {
+		configDir := t.TempDir()
+
+		existingSettings := `{
+  "autoUpdaterStatus": "disabled",
+  "model": "claude-opus-4-6",
+  "customKey": "customValue"
+}`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(existingSettings), 0o644))
+
+		servers := map[string]MCPServerConfig{
+			"gateway": {Type: "sse", URL: "http://gateway:8080/mcp"},
+		}
+
+		err := UpdateMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+		require.NoError(t, err)
+
+		var settings map[string]any
+		require.NoError(t, json.Unmarshal(data, &settings))
+
+		// Existing keys should be preserved
+		assert.Equal(t, "disabled", settings["autoUpdaterStatus"])
+		assert.Equal(t, "claude-opus-4-6", settings["model"])
+		assert.Equal(t, "customValue", settings["customKey"])
+
+		// mcpServers should be added
+		mcpServers, ok := settings["mcpServers"].(map[string]any)
+		require.True(t, ok, "mcpServers should be a map")
+
+		server, ok := mcpServers["gateway"].(map[string]any)
+		require.True(t, ok, "gateway should be a map")
+		assert.Equal(t, "sse", server["type"])
+		assert.Equal(t, "http://gateway:8080/mcp", server["url"])
+	})
+
+	t.Run("overwrites existing mcpServers entries", func(t *testing.T) {
+		configDir := t.TempDir()
+
+		existingSettings := `{
+  "autoUpdaterStatus": "disabled",
+  "mcpServers": {
+    "old-server": {"type": "sse", "url": "http://old:1111/sse"},
+    "shared-server": {"type": "sse", "url": "http://shared:2222/sse"}
+  }
+}`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(existingSettings), 0o644))
+
+		servers := map[string]MCPServerConfig{
+			"shared-server": {Type: "sse", URL: "http://shared:9999/new"},
+			"new-server":    {Type: "sse", URL: "http://new:3333/sse"},
+		}
+
+		err := UpdateMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+		require.NoError(t, err)
+
+		var settings map[string]any
+		require.NoError(t, json.Unmarshal(data, &settings))
+
+		mcpServers, ok := settings["mcpServers"].(map[string]any)
+		require.True(t, ok, "mcpServers should be a map")
+
+		// Old server should be preserved
+		oldServer, ok := mcpServers["old-server"].(map[string]any)
+		require.True(t, ok, "old-server should still exist")
+		assert.Equal(t, "http://old:1111/sse", oldServer["url"])
+
+		// Shared server should be overwritten with new URL
+		sharedServer, ok := mcpServers["shared-server"].(map[string]any)
+		require.True(t, ok, "shared-server should exist")
+		assert.Equal(t, "http://shared:9999/new", sharedServer["url"])
+
+		// New server should be added
+		newServer, ok := mcpServers["new-server"].(map[string]any)
+		require.True(t, ok, "new-server should exist")
+		assert.Equal(t, "http://new:3333/sse", newServer["url"])
+	})
+
+	t.Run("handles nonexistent configDir by creating it", func(t *testing.T) {
+		baseDir := t.TempDir()
+		configDir := filepath.Join(baseDir, "does", "not", "exist")
+
+		servers := map[string]MCPServerConfig{
+			"server": {Type: "sse", URL: "http://localhost:8080/sse"},
+		}
+
+		err := UpdateMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		// Directory should have been created
+		info, err := os.Stat(configDir)
+		require.NoError(t, err)
+		assert.True(t, info.IsDir())
+
+		// File should exist with correct content
+		data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+		require.NoError(t, err)
+
+		var settings map[string]any
+		require.NoError(t, json.Unmarshal(data, &settings))
+
+		mcpServers, ok := settings["mcpServers"].(map[string]any)
+		require.True(t, ok)
+		_, ok = mcpServers["server"]
+		assert.True(t, ok)
+	})
+
+	t.Run("directory creation error", func(t *testing.T) {
+		baseDir := t.TempDir()
+		blockingFile := filepath.Join(baseDir, "blocked")
+		require.NoError(t, os.WriteFile(blockingFile, []byte("file"), 0o644))
+
+		configDir := filepath.Join(blockingFile, "config")
+
+		servers := map[string]MCPServerConfig{
+			"server": {Type: "sse", URL: "http://localhost:8080/sse"},
+		}
+
+		err := UpdateMCPServers(configDir, servers)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to create config directory")
+	})
+
+	t.Run("invalid JSON in existing settings.json", func(t *testing.T) {
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "settings.json"), []byte(`{invalid`), 0o644))
+
+		servers := map[string]MCPServerConfig{
+			"server": {Type: "sse", URL: "http://localhost:8080/sse"},
+		}
+
+		err := UpdateMCPServers(configDir, servers)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse settings.json")
 	})
 }

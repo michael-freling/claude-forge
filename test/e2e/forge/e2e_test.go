@@ -69,6 +69,7 @@ func TestForgeStart(t *testing.T) {
 	// Step 3: Build Docker images locally.
 	agentImageName := "forge-e2e-agent"
 	gatewayImageName := "forge-e2e-gateway"
+	githubMCPImageName := "forge-e2e-github-mcp"
 
 	buildGateway := exec.Command("docker", "build", "-t", gatewayImageName, "-f", "docker/gateway/Dockerfile", ".")
 	buildGateway.Dir = projectRoot
@@ -80,13 +81,18 @@ func TestForgeStart(t *testing.T) {
 	out, err = buildAgent.CombinedOutput()
 	require.NoError(t, err, "failed to build agent image: %s", out)
 
+	buildGitHubMCP := exec.Command("docker", "build", "-t", githubMCPImageName, "github-mcp/")
+	buildGitHubMCP.Dir = projectRoot
+	out, err = buildGitHubMCP.CombinedOutput()
+	require.NoError(t, err, "failed to build github-mcp image: %s", out)
+
 	// Step 4: Set up a temp HOME with proper config structure.
 	tempHome := t.TempDir()
 
 	// Write config.yaml pointing to locally-built images.
 	configDir := filepath.Join(tempHome, ".config", "claude-forge")
 	require.NoError(t, os.MkdirAll(configDir, 0o755))
-	configContent := "images:\n  agent: " + agentImageName + "\n  gateway: " + gatewayImageName + "\n"
+	configContent := "images:\n  agent: " + agentImageName + "\n  gateway: " + gatewayImageName + "\n  github_mcp: " + githubMCPImageName + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
 
 	// Create .claude directory structure that the orchestrator expects to mount.
@@ -106,11 +112,10 @@ func TestForgeStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	prompt := `Run these four commands and show me the output of each:
+	prompt := `Run these three commands and show me the output of each:
 1. git log --oneline -3
 2. git fetch origin main
-3. gh repo view --json name,owner
-4. go test ./internal/forge/config/...
+3. go test ./internal/forge/config/...
 
 Reply with the raw command outputs only, no other text.`
 	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", prompt)
@@ -145,9 +150,6 @@ Reply with the raw command outputs only, no other text.`
 	assert.False(t,
 		strings.Contains(outputStr, "fatal:") && strings.Contains(outputStr, "fetch"),
 		"expected git fetch to succeed without fatal errors")
-
-	// gh repo view should return the repo name.
-	assert.Contains(t, outputStr, "claude-code-tools", "expected output to contain repo name from gh repo view")
 
 	// go test should show passing output (non-verbose `go test` prints "ok  <pkg>").
 	assert.Contains(t, outputStr, "ok  \tgithub.com/michael-freling/claude-code-tools", "expected output to contain ok from go test")
@@ -239,6 +241,7 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 
 	agentImageName := "forge-e2e-agent-noauth"
 	gatewayImageName := "forge-e2e-gateway-noauth"
+	githubMCPImageName := "forge-e2e-github-mcp-noauth"
 
 	buildGateway := exec.Command("docker", "build", "-t", gatewayImageName, "-f", "docker/gateway/Dockerfile", ".")
 	buildGateway.Dir = projectRoot
@@ -250,12 +253,17 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 	out, err = buildAgent.CombinedOutput()
 	require.NoError(t, err, "failed to build agent image: %s", out)
 
+	buildGitHubMCP := exec.Command("docker", "build", "-t", githubMCPImageName, "github-mcp/")
+	buildGitHubMCP.Dir = projectRoot
+	out, err = buildGitHubMCP.CombinedOutput()
+	require.NoError(t, err, "failed to build github-mcp image: %s", out)
+
 	// Set up temp HOME with NO GitHub auth (no GITHUB_TOKEN, no gh hosts.yml)
 	tempHome := t.TempDir()
 
 	configDir := filepath.Join(tempHome, ".config", "claude-forge")
 	require.NoError(t, os.MkdirAll(configDir, 0o755))
-	configContent := fmt.Sprintf("images:\n  agent: %s\n  gateway: %s\n", agentImageName, gatewayImageName)
+	configContent := fmt.Sprintf("images:\n  agent: %s\n  gateway: %s\n  github_mcp: %s\n", agentImageName, gatewayImageName, githubMCPImageName)
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
 
 	claudeDir := filepath.Join(tempHome, ".claude")

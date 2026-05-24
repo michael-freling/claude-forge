@@ -6,14 +6,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 )
 
-// Server is the main gateway server that runs both the proxy and API server.
+// Server is the main gateway server that runs the git proxy.
 type Server struct {
-	proxy     *Proxy
-	apiServer *APIServer
+	proxy *Proxy
 }
 
 // NewServer creates a new gateway server with the given config.
@@ -25,56 +23,38 @@ func NewServer(config ProxyConfig) (*Server, error) {
 	}
 
 	return &Server{
-		proxy:     NewProxy(config, ghAuth),
-		apiServer: NewAPIServer(config, ghAuth),
+		proxy: NewProxy(config, ghAuth),
 	}, nil
 }
 
 // NewServerWithAuth creates a new gateway server with explicit auth.
 func NewServerWithAuth(config ProxyConfig, ghAuth *GitHubAuth) *Server {
 	return &Server{
-		proxy:     NewProxy(config, ghAuth),
-		apiServer: NewAPIServer(config, ghAuth),
+		proxy: NewProxy(config, ghAuth),
 	}
 }
 
-// Run starts both servers. Proxy listens on proxyAddr and the API server
-// listens on apiAddr. It blocks until an OS interrupt signal is received,
-// then shuts down both servers gracefully.
-func (s *Server) Run(proxyAddr, apiAddr string) error {
+// Run starts the proxy server on proxyAddr. It blocks until an OS interrupt
+// signal is received, then shuts down gracefully.
+func (s *Server) Run(proxyAddr string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	return s.RunWithContext(ctx, proxyAddr, apiAddr)
+	return s.RunWithContext(ctx, proxyAddr)
 }
 
-// RunWithContext starts both servers and blocks until the context is cancelled
-// or a server error occurs, then shuts down gracefully.
-func (s *Server) RunWithContext(ctx context.Context, proxyAddr, apiAddr string) error {
+// RunWithContext starts the proxy server and blocks until the context is
+// cancelled or a server error occurs, then shuts down gracefully.
+func (s *Server) RunWithContext(ctx context.Context, proxyAddr string) error {
 	proxyServer := &http.Server{
 		Addr:    proxyAddr,
 		Handler: s.proxy,
 	}
-	apiHTTPServer := &http.Server{
-		Addr:    apiAddr,
-		Handler: s.apiServer,
-	}
 
-	errCh := make(chan error, 2)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
+	errCh := make(chan error, 1)
 
 	go func() {
-		defer wg.Done()
 		if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("proxy server error: %w", err)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		if err := apiHTTPServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("API server error: %w", err)
 		}
 	}()
 
@@ -85,11 +65,6 @@ func (s *Server) RunWithContext(ctx context.Context, proxyAddr, apiAddr string) 
 		return err
 	}
 
-	// Graceful shutdown
-	shutdownCtx := context.Background()
-	proxyServer.Shutdown(shutdownCtx)
-	apiHTTPServer.Shutdown(shutdownCtx)
-
-	wg.Wait()
+	proxyServer.Shutdown(context.Background())
 	return nil
 }
