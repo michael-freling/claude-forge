@@ -364,7 +364,7 @@ users:
       token: dummy-token
 current-context: dummy
 `
-	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644))
+	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o600))
 
 	containerName := "forge-e2e-k8s-mcp-test"
 

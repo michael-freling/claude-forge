@@ -101,7 +101,7 @@ func TestGenerateKubeconfig_Success(t *testing.T) {
 	// Verify file permissions
 	info, err := os.Stat(outPath)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 }
 
 func TestGenerateKubeconfig_KubeconfigNotFound(t *testing.T) {

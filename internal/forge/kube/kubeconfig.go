@@ -123,7 +123,7 @@ func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext
 		return fmt.Errorf("failed to marshal generated kubeconfig: %w", err)
 	}
 
-	if err := os.WriteFile(outputPath, outData, 0o600); err != nil {
+	if err := os.WriteFile(outputPath, outData, 0o644); err != nil {
 		return fmt.Errorf("failed to write generated kubeconfig: %w", err)
 	}
 	return nil
