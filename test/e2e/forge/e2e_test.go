@@ -321,6 +321,103 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 	}
 }
 
+// TestKubernetesMCPServer_Starts verifies that the kubernetes-mcp-server
+// container starts successfully with the flags used by the orchestrator.
+// This catches flag incompatibilities between our code and the upstream image.
+func TestKubernetesMCPServer_Starts(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	image := "ghcr.io/containers/kubernetes-mcp-server:latest"
+
+	// Pull the image
+	pullCmd := exec.CommandContext(ctx, "docker", "pull", image)
+	out, err := pullCmd.CombinedOutput()
+	require.NoError(t, err, "failed to pull k8s-mcp image: %s", out)
+
+	// Create a minimal kubeconfig (no real cluster needed — the server starts
+	// regardless and serves MCP tooling; k8s calls would fail but startup won't)
+	tmpDir := t.TempDir()
+	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
+	kubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+  - name: dummy
+    cluster:
+      server: https://localhost:6443
+contexts:
+  - name: dummy
+    context:
+      cluster: dummy
+      user: dummy
+users:
+  - name: dummy
+    user:
+      token: dummy-token
+current-context: dummy
+`
+	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644))
+
+	containerName := "forge-e2e-k8s-mcp-test"
+
+	// Clean up any previous run
+	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	})
+
+	// Start with the same flags as orchestrator.startKubernetesMCP.
+	// These must stay in sync — if the orchestrator changes flags, update here too.
+	runCmd := exec.CommandContext(ctx, "docker", "run", "-d",
+		"--name", containerName,
+		"-v", kubeconfigPath+":/home/user/.kube/config:ro",
+		image,
+		"--port", "8090", "--read-only", "--kubeconfig", "/home/user/.kube/config",
+	)
+	out, err = runCmd.CombinedOutput()
+	require.NoError(t, err, "failed to start k8s-mcp container: %s", out)
+
+	// Wait for the container to be running (not immediately exited)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		inspectCmd := exec.Command("docker", "inspect", "-f", "{{.State.Status}}", containerName)
+		statusOut, err := inspectCmd.Output()
+		require.NoError(t, err, "failed to inspect container")
+		status := strings.TrimSpace(string(statusOut))
+
+		if status == "running" {
+			// Verify the container has been running for at least 2 seconds
+			// (not crashing immediately)
+			time.Sleep(2 * time.Second)
+			inspectCmd2 := exec.Command("docker", "inspect", "-f", "{{.State.Status}}", containerName)
+			statusOut2, err := inspectCmd2.Output()
+			require.NoError(t, err)
+			assert.Equal(t, "running", strings.TrimSpace(string(statusOut2)),
+				"k8s-mcp container should stay running")
+			return
+		}
+
+		if status == "exited" || status == "dead" {
+			logsCmd := exec.Command("docker", "logs", containerName)
+			logs, _ := logsCmd.CombinedOutput()
+			t.Fatalf("k8s-mcp container exited unexpectedly (status=%s):\n%s", status, logs)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	logsCmd := exec.Command("docker", "logs", containerName)
+	logs, _ := logsCmd.CombinedOutput()
+	t.Fatalf("k8s-mcp container did not reach running state within 15s:\n%s", logs)
+}
+
 // buildForge builds the claude-forge binary and returns its path.
 func buildForge(t *testing.T) string {
 	t.Helper()

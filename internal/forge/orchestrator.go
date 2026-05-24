@@ -526,8 +526,10 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 		return fmt.Errorf("failed to generate kubeconfig: %w", err)
 	}
 
-	// Build command for the MCP server (always read-only for safety)
-	cmd := []string{"--port", "8090", "--read-only"}
+	// Build command for the MCP server (always read-only for safety).
+	// Explicit --kubeconfig ensures the server finds the mounted config
+	// regardless of which user the container image runs as.
+	cmd := []string{"--port", "8090", "--read-only", "--kubeconfig", "/home/user/.kube/config"}
 
 	o.Log("Starting Kubernetes MCP: %s", k8sMCPName)
 	k8sID, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
