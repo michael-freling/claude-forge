@@ -924,12 +924,11 @@ kubernetes:
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
 	// startKubernetesMCP will be called but will fail at GenerateKubeconfig (no kubeconfig file)
-	// Start logs a warning and continues
+	// Start logs a warning and continues without adding kubernetes to settings.json
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("shared-net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
-	// ConnectNetwork is called after agent starts when Kubernetes is enabled
-	mockCM.EXPECT().ConnectNetwork(gomock.Any(), "forge-shared", gomock.Any(), gomock.Nil()).Return(nil)
+	// ConnectNetwork is NOT called because startKubernetesMCP failed
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		ProjectDir: projectDir,
@@ -939,7 +938,7 @@ kubernetes:
 	assert.NotNil(t, sess)
 }
 
-func TestStart_WithKubernetesEnabled_ConnectNetworkFails(t *testing.T) {
+func TestStart_WithKubernetesEnabled_MCPFailsGracefully(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	mockCM := NewMockContainerManager(ctrl)
@@ -970,11 +969,11 @@ kubernetes:
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	// startKubernetesMCP fails (no kubeconfig) — Start continues without
+	// ConnectNetwork or kubernetes in settings.json
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("shared-net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
-	// ConnectNetwork fails - Start should still succeed (just logs a warning)
-	mockCM.EXPECT().ConnectNetwork(gomock.Any(), "forge-shared", gomock.Any(), gomock.Nil()).Return(fmt.Errorf("network connect failed"))
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		ProjectDir: projectDir,

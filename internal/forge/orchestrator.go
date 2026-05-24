@@ -242,13 +242,22 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("github-mcp failed to start: %w", err)
 	}
 
+	// Start Kubernetes MCP shared service if enabled (before writing settings
+	// so we only advertise it when the server is actually running)
+	k8sRunning := false
+	if cfg.Kubernetes.Enabled {
+		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
+			o.Log("Warning: failed to start Kubernetes MCP: %v", err)
+		} else {
+			k8sRunning = true
+		}
+	}
+
 	// Write MCP server config to settings.json for the agent
 	mcpServers := map[string]claudecode.MCPServerConfig{
 		"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
 	}
-
-	// Add Kubernetes MCP if enabled
-	if cfg.Kubernetes.Enabled {
+	if k8sRunning {
 		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:8090/mcp"}
 	}
 
@@ -336,13 +345,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		})
 	}
 
-	// Start Kubernetes MCP shared service if enabled
-	if cfg.Kubernetes.Enabled {
-		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
-			o.Log("Warning: failed to start Kubernetes MCP: %v", err)
-		}
-	}
-
 	// Start agent
 	o.Log("Starting agent: %s", sess.AgentName)
 	if _, err := o.Containers.StartAgent(ctx, container.AgentOptions{
@@ -369,7 +371,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 
 	// Connect agent to shared network for Kubernetes MCP access
-	if cfg.Kubernetes.Enabled {
+	if k8sRunning {
 		if err := o.Containers.ConnectNetwork(ctx, "forge-shared", sess.AgentName, nil); err != nil {
 			o.Log("Warning: failed to connect agent to shared network: %v", err)
 		}
