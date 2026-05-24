@@ -1494,6 +1494,341 @@ func TestExpandHome(t *testing.T) {
 	assert.Equal(t, "relative/path", expandHome("relative/path", "/home/user"))
 }
 
+func TestStartSharedMCP_AlreadyRunning(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-sentry").Return(true, nil)
+
+	entry := config.MCPServerEntry{Image: "sentry:latest", Port: 9090, Shared: true}
+	err := orch.startSharedMCP(context.Background(), "forge-mcp-sentry", "sentry", entry, nil, nil)
+	require.NoError(t, err)
+}
+
+func TestStartSharedMCP_EnsureNetworkFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("", fmt.Errorf("docker error"))
+
+	entry := config.MCPServerEntry{Image: "sentry:latest", Port: 9090, Shared: true}
+	err := orch.startSharedMCP(context.Background(), "forge-mcp-sentry", "sentry", entry, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to ensure shared network")
+}
+
+func TestStartSharedMCP_CheckRunningFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-sentry").Return(false, fmt.Errorf("inspect error"))
+
+	entry := config.MCPServerEntry{Image: "sentry:latest", Port: 9090, Shared: true}
+	err := orch.startSharedMCP(context.Background(), "forge-mcp-sentry", "sentry", entry, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to check")
+}
+
+func TestStartSharedMCP_StartFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-sentry").Return(false, nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("", fmt.Errorf("start failed"))
+
+	entry := config.MCPServerEntry{Image: "sentry:latest", Port: 9090, Shared: true}
+	err := orch.startSharedMCP(context.Background(), "forge-mcp-sentry", "sentry", entry, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start")
+}
+
+func TestStartSharedMCP_WaitForReadyFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-sentry").Return(false, nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "id", gomock.Any()).Return(fmt.Errorf("crash"))
+
+	entry := config.MCPServerEntry{Image: "sentry:latest", Port: 9090, Shared: true}
+	err := orch.startSharedMCP(context.Background(), "forge-mcp-sentry", "sentry", entry, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start")
+}
+
+func TestBuildForProject_WithProjectConfig(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	// Global config with one MCP
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `mcp_servers:
+  linear:
+    image: linear-mcp:latest
+    port: 8080
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	// Project config with another MCP
+	projectDir := t.TempDir()
+	projectContent := `mcp_servers:
+  my-db:
+    image: db-mcp:latest
+    port: 5432
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, ".claude-forge.yaml"), []byte(projectContent), 0o644))
+
+	// 3 built-in + 2 custom
+	mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil).Times(5)
+
+	err := orch.BuildForProject(context.Background(), projectDir)
+	require.NoError(t, err)
+}
+
+func TestBuildForProject_ProjectConfigError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	// Project dir with invalid config
+	projectDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, ".claude-forge.yaml"), []byte(":::bad"), 0o644))
+
+	err := orch.BuildForProject(context.Background(), projectDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load project config")
+}
+
+func TestBuildForProject_NoProjectDir(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	// 3 built-in images
+	mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+
+	err := orch.BuildForProject(context.Background(), "")
+	require.NoError(t, err)
+}
+
+func TestStart_CustomMCPPerSessionStartFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `mcp_servers:
+  linear:
+    image: linear-mcp:latest
+    port: 8080
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("", fmt.Errorf("start failed"))
+
+	// Cleanup
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start MCP")
+}
+
+func TestStart_CustomMCPPerSessionReadyFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `mcp_servers:
+  linear:
+    image: linear-mcp:latest
+    port: 8080
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("custom-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "custom-id", gomock.Any()).Return(fmt.Errorf("crash"))
+	mockCM.EXPECT().ContainerLogs(gomock.Any(), "custom-id").Return("error log", nil)
+
+	// Cleanup
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start")
+	assert.Contains(t, err.Error(), "error log")
+}
+
+func TestStart_CustomMCPSharedStartFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `mcp_servers:
+  sentry:
+    image: sentry-mcp:latest
+    port: 9090
+    shared: true
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("", fmt.Errorf("network error"))
+
+	// Cleanup
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start shared MCP")
+}
+
+func TestStart_InvalidProjectConfig(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	// Invalid project config
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, ".claude-forge.yaml"), []byte(":::bad"), 0o644))
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load project config")
+}
+
+func TestStart_InvalidMCPConfig(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	// Global config with invalid MCP (no image or url)
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `mcp_servers:
+  bad:
+    port: 8080
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid MCP server config")
+}
+
+func TestStart_CustomMCPDefaultPath(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	// MCP without explicit path (should default to /mcp)
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `mcp_servers:
+  linear:
+    image: linear-mcp:latest
+    port: 8080
+    path: /custom-path
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("custom-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "custom-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
 func TestBuild_WithCustomMCPs(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
@@ -1515,6 +1850,186 @@ func TestBuild_WithCustomMCPs(t *testing.T) {
 
 	err := orch.Build(context.Background())
 	require.NoError(t, err)
+}
+
+func TestStart_GatewayCrashNoLogs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(fmt.Errorf("timeout"))
+	mockCM.EXPECT().ContainerLogs(gomock.Any(), "gw-id").Return("", nil)
+
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gateway container failed to start")
+	assert.NotContains(t, err.Error(), "Gateway logs")
+}
+
+func TestStart_GitHubMCPReadyNoLogs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(fmt.Errorf("timeout"))
+	mockCM.EXPECT().ContainerLogs(gomock.Any(), "mcp-id").Return("", nil)
+
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github-mcp failed to start")
+	assert.NotContains(t, err.Error(), "Logs:")
+}
+
+func TestStart_CustomMCPWithMounts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	// Create mount source directory
+	mountSource := filepath.Join(homeDir, ".config", "my-mcp")
+	require.NoError(t, os.MkdirAll(mountSource, 0o755))
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := fmt.Sprintf(`mcp_servers:
+  my-mcp:
+    image: my-mcp:latest
+    port: 8080
+    mounts:
+      - source: %s
+        target: /config
+        read_only: true
+`, mountSource)
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.SharedServiceOptions) (string, error) {
+			require.Len(t, opts.Mounts, 1)
+			assert.Equal(t, mountSource, opts.Mounts[0].Source)
+			assert.Equal(t, "/config", opts.Mounts[0].Target)
+			assert.True(t, opts.Mounts[0].ReadOnly)
+			return "mcp-mount-id", nil
+		})
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-mount-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.Len(t, sess.CustomMCPNames, 1)
+}
+
+func TestStart_CustomMCPPerSessionReadyFailsNoLogs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `mcp_servers:
+  my-mcp:
+    image: my-mcp:latest
+    port: 8080
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("custom-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "custom-id", gomock.Any()).Return(fmt.Errorf("timeout"))
+	mockCM.EXPECT().ContainerLogs(gomock.Any(), "custom-id").Return("", nil)
+
+	// Cleanup: agent + github-mcp + gateway (custom MCP not yet in session)
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `MCP "my-mcp" failed to start`)
+	assert.NotContains(t, err.Error(), "Logs:")
+}
+
+func TestStart_GithubTokenFromEnv(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	t.Setenv("GITHUB_TOKEN", "ghp_test123")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.GatewayOptions) (string, error) {
+			assert.Equal(t, "ghp_test123", opts.Env["GITHUB_TOKEN"])
+			return "gw-id", nil
+		})
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, sess.SessionID)
 }
 
 func TestReadGHToken(t *testing.T) {
