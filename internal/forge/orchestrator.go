@@ -527,7 +527,7 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 	}
 
 	// Build command for the MCP server (always read-only for safety)
-	cmd := []string{"--transport", "http", "--port", "8090", "--read-only"}
+	cmd := []string{"--port", "8090", "--read-only"}
 
 	o.Log("Starting Kubernetes MCP: %s", k8sMCPName)
 	k8sID, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
