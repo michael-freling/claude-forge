@@ -300,6 +300,9 @@ func newBuildCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "build",
 		Short: "Pull or rebuild Claude Code Docker images",
+		Long: `Pull the latest Docker images for the agent, gateway, and MCP servers.
+When run from a project directory with a .claude-forge.yaml file,
+also pulls images for project-level custom MCP servers.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			orch, cleanup, err := createOrchestrator()
 			if err != nil {
@@ -307,7 +310,8 @@ func newBuildCmd() *cobra.Command {
 			}
 			defer cleanup()
 
-			return orch.Build(context.Background())
+			projectDir, _ := os.Getwd()
+			return orch.BuildForProject(context.Background(), projectDir)
 		},
 	}
 }

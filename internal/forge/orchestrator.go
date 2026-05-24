@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -57,12 +58,13 @@ type StartOptions struct {
 
 // Session holds information about a running session.
 type Session struct {
-	AgentName     string
-	GatewayName   string
-	GitHubMCPName string
-	NetworkName   string
-	SessionID     string
-	ProjectID     string
+	AgentName      string
+	GatewayName    string
+	GitHubMCPName  string
+	NetworkName    string
+	SessionID      string
+	ProjectID      string
+	CustomMCPNames []string
 }
 
 // Start creates a new claude-forge session: loads config, identifies the project,
@@ -154,10 +156,26 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to ensure .claude.json: %w", err)
 	}
 
+	// Load project-level MCP config and resolve with global config
+	projectCfg, err := config.LoadProject(proj.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load project config: %w", err)
+	}
+
+	customMCPs, err := config.ResolveMCPServers(cfg.MCPServers, projectCfg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MCP server config: %w", err)
+	}
+
 	// Pull images if not present
 	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
 	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
 		imagesToPull = append(imagesToPull, cfg.Kubernetes.Image)
+	}
+	for _, entry := range customMCPs {
+		if entry.Image != "" {
+			imagesToPull = append(imagesToPull, entry.Image)
+		}
 	}
 	for _, img := range imagesToPull {
 		exists, err := o.Containers.ImageExists(ctx, img)
@@ -244,6 +262,90 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	// Add Kubernetes MCP if enabled
 	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
 		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:8090/mcp"}
+	}
+
+	// Start custom MCP containers and register URLs
+	needSharedNetwork := false
+	names := make([]string, 0, len(customMCPs))
+	for name := range customMCPs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		entry := customMCPs[name]
+
+		if entry.URL != "" {
+			mcpServers[name] = claudecode.MCPServerConfig{Type: "url", URL: entry.URL}
+			continue
+		}
+
+		path := entry.Path
+		if path == "" {
+			path = "/mcp"
+		}
+
+		expandedEnv := expandEnvMap(entry.Env)
+		var mounts []mount.Mount
+		for _, m := range entry.Mounts {
+			source := expandHome(m.Source, o.HomeDir)
+			mounts = append(mounts, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   source,
+				Target:   m.Target,
+				ReadOnly: m.ReadOnly,
+			})
+		}
+
+		if entry.Shared {
+			needSharedNetwork = true
+			containerName := fmt.Sprintf("forge-mcp-%s", name)
+
+			if err := o.startSharedMCP(ctx, containerName, name, entry, expandedEnv, mounts); err != nil {
+				o.Cleanup(ctx, sess)
+				return nil, fmt.Errorf("failed to start shared MCP %q: %w", name, err)
+			}
+		} else {
+			containerName := fmt.Sprintf("forge-mcp-%s-%s-%s", name, proj.ID, sessionID)
+
+			mcpID, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
+				Name:        containerName,
+				Image:       entry.Image,
+				NetworkName: sess.NetworkName,
+				Alias:       name,
+				Env:         expandedEnv,
+				Cmd:         entry.Cmd,
+				Mounts:      mounts,
+			})
+			if err != nil {
+				o.Cleanup(ctx, sess)
+				return nil, fmt.Errorf("failed to start MCP %q: %w", name, err)
+			}
+
+			if err := o.Containers.WaitForReady(ctx, mcpID, 10*time.Second); err != nil {
+				logs, _ := o.Containers.ContainerLogs(ctx, mcpID)
+				o.Cleanup(ctx, sess)
+				if logs != "" {
+					return nil, fmt.Errorf("MCP %q failed to start: %w\nLogs:\n%s", name, err, logs)
+				}
+				return nil, fmt.Errorf("MCP %q failed to start: %w", name, err)
+			}
+
+			o.Log("Starting MCP: %s", name)
+			sess.CustomMCPNames = append(sess.CustomMCPNames, containerName)
+		}
+
+		mcpServers[name] = claudecode.MCPServerConfig{
+			Type: "url",
+			URL:  fmt.Sprintf("http://%s:%d%s", name, entry.Port, path),
+		}
+	}
+
+	// Ensure shared network exists if any shared MCPs were started
+	if needSharedNetwork {
+		if _, err := o.Containers.EnsureSharedNetwork(ctx, "forge-shared"); err != nil {
+			o.Log("Warning: failed to ensure shared network for custom MCPs: %v", err)
+		}
 	}
 
 	if err := claudecode.UpdateMCPServers(o.ConfigDir, mcpServers); err != nil {
@@ -356,8 +458,8 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to start agent: %w", err)
 	}
 
-	// Connect agent to shared network for Kubernetes MCP access
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+	// Connect agent to shared network for Kubernetes MCP or custom shared MCP access
+	if (cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0) || needSharedNetwork {
 		if err := o.Containers.ConnectNetwork(ctx, "forge-shared", sess.AgentName, nil); err != nil {
 			o.Log("Warning: failed to connect agent to shared network: %v", err)
 		}
@@ -371,6 +473,10 @@ func (o *Orchestrator) Cleanup(ctx context.Context, sess *Session) {
 	o.Log("Cleaning up...")
 	_ = o.Containers.StopContainer(ctx, sess.AgentName)
 	_ = o.Containers.RemoveContainer(ctx, sess.AgentName)
+	for _, name := range sess.CustomMCPNames {
+		_ = o.Containers.StopContainer(ctx, name)
+		_ = o.Containers.RemoveContainer(ctx, name)
+	}
 	_ = o.Containers.StopContainer(ctx, sess.GitHubMCPName)
 	_ = o.Containers.RemoveContainer(ctx, sess.GitHubMCPName)
 	_ = o.Containers.StopContainer(ctx, sess.GatewayName)
@@ -545,8 +651,70 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 	return nil
 }
 
+// startSharedMCP ensures a shared custom MCP container is running.
+func (o *Orchestrator) startSharedMCP(ctx context.Context, containerName, alias string, entry config.MCPServerEntry, env map[string]string, mounts []mount.Mount) error {
+	if _, err := o.Containers.EnsureSharedNetwork(ctx, "forge-shared"); err != nil {
+		return fmt.Errorf("failed to ensure shared network: %w", err)
+	}
+
+	running, err := o.Containers.IsContainerRunning(ctx, containerName)
+	if err != nil {
+		return fmt.Errorf("failed to check %s status: %w", containerName, err)
+	}
+	if running {
+		o.Log("Starting MCP: %s (shared, already running)", alias)
+		return nil
+	}
+
+	o.Log("Starting MCP: %s (shared)", alias)
+	id, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
+		Name:        containerName,
+		Image:       entry.Image,
+		NetworkName: "forge-shared",
+		Alias:       alias,
+		Env:         env,
+		Cmd:         entry.Cmd,
+		Mounts:      mounts,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start %s: %w", containerName, err)
+	}
+
+	if err := o.Containers.WaitForReady(ctx, id, 10*time.Second); err != nil {
+		return fmt.Errorf("%s failed to start: %w", containerName, err)
+	}
+
+	return nil
+}
+
+// expandEnvMap expands ${VAR} references in map values from the host environment.
+func expandEnvMap(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(env))
+	for k, v := range env {
+		result[k] = os.ExpandEnv(v)
+	}
+	return result
+}
+
+// expandHome replaces a leading ~ with the home directory.
+func expandHome(path, homeDir string) string {
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(homeDir, path[2:])
+	}
+	return path
+}
+
 // Build pulls the latest agent and gateway images.
 func (o *Orchestrator) Build(ctx context.Context) error {
+	return o.BuildForProject(ctx, "")
+}
+
+// BuildForProject pulls images for built-in and custom MCP servers.
+// If projectDir is non-empty, project-level config is also loaded.
+func (o *Orchestrator) BuildForProject(ctx context.Context, projectDir string) error {
 	cfg, err := config.Load(o.ConfigDir)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -556,7 +724,40 @@ func (o *Orchestrator) Build(ctx context.Context) error {
 	if cfg.Kubernetes.Enabled {
 		images = append(images, cfg.Kubernetes.Image)
 	}
+
+	// Collect custom MCP images from global config
+	for _, entry := range cfg.MCPServers {
+		if entry.Image != "" && entry.IsEnabled() {
+			images = append(images, entry.Image)
+		}
+	}
+
+	// Collect custom MCP images from project config
+	if projectDir != "" {
+		projectCfg, err := config.LoadProject(projectDir)
+		if err != nil {
+			return fmt.Errorf("failed to load project config: %w", err)
+		}
+		if projectCfg != nil {
+			for _, entry := range projectCfg.MCPServers {
+				if entry.Image != "" && entry.IsEnabled() {
+					images = append(images, entry.Image)
+				}
+			}
+		}
+	}
+
+	// Deduplicate
+	seen := make(map[string]bool)
+	var unique []string
 	for _, img := range images {
+		if !seen[img] {
+			seen[img] = true
+			unique = append(unique, img)
+		}
+	}
+
+	for _, img := range unique {
 		o.Log("Pulling image: %s", img)
 		if err := o.Containers.PullImage(ctx, img); err != nil {
 			return fmt.Errorf("failed to pull image %s: %w", img, err)

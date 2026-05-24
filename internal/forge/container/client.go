@@ -663,6 +663,7 @@ func (c *Client) ListForgeContainers(ctx context.Context) ([]ContainerInfo, erro
 	filterArgs.Add("name", "forge-gateway-")
 	filterArgs.Add("name", "forge-github-mcp-")
 	filterArgs.Add("name", "forge-k8s-mcp")
+	filterArgs.Add("name", "forge-mcp-")
 
 	containers, err := c.docker.ContainerList(ctx, container.ListOptions{
 		All:     true,
