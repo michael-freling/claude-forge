@@ -527,9 +527,41 @@ func TestStart_ResumeSession(t *testing.T) {
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Contains(t, opts.Cmd, "--resume")
-			assert.Contains(t, opts.Cmd, "abc12345")
-			// --continue should NOT be set when ResumeID is provided
+			assert.Contains(t, opts.Cmd, "/home/user/.claude/projects/-work/abc12345.jsonl")
 			assert.NotContains(t, opts.Cmd, "--continue")
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		ResumeID:     "abc12345",
+		ResumeSubdir: "-work",
+		ProjectDir:   projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
+func TestStart_ResumeSession_WithoutSubdir(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Contains(t, opts.Cmd, "--resume")
+			assert.Contains(t, opts.Cmd, "abc12345")
+			assert.NotContains(t, opts.Cmd, ".jsonl")
 			return "agent-id", nil
 		})
 

@@ -47,6 +47,7 @@ type StartOptions struct {
 	Worktree           bool
 	Prompt             string
 	ResumeID           string
+	ResumeSubdir       string // session subdir (e.g., "-work") for constructing the resume file path
 	Continue           bool
 	Interactive        bool     // allocate TTY for docker attach (false for prompt mode)
 	ProjectDir         string   // working directory (defaults to cwd if empty)
@@ -261,7 +262,12 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		agentCmd = append(agentCmd, "--worktree")
 	}
 	if opts.ResumeID != "" {
-		agentCmd = append(agentCmd, "--resume", opts.ResumeID)
+		if opts.ResumeSubdir != "" {
+			resumePath := fmt.Sprintf("/home/user/.claude/projects/%s/%s.jsonl", opts.ResumeSubdir, opts.ResumeID)
+			agentCmd = append(agentCmd, "--resume", resumePath)
+		} else {
+			agentCmd = append(agentCmd, "--resume", opts.ResumeID)
+		}
 	} else if opts.Continue {
 		agentCmd = append(agentCmd, "--continue")
 	}

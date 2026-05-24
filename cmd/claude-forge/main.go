@@ -81,7 +81,7 @@ func newOrchestrator() (*forge.Orchestrator, func(), error) {
 }
 
 // startSession runs the common logic for the start and resume commands.
-func startSession(skipPermissions, worktree bool, prompt, resumeID string, continueSession bool, mounts []string, resumeWorktreeName string) error {
+func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName string) error {
 	orch, cleanup, err := createOrchestrator()
 	if err != nil {
 		return err
@@ -98,6 +98,7 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID string, conti
 		Worktree:           worktree,
 		Prompt:             prompt,
 		ResumeID:           resumeID,
+		ResumeSubdir:       resumeSubdir,
 		Continue:           continueSession,
 		Interactive:        interactive,
 		UID:                hostUID,
@@ -162,7 +163,7 @@ By default, --dangerously-skip-permissions is enabled. Use --no-skip-permissions
 to disable it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", false, mounts, "")
+			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "")
 		},
 	}
 
@@ -229,7 +230,7 @@ is continued.`,
 				if err != nil {
 					return err
 				}
-				return startSession(true, false, "", args[0], false, nil, sess.WorktreeName())
+				return startSession(true, false, "", args[0], sess.Subdir, false, nil, sess.WorktreeName())
 			}
 
 			// Continue most recent session, detecting worktree if needed
@@ -241,10 +242,7 @@ is continued.`,
 				return fmt.Errorf("no sessions found to continue")
 			}
 			mostRecent := sessions[0]
-			if mostRecent.IsWorktree() {
-				return startSession(true, false, "", mostRecent.ID, false, nil, mostRecent.WorktreeName())
-			}
-			return startSession(true, false, "", "", true, nil, "")
+			return startSession(true, false, "", mostRecent.ID, mostRecent.Subdir, false, nil, mostRecent.WorktreeName())
 		},
 	}
 

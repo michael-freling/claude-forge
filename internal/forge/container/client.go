@@ -223,7 +223,7 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 	// Session directory mount.
 	// Mounted at the projects parent so Claude Code's session JSONL files for both
 	// the main /work cwd (encoded as -work) and any worktree cwd (encoded as
-	// -work-.claude-worktrees-<name>) persist to the host.
+	// -work--claude-worktrees-<name>) persist to the host.
 	if opts.SessionDir != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
