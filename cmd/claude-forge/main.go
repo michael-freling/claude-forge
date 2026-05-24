@@ -61,6 +61,7 @@ containers, Docker networks, and session state.`,
 		newVersionCmd(),
 		newGatewayCmd(),
 		newKubeCmd(),
+		newMcpCmd(),
 	)
 
 	return rootCmd
@@ -796,11 +797,37 @@ The output can be piped directly to kubectl apply:
 		},
 	}
 
-	cmd.Flags().StringVar(&clusterRoleName, "cluster-role-name", "claude-forge-agent", "Name for the generated ClusterRole and ClusterRoleBinding")
+	cmd.Flags().StringVar(&clusterRoleName, "cluster-role-name", "claude-forge-agent",
+		"Name for the generated ClusterRole and ClusterRoleBinding")
 	cmd.Flags().StringVar(&serviceAccountName, "service-account-name", "claude-forge-agent", "Name for the generated ServiceAccount")
 	cmd.Flags().StringVar(&serviceAccountNamespace, "service-account-namespace", "default", "Namespace for the ServiceAccount")
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (defaults to $KUBECONFIG or ~/.kube/config)")
 	cmd.Flags().StringVar(&kubeContext, "context", "", "Kubeconfig context to use for API discovery")
 
 	return cmd
+}
+
+func newMcpCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "Manage shared MCP servers",
+	}
+	cmd.AddCommand(newMcpRestartCmd())
+	return cmd
+}
+
+func newMcpRestartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "Restart all shared MCP server containers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			orch, cleanup, err := createOrchestrator()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			return orch.RestartSharedMCP(context.Background())
+		},
+	}
 }

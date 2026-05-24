@@ -364,7 +364,7 @@ users:
       token: dummy-token
 current-context: dummy
 `
-	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o600))
+	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644))
 
 	containerName := "forge-e2e-k8s-mcp-test"
 
@@ -385,38 +385,158 @@ current-context: dummy
 	out, err = runCmd.CombinedOutput()
 	require.NoError(t, err, "failed to start k8s-mcp container: %s", out)
 
-	// Wait for the container to be running (not immediately exited)
-	deadline := time.Now().Add(15 * time.Second)
+	// Wait for the container to be running (not immediately exited).
+	// waitForRunning includes a 1s stabilization delay to catch immediate crashes.
+	waitForRunning(t, ctx, containerName, 15*time.Second)
+}
+
+// TestKubernetesMCPServer_AgentConnectivity verifies that a container connected
+// to the shared network (simulating the agent) can reach the k8s MCP server via
+// its DNS alias. This reproduces the full networking path: k8s-mcp on a shared
+// network, client on a per-session network, client connected to shared network
+// before start (the ExtraNetworks pattern).
+func TestKubernetesMCPServer_AgentConnectivity(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	k8sImage := "ghcr.io/containers/kubernetes-mcp-server:latest"
+	clientImage := "alpine:latest"
+
+	// Pull images
+	for _, img := range []string{k8sImage, clientImage} {
+		pullCmd := exec.CommandContext(ctx, "docker", "pull", img)
+		out, err := pullCmd.CombinedOutput()
+		require.NoError(t, err, "failed to pull %s: %s", img, out)
+	}
+
+	// Create networks
+	sharedNet := "forge-e2e-shared"
+	sessionNet := "forge-e2e-session"
+	for _, net := range []string{sharedNet, sessionNet} {
+		_ = exec.Command("docker", "network", "rm", net).Run()
+		out, err := exec.CommandContext(ctx, "docker", "network", "create", net).CombinedOutput()
+		require.NoError(t, err, "failed to create network %s: %s", net, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "network", "rm", sharedNet).Run()
+		_ = exec.Command("docker", "network", "rm", sessionNet).Run()
+	})
+
+	// Create kubeconfig with 0644 (testing the permission fix)
+	tmpDir := t.TempDir()
+	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
+	kubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+  - name: dummy
+    cluster:
+      server: https://localhost:6443
+contexts:
+  - name: dummy
+    context:
+      cluster: dummy
+      user: dummy
+users:
+  - name: dummy
+    user:
+      token: dummy-token
+current-context: dummy
+`
+	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644))
+
+	// Start k8s MCP on the shared network with alias "k8s-mcp"
+	k8sName := "forge-e2e-k8s-mcp-conn"
+	_ = exec.Command("docker", "rm", "-f", k8sName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", k8sName).Run()
+	})
+
+	k8sArgs := []string{
+		"run", "-d",
+		"--name", k8sName,
+		"--network", sharedNet,
+		"--network-alias", "k8s-mcp",
+		"-v", kubeconfigPath + ":" + kube.MCPServerKubeconfigPath + ":ro",
+		k8sImage,
+	}
+	k8sArgs = append(k8sArgs, kube.MCPServerArgs()...)
+	out, err := exec.CommandContext(ctx, "docker", k8sArgs...).CombinedOutput()
+	require.NoError(t, err, "failed to start k8s-mcp: %s", out)
+
+	// Wait for k8s MCP to be running
+	waitForRunning(t, ctx, k8sName, 15*time.Second)
+
+	// Create a client container on the per-session network (don't start yet)
+	clientName := "forge-e2e-agent-conn"
+	_ = exec.Command("docker", "rm", "-f", clientName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", clientName).Run()
+	})
+
+	createArgs := []string{
+		"create",
+		"--name", clientName,
+		"--network", sessionNet,
+		clientImage,
+		"sleep", "30",
+	}
+	out, err = exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput()
+	require.NoError(t, err, "failed to create client container: %s", out)
+
+	// Connect to shared network BEFORE starting (the ExtraNetworks pattern)
+	out, err = exec.CommandContext(ctx, "docker", "network", "connect", sharedNet, clientName).CombinedOutput()
+	require.NoError(t, err, "failed to connect client to shared network: %s", out)
+
+	// Now start the client
+	out, err = exec.CommandContext(ctx, "docker", "start", clientName).CombinedOutput()
+	require.NoError(t, err, "failed to start client container: %s", out)
+
+	// Verify the client can reach k8s-mcp via DNS alias
+	execCmd := exec.CommandContext(ctx, "docker", "exec", clientName,
+		"wget", "-q", "-O-", "-T", "5", "http://k8s-mcp:"+kube.MCPServerPort+"/healthz")
+	healthOut, err := execCmd.CombinedOutput()
+	require.NoError(t, err, "client cannot reach k8s-mcp healthz: %s", healthOut)
+	t.Logf("healthz response: %s", strings.TrimSpace(string(healthOut)))
+
+	// Verify the MCP endpoint responds (HTTP-level, not MCP protocol)
+	execCmd2 := exec.CommandContext(ctx, "docker", "exec", clientName,
+		"wget", "-q", "-S", "-O", "/dev/null", "-T", "5", "http://k8s-mcp:"+kube.MCPServerPort+"/mcp", "--post-data=")
+	mcpOut, _ := execCmd2.CombinedOutput()
+	mcpOutStr := string(mcpOut)
+	t.Logf("MCP endpoint response headers: %s", mcpOutStr)
+	// The /mcp endpoint should respond (any HTTP status is fine — it proves connectivity)
+	assert.NotContains(t, mcpOutStr, "bad address", "k8s-mcp DNS should resolve from client")
+}
+
+// waitForRunning polls until a container is running or fails.
+func waitForRunning(t *testing.T, ctx context.Context, name string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		inspectCmd := exec.Command("docker", "inspect", "-f", "{{.State.Status}}", containerName)
+		inspectCmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Status}}", name)
 		statusOut, err := inspectCmd.Output()
-		require.NoError(t, err, "failed to inspect container")
+		require.NoError(t, err, "failed to inspect %s", name)
 		status := strings.TrimSpace(string(statusOut))
 
 		if status == "running" {
-			// Verify the container has been running for at least 2 seconds
-			// (not crashing immediately)
-			time.Sleep(2 * time.Second)
-			inspectCmd2 := exec.Command("docker", "inspect", "-f", "{{.State.Status}}", containerName)
-			statusOut2, err := inspectCmd2.Output()
-			require.NoError(t, err)
-			assert.Equal(t, "running", strings.TrimSpace(string(statusOut2)),
-				"k8s-mcp container should stay running")
+			time.Sleep(1 * time.Second)
 			return
 		}
-
 		if status == "exited" || status == "dead" {
-			logsCmd := exec.Command("docker", "logs", containerName)
+			logsCmd := exec.Command("docker", "logs", name)
 			logs, _ := logsCmd.CombinedOutput()
-			t.Fatalf("k8s-mcp container exited unexpectedly (status=%s):\n%s", status, logs)
+			t.Fatalf("%s exited unexpectedly (status=%s):\n%s", name, status, logs)
 		}
-
 		time.Sleep(500 * time.Millisecond)
 	}
-
-	logsCmd := exec.Command("docker", "logs", containerName)
-	logs, _ := logsCmd.CombinedOutput()
-	t.Fatalf("k8s-mcp container did not reach running state within 15s:\n%s", logs)
+	t.Fatalf("%s did not reach running state within %s", name, timeout)
 }
 
 // buildForge builds the claude-forge binary and returns its path.

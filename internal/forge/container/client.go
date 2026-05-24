@@ -177,6 +177,12 @@ type CacheDir struct {
 	Target string // container path
 }
 
+// NetworkAttachment describes a network to connect to a container before starting it.
+type NetworkAttachment struct {
+	NetworkName string   // Docker network name
+	Aliases     []string // optional DNS aliases within the network
+}
+
 // AgentOptions holds configuration for starting an agent container.
 type AgentOptions struct {
 	Name               string            // container name: forge-agent-<project-id>-<session-id>
@@ -189,14 +195,15 @@ type AgentOptions struct {
 	HomeDir            string            // host home dir for CLAUDE.md paths
 	Env                map[string]string // environment variables
 	Privileged         bool
-	Interactive        bool       // allocate TTY and stdin (for docker attach)
-	Cmd                []string   // claude args: --dangerously-skip-permissions, --worktree, etc.
-	UID                int        // host user UID (for file ownership mapping)
-	GID                int        // host user GID (for file ownership mapping)
-	PluginsDir         string     // host path to forge plugins dir (mounted rw at ~/.claude/plugins)
-	CacheDirs          []CacheDir // host dependency cache directories to mount (rw)
-	ExtraMounts        []CacheDir // additional user-specified bind mounts (rw)
-	ResumeWorktreeName string     // worktree name when resuming a worktree session
+	Interactive        bool                // allocate TTY and stdin (for docker attach)
+	Cmd                []string            // claude args: --dangerously-skip-permissions, --worktree, etc.
+	UID                int                 // host user UID (for file ownership mapping)
+	GID                int                 // host user GID (for file ownership mapping)
+	PluginsDir         string              // host path to forge plugins dir (mounted rw at ~/.claude/plugins)
+	CacheDirs          []CacheDir          // host dependency cache directories to mount (rw)
+	ExtraMounts        []CacheDir          // additional user-specified bind mounts (rw)
+	ResumeWorktreeName string              // worktree name when resuming a worktree session
+	ExtraNetworks      []NetworkAttachment // additional networks to connect before starting
 }
 
 // StartAgent creates and starts an agent container.
@@ -362,6 +369,17 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 	resp, err := c.docker.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, opts.Name)
 	if err != nil {
 		return "", fmt.Errorf("failed to create agent container: %w", err)
+	}
+
+	// Connect extra networks before starting so DNS is available at boot
+	for _, net := range opts.ExtraNetworks {
+		endpointConfig := &network.EndpointSettings{}
+		if len(net.Aliases) > 0 {
+			endpointConfig.Aliases = net.Aliases
+		}
+		if err := c.docker.NetworkConnect(ctx, net.NetworkName, resp.ID, endpointConfig); err != nil {
+			return "", fmt.Errorf("failed to connect container to network %s: %w", net.NetworkName, err)
+		}
 	}
 
 	if err := c.docker.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {

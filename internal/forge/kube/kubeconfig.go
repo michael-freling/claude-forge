@@ -126,6 +126,9 @@ func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext
 	if err := os.WriteFile(outputPath, outData, 0o644); err != nil {
 		return fmt.Errorf("failed to write generated kubeconfig: %w", err)
 	}
+	if err := os.Chmod(outputPath, 0o644); err != nil {
+		return fmt.Errorf("failed to set kubeconfig permissions: %w", err)
+	}
 	return nil
 }
 

@@ -49,6 +49,6 @@ changed its CLI interface across versions.
 
 ## Key invariants
 
-- Kubernetes MCP is always `--read-only` (security invariant, not configurable)
+- Kubernetes MCP runs without `--read-only` or `--disable-destructive` (RBAC is the safety layer)
 - MCP servers are only written to `settings.json` when actually running
 - `UpdateMCPServers` replaces the map entirely (no stale entries from prior sessions)

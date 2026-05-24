@@ -8,7 +8,6 @@ const (
 func MCPServerArgs() []string {
 	return []string{
 		"--port", MCPServerPort,
-		"--read-only",
 		"--kubeconfig", MCPServerKubeconfigPath,
 	}
 }

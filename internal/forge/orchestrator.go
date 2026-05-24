@@ -266,6 +266,11 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to update MCP settings: %w", err)
 	}
 
+	if err := claudecode.RegisterProjectMCPServers(o.ConfigDir, mcpServers); err != nil {
+		o.Cleanup(ctx, sess)
+		return nil, fmt.Errorf("failed to register MCP servers in .claude.json: %w", err)
+	}
+
 	// Build agent command args
 	var agentCmd []string
 	if opts.SkipPermissions {
@@ -345,6 +350,14 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		})
 	}
 
+	// Build extra networks for the agent (connect before start so DNS is ready)
+	var extraNetworks []container.NetworkAttachment
+	if k8sRunning {
+		extraNetworks = append(extraNetworks, container.NetworkAttachment{
+			NetworkName: "forge-shared",
+		})
+	}
+
 	// Start agent
 	o.Log("Starting agent: %s", sess.AgentName)
 	if _, err := o.Containers.StartAgent(ctx, container.AgentOptions{
@@ -365,16 +378,10 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		CacheDirs:          containerCacheDirs,
 		ExtraMounts:        extraMounts,
 		ResumeWorktreeName: opts.ResumeWorktreeName,
+		ExtraNetworks:      extraNetworks,
 	}); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start agent: %w", err)
-	}
-
-	// Connect agent to shared network for Kubernetes MCP access
-	if k8sRunning {
-		if err := o.Containers.ConnectNetwork(ctx, "forge-shared", sess.AgentName, nil); err != nil {
-			o.Log("Warning: failed to connect agent to shared network: %v", err)
-		}
 	}
 
 	return sess, nil
@@ -496,6 +503,10 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 		return nil
 	}
 
+	// Remove stale container if it exists but isn't running (e.g. crashed/exited)
+	// so we can create a fresh one with the same name.
+	_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
+
 	// Generate kubeconfig with SA tokens
 	kubeconfigDir := filepath.Join(o.ConfigDir, "k8s-mcp")
 	if err := os.MkdirAll(kubeconfigDir, 0o700); err != nil {
@@ -550,6 +561,36 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 
 	if err := o.Containers.WaitForReady(ctx, k8sID, 10*time.Second); err != nil {
 		return fmt.Errorf("k8s-mcp failed to start: %w", err)
+	}
+
+	return nil
+}
+
+// RestartSharedMCP stops all shared MCP containers and starts them again.
+func (o *Orchestrator) RestartSharedMCP(ctx context.Context) error {
+	cfg, err := config.Load(o.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	if !cfg.Kubernetes.Enabled {
+		o.Log("No shared MCP servers configured.")
+		return nil
+	}
+
+	k8sMCPName := "forge-k8s-mcp"
+	running, err := o.Containers.IsContainerRunning(ctx, k8sMCPName)
+	if err != nil {
+		return fmt.Errorf("failed to check k8s-mcp status: %w", err)
+	}
+	if running {
+		o.Log("Stopping: %s", k8sMCPName)
+		_ = o.Containers.StopContainer(ctx, k8sMCPName)
+		_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
+	}
+
+	if err := o.startKubernetesMCP(ctx, cfg); err != nil {
+		return fmt.Errorf("failed to restart Kubernetes MCP: %w", err)
 	}
 
 	return nil

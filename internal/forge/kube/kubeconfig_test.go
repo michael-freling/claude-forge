@@ -104,6 +104,38 @@ func TestGenerateKubeconfig_Success(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 }
 
+func TestGenerateKubeconfig_OverwritesRestrictivePermissions(t *testing.T) {
+	origResolveToken := resolveToken
+	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
+		return "sa-token-" + ctx.HostContext, nil
+	}
+	t.Cleanup(func() { resolveToken = origResolveToken })
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outPath := filepath.Join(tmpDir, "kubeconfig-out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	// Pre-create the output file with restrictive 0600 permissions, simulating
+	// a file left over from a prior run.
+	require.NoError(t, os.WriteFile(outPath, []byte("old-content"), 0o600))
+	info, err := os.Stat(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "precondition: file should start with 0600")
+
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+	}
+
+	err = GenerateKubeconfig(contexts, srcPath, "ctx-a", outPath)
+	require.NoError(t, err)
+
+	// Verify permissions were updated to 0644 despite the pre-existing 0600 file.
+	info, err = os.Stat(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(), "permissions should be 0644 after regeneration")
+}
+
 func TestGenerateKubeconfig_KubeconfigNotFound(t *testing.T) {
 	origResolveToken := resolveToken
 	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {

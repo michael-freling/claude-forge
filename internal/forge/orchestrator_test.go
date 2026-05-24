@@ -927,8 +927,9 @@ kubernetes:
 	// Start logs a warning and continues without adding kubernetes to settings.json
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("shared-net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
-	// ConnectNetwork is NOT called because startKubernetesMCP failed
+	// ExtraNetworks is NOT set because startKubernetesMCP failed
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		ProjectDir: projectDir,
@@ -970,9 +971,10 @@ kubernetes:
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
 	// startKubernetesMCP fails (no kubeconfig) — Start continues without
-	// ConnectNetwork or kubernetes in settings.json
+	// kubernetes in settings.json
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("shared-net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
 
 	sess, err := orch.Start(context.Background(), StartOptions{
@@ -1024,9 +1026,9 @@ current-context: my-cluster
 
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	// GenerateKubeconfig will fail because kubectl isn't available,
 	// but this test verifies the code path up to that point
-	// (lines 468-510 of orchestrator.go)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	// Will fail at GenerateKubeconfig (no kubectl), but exercises the setup code
@@ -1055,6 +1057,7 @@ func TestStartKubernetesMCP_KUBECONFIGEnvVar(t *testing.T) {
 
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	require.Error(t, err)
@@ -1080,6 +1083,7 @@ func TestStartKubernetesMCP_DefaultContextFallback(t *testing.T) {
 
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	// Will fail at GenerateKubeconfig, but exercises the DefaultContext path
@@ -1154,6 +1158,84 @@ func TestStartKubernetesMCP_CheckRunningFails(t *testing.T) {
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to check k8s-mcp status")
+}
+
+func TestRestartSharedMCP_StopsAndRestarts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `images:
+  agent: agent:latest
+  gateway: gateway:latest
+  github_mcp: mcp:latest
+kubernetes:
+  enabled: true
+  image: k8s-mcp:latest
+  contexts:
+    - host_context: my-cluster
+      service_account_name: forge-sa
+      service_account_namespace: default
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	// Container is currently running
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
+	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	// startKubernetesMCP is called to restart
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+
+	err := orch.RestartSharedMCP(context.Background())
+	// Will fail at GenerateKubeconfig (no real kubectl), but exercises stop+start path
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to restart Kubernetes MCP")
+}
+
+func TestRestartSharedMCP_NotRunning(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `images:
+  agent: agent:latest
+  gateway: gateway:latest
+  github_mcp: mcp:latest
+kubernetes:
+  enabled: true
+  image: k8s-mcp:latest
+  contexts:
+    - host_context: my-cluster
+      service_account_name: forge-sa
+      service_account_namespace: default
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	// Container is NOT running — skip stop, go straight to start
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+
+	err := orch.RestartSharedMCP(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to restart Kubernetes MCP")
+}
+
+func TestRestartSharedMCP_KubernetesDisabled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	err := orch.RestartSharedMCP(context.Background())
+	require.NoError(t, err)
 }
 
 func TestBuild_WithKubernetesEnabled(t *testing.T) {

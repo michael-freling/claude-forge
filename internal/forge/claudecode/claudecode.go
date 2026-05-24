@@ -456,6 +456,56 @@ func UpdateMCPServers(configDir string, servers map[string]MCPServerConfig) erro
 	return os.WriteFile(settingsPath, append(out, '\n'), 0o644)
 }
 
+// RegisterProjectMCPServers updates .claude.json to register MCP servers
+// under the /work project entry. Claude Code requires this registration
+// in addition to the settings.json mcpServers entry.
+func RegisterProjectMCPServers(configDir string, servers map[string]MCPServerConfig) error {
+	configPath := filepath.Join(configDir, ".claude.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read .claude.json: %w", err)
+		}
+		data = []byte("{}")
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		return fmt.Errorf("failed to parse .claude.json: %w", err)
+	}
+
+	// Navigate to or create projects["/work"]
+	projects, ok := config["projects"].(map[string]any)
+	if !ok {
+		projects = make(map[string]any)
+		config["projects"] = projects
+	}
+	workProject, ok := projects["/work"].(map[string]any)
+	if !ok {
+		workProject = make(map[string]any)
+		projects["/work"] = workProject
+	}
+
+	if len(servers) == 0 {
+		delete(workProject, "mcpServers")
+	} else {
+		mcpServers := make(map[string]any, len(servers))
+		for name, cfg := range servers {
+			mcpServers[name] = map[string]any{
+				"type": "http",
+				"url":  cfg.URL,
+			}
+		}
+		workProject["mcpServers"] = mcpServers
+	}
+
+	out, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal .claude.json: %w", err)
+	}
+	return os.WriteFile(configPath, append(out, '\n'), 0o644)
+}
+
 // pathExists returns true if the given path exists on the filesystem.
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
