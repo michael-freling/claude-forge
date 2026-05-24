@@ -179,23 +179,24 @@ type CacheDir struct {
 
 // AgentOptions holds configuration for starting an agent container.
 type AgentOptions struct {
-	Name        string            // container name: forge-agent-<project-id>-<session-id>
-	Image       string            // agent image
-	NetworkName string            // Docker network to attach to
-	ProjectDir  string            // host path to project (mounted at /work)
-	SessionDir  string            // host path to session storage
-	ClaudeDir   string            // host path to ~/.claude/
-	ConfigDir   string            // host path to ~/.config/claude-forge/
-	HomeDir     string            // host home dir for CLAUDE.md paths
-	Env         map[string]string // environment variables
-	Privileged  bool
-	Interactive bool       // allocate TTY and stdin (for docker attach)
-	Cmd         []string   // claude args: --dangerously-skip-permissions, --worktree, etc.
-	UID         int        // host user UID (for file ownership mapping)
-	GID         int        // host user GID (for file ownership mapping)
-	PluginsDir  string     // host path to forge plugins dir (mounted rw at ~/.claude/plugins)
-	CacheDirs   []CacheDir // host dependency cache directories to mount (rw)
-	ExtraMounts []CacheDir // additional user-specified bind mounts (rw)
+	Name               string            // container name: forge-agent-<project-id>-<session-id>
+	Image              string            // agent image
+	NetworkName        string            // Docker network to attach to
+	ProjectDir         string            // host path to project (mounted at /work)
+	SessionDir         string            // host path to session storage
+	ClaudeDir          string            // host path to ~/.claude/
+	ConfigDir          string            // host path to ~/.config/claude-forge/
+	HomeDir            string            // host home dir for CLAUDE.md paths
+	Env                map[string]string // environment variables
+	Privileged         bool
+	Interactive        bool       // allocate TTY and stdin (for docker attach)
+	Cmd                []string   // claude args: --dangerously-skip-permissions, --worktree, etc.
+	UID                int        // host user UID (for file ownership mapping)
+	GID                int        // host user GID (for file ownership mapping)
+	PluginsDir         string     // host path to forge plugins dir (mounted rw at ~/.claude/plugins)
+	CacheDirs          []CacheDir // host dependency cache directories to mount (rw)
+	ExtraMounts        []CacheDir // additional user-specified bind mounts (rw)
+	ResumeWorktreeName string     // worktree name when resuming a worktree session
 }
 
 // StartAgent creates and starts an agent container.
@@ -321,10 +322,27 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		})
 	}
 
+	var cmd []string
+	if opts.ResumeWorktreeName != "" {
+		wtPath := ".claude/worktrees/" + opts.ResumeWorktreeName
+		var quotedArgs []string
+		for _, arg := range opts.Cmd {
+			quotedArgs = append(quotedArgs, "'"+arg+"'")
+		}
+		claudeArgs := strings.Join(quotedArgs, " ")
+		shellCmd := fmt.Sprintf(
+			"git worktree add %s HEAD 2>/dev/null || true && cd /work/%s && exec claude %s",
+			wtPath, wtPath, claudeArgs,
+		)
+		cmd = []string{"bash", "-c", shellCmd}
+	} else {
+		cmd = append([]string{"claude"}, opts.Cmd...)
+	}
+
 	containerConfig := &container.Config{
 		Image:      opts.Image,
 		Env:        env,
-		Cmd:        append([]string{"claude"}, opts.Cmd...),
+		Cmd:        cmd,
 		WorkingDir: "/work",
 		Tty:        opts.Interactive,
 		OpenStdin:  opts.Interactive,

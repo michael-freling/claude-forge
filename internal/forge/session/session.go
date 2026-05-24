@@ -27,6 +27,22 @@ type Session struct {
 	ID        string
 	CreatedAt time.Time
 	FirstMsg  string
+	Subdir    string // relative subdirectory within session dir (e.g., "-work", "-work-.claude-worktrees-feature")
+}
+
+const worktreeSubdirPrefix = "-work-.claude-worktrees-"
+
+// IsWorktree reports whether this session was created inside a Claude Code worktree.
+func (s Session) IsWorktree() bool {
+	return strings.HasPrefix(s.Subdir, worktreeSubdirPrefix)
+}
+
+// WorktreeName returns the worktree name for worktree sessions, or "" otherwise.
+func (s Session) WorktreeName() string {
+	if !s.IsWorktree() {
+		return ""
+	}
+	return s.Subdir[len(worktreeSubdirPrefix):]
 }
 
 // jsonLine represents a single line in a session JSONL file.
@@ -57,7 +73,7 @@ func List(sessionDir string) ([]Session, error) {
 	}
 
 	var sessions []Session
-	collect := func(dir string) {
+	collect := func(dir, subdir string) {
 		dirEntries, err := os.ReadDir(dir)
 		if err != nil {
 			return
@@ -71,16 +87,17 @@ func List(sessionDir string) ([]Session, error) {
 			if err != nil {
 				continue
 			}
+			sess.Subdir = subdir
 			sessions = append(sessions, *sess)
 		}
 	}
 
-	collect(sessionDir)
+	collect(sessionDir, "")
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		collect(filepath.Join(sessionDir, entry.Name()))
+		collect(filepath.Join(sessionDir, entry.Name()), entry.Name())
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {
@@ -148,4 +165,18 @@ func parseSessionFile(sessionID string, filePath string) (*Session, error) {
 		CreatedAt: createdAt,
 		FirstMsg:  firstMsg,
 	}, nil
+}
+
+// Find locates a session by ID across all subdirectories in sessionDir.
+func Find(sessionDir, sessionID string) (*Session, error) {
+	sessions, err := List(sessionDir)
+	if err != nil {
+		return nil, err
+	}
+	for i := range sessions {
+		if sessions[i].ID == sessionID {
+			return &sessions[i], nil
+		}
+	}
+	return nil, fmt.Errorf("session %s not found", sessionID)
 }

@@ -81,7 +81,7 @@ func newOrchestrator() (*forge.Orchestrator, func(), error) {
 }
 
 // startSession runs the common logic for the start and resume commands.
-func startSession(skipPermissions, worktree bool, prompt, resumeID string, continueSession bool, mounts []string) error {
+func startSession(skipPermissions, worktree bool, prompt, resumeID string, continueSession bool, mounts []string, resumeWorktreeName string) error {
 	orch, cleanup, err := createOrchestrator()
 	if err != nil {
 		return err
@@ -94,15 +94,16 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID string, conti
 	interactive := prompt == ""
 
 	sess, err := orch.Start(ctx, forge.StartOptions{
-		SkipPermissions: skipPermissions,
-		Worktree:        worktree,
-		Prompt:          prompt,
-		ResumeID:        resumeID,
-		Continue:        continueSession,
-		Interactive:     interactive,
-		UID:             hostUID,
-		GID:             hostGID,
-		Mounts:          mounts,
+		SkipPermissions:    skipPermissions,
+		Worktree:           worktree,
+		Prompt:             prompt,
+		ResumeID:           resumeID,
+		Continue:           continueSession,
+		Interactive:        interactive,
+		UID:                hostUID,
+		GID:                hostGID,
+		Mounts:             mounts,
+		ResumeWorktreeName: resumeWorktreeName,
 	})
 	if err != nil {
 		return err
@@ -161,7 +162,7 @@ By default, --dangerously-skip-permissions is enabled. Use --no-skip-permissions
 to disable it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", false, mounts)
+			return startSession(skipPermissions, worktree, prompt, "", false, mounts, "")
 		},
 	}
 
@@ -212,22 +213,38 @@ is continued.`,
 				}
 
 				w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(w, "SESSION ID\tCREATED\tFIRST MESSAGE")
+				fmt.Fprintln(w, "SESSION ID\tCREATED\tWORKTREE\tFIRST MESSAGE")
 				for _, s := range sessions {
 					firstMsg := s.FirstMsg
 					if len(firstMsg) > 60 {
 						firstMsg = firstMsg[:57] + "..."
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\n", s.ID, s.CreatedAt.Format(time.RFC3339), firstMsg)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.WorktreeName(), firstMsg)
 				}
 				return w.Flush()
 			}
 
 			if len(args) == 1 {
-				return startSession(true, false, "", args[0], false, nil)
+				sess, err := session.Find(sessionDir, args[0])
+				if err != nil {
+					return err
+				}
+				return startSession(true, false, "", args[0], false, nil, sess.WorktreeName())
 			}
 
-			return startSession(true, false, "", "", true, nil)
+			// Continue most recent session, detecting worktree if needed
+			sessions, err := session.List(sessionDir)
+			if err != nil {
+				return fmt.Errorf("failed to list sessions: %w", err)
+			}
+			if len(sessions) == 0 {
+				return fmt.Errorf("no sessions found to continue")
+			}
+			mostRecent := sessions[0]
+			if mostRecent.IsWorktree() {
+				return startSession(true, false, "", mostRecent.ID, false, nil, mostRecent.WorktreeName())
+			}
+			return startSession(true, false, "", "", true, nil, "")
 		},
 	}
 

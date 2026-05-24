@@ -51,11 +51,13 @@ func TestList(t *testing.T) {
 					ID:        "session-2",
 					CreatedAt: time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC),
 					FirstMsg:  "Fix the bug",
+					Subdir:    "-work",
 				},
 				{
 					ID:        "session-1",
 					CreatedAt: time.Date(2026, 5, 8, 14, 30, 0, 0, time.UTC),
 					FirstMsg:  "Hello world",
+					Subdir:    "-work",
 				},
 			},
 		},
@@ -72,11 +74,13 @@ func TestList(t *testing.T) {
 					ID:        "wt",
 					CreatedAt: time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC),
 					FirstMsg:  "worktree work",
+					Subdir:    "-work-.claude-worktrees-feature",
 				},
 				{
 					ID:        "main",
 					CreatedAt: time.Date(2026, 5, 8, 14, 30, 0, 0, time.UTC),
 					FirstMsg:  "main work",
+					Subdir:    "-work",
 				},
 			},
 		},
@@ -191,6 +195,84 @@ also not json
 	assert.Equal(t, "session-1", got[0].ID)
 	assert.Equal(t, "Hello", got[0].FirstMsg)
 	assert.Equal(t, time.Date(2026, 5, 8, 14, 30, 0, 0, time.UTC), got[0].CreatedAt)
+}
+
+func TestSession_IsWorktree(t *testing.T) {
+	tests := []struct {
+		subdir string
+		want   bool
+	}{
+		{"-work", false},
+		{"", false},
+		{"-work-.claude-worktrees-feature", true},
+		{"-work-.claude-worktrees-my-long-branch-name", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.subdir, func(t *testing.T) {
+			s := Session{Subdir: tt.subdir}
+			assert.Equal(t, tt.want, s.IsWorktree())
+		})
+	}
+}
+
+func TestSession_WorktreeName(t *testing.T) {
+	tests := []struct {
+		subdir string
+		want   string
+	}{
+		{"-work", ""},
+		{"", ""},
+		{"-work-.claude-worktrees-feature", "feature"},
+		{"-work-.claude-worktrees-my-long-branch-name", "my-long-branch-name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.subdir, func(t *testing.T) {
+			s := Session{Subdir: tt.subdir}
+			assert.Equal(t, tt.want, s.WorktreeName())
+		})
+	}
+}
+
+func TestFind(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create sessions in different subdirs
+	workDir := filepath.Join(tmpDir, "-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main-session.jsonl"),
+		[]byte(`{"type":"system","timestamp":"2026-05-08T14:30:00Z","message":"init"}`+"\n"+
+			`{"type":"human","timestamp":"2026-05-08T14:30:01Z","message":"hello"}`+"\n"), 0o644))
+
+	wtDir := filepath.Join(tmpDir, "-work-.claude-worktrees-feature")
+	require.NoError(t, os.MkdirAll(wtDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "wt-session.jsonl"),
+		[]byte(`{"type":"system","timestamp":"2026-05-09T10:00:00Z","message":"init"}`+"\n"+
+			`{"type":"human","timestamp":"2026-05-09T10:00:01Z","message":"worktree hello"}`+"\n"), 0o644))
+
+	t.Run("finds non-worktree session", func(t *testing.T) {
+		sess, err := Find(tmpDir, "main-session")
+		require.NoError(t, err)
+		assert.Equal(t, "main-session", sess.ID)
+		assert.Equal(t, "-work", sess.Subdir)
+		assert.False(t, sess.IsWorktree())
+		assert.Equal(t, "", sess.WorktreeName())
+	})
+
+	t.Run("finds worktree session", func(t *testing.T) {
+		sess, err := Find(tmpDir, "wt-session")
+		require.NoError(t, err)
+		assert.Equal(t, "wt-session", sess.ID)
+		assert.Equal(t, "-work-.claude-worktrees-feature", sess.Subdir)
+		assert.True(t, sess.IsWorktree())
+		assert.Equal(t, "feature", sess.WorktreeName())
+	})
+
+	t.Run("returns error for missing session", func(t *testing.T) {
+		_, err := Find(tmpDir, "nonexistent")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nonexistent")
+		assert.Contains(t, err.Error(), "not found")
+	})
 }
 
 func TestParseSessionFile(t *testing.T) {

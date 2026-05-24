@@ -439,6 +439,7 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, output, "SESSION ID")
+	assert.Contains(t, output, "WORKTREE")
 	assert.Contains(t, output, "abc12345")
 	assert.Contains(t, output, "Hello Claude")
 }
@@ -517,6 +518,91 @@ func TestResumeCmd_NotInGitRepo(t *testing.T) {
 	err = cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to identify project")
+}
+
+func TestResumeCmd_List_ShowsWorktreeName(t *testing.T) {
+	setupTestOrchestrator(t, &stubContainerManager{})
+	repoDir := setupTestGitRepo(t)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(repoDir))
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	projID := strings.ReplaceAll(repoDir, "/", "-")
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	sessionDir := filepath.Join(homeDir, ".claude-forge", projID)
+	t.Cleanup(func() { os.RemoveAll(sessionDir) })
+
+	// Create a regular session in -work/
+	workDir := filepath.Join(sessionDir, "-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	writeSessionFile(t, filepath.Join(workDir, "regular-session.jsonl"),
+		"2025-01-15T10:30:00Z", "regular work")
+
+	// Create a worktree session in -work-.claude-worktrees-feature/
+	wtDir := filepath.Join(sessionDir, "-work-.claude-worktrees-feature")
+	require.NoError(t, os.MkdirAll(wtDir, 0o755))
+	writeSessionFile(t, filepath.Join(wtDir, "wt-session.jsonl"),
+		"2025-01-15T11:00:00Z", "worktree work")
+
+	cmd := newResumeCmd()
+	cmd.SetArgs([]string{"--list"})
+
+	output := captureStdout(t, func() {
+		err = cmd.Execute()
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, output, "WORKTREE")
+	assert.Contains(t, output, "wt-session")
+	assert.Contains(t, output, "feature")
+	assert.Contains(t, output, "regular-session")
+}
+
+func TestResumeCmd_FindSessionNotFound(t *testing.T) {
+	setupTestOrchestrator(t, &stubContainerManager{})
+	repoDir := setupTestGitRepo(t)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(repoDir))
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	projID := strings.ReplaceAll(repoDir, "/", "-")
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	sessionDir := filepath.Join(homeDir, ".claude-forge", projID)
+	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
+	t.Cleanup(func() { os.RemoveAll(sessionDir) })
+
+	cmd := newResumeCmd()
+	cmd.SetArgs([]string{"nonexistent-session-id"})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func writeSessionFile(t *testing.T, path, timestamp, message string) {
+	t.Helper()
+	lines := []map[string]string{
+		{"type": "system", "timestamp": timestamp, "message": "Session started"},
+		{"type": "human", "timestamp": timestamp, "message": message},
+	}
+	var content []byte
+	for _, line := range lines {
+		b, err := json.Marshal(line)
+		require.NoError(t, err)
+		content = append(content, b...)
+		content = append(content, '\n')
+	}
+	require.NoError(t, os.WriteFile(path, content, 0o644))
 }
 
 func TestAuthCmd_WithAPIKey(t *testing.T) {

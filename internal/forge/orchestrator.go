@@ -43,16 +43,17 @@ func NewOrchestrator(containers container.ContainerManager, homeDir string) *Orc
 
 // StartOptions holds options for starting a session.
 type StartOptions struct {
-	SkipPermissions bool
-	Worktree        bool
-	Prompt          string
-	ResumeID        string
-	Continue        bool
-	Interactive     bool     // allocate TTY for docker attach (false for prompt mode)
-	ProjectDir      string   // working directory (defaults to cwd if empty)
-	UID             int      // host user UID
-	GID             int      // host user GID
-	Mounts          []string // additional host:container bind mounts
+	SkipPermissions    bool
+	Worktree           bool
+	Prompt             string
+	ResumeID           string
+	Continue           bool
+	Interactive        bool     // allocate TTY for docker attach (false for prompt mode)
+	ProjectDir         string   // working directory (defaults to cwd if empty)
+	UID                int      // host user UID
+	GID                int      // host user GID
+	Mounts             []string // additional host:container bind mounts
+	ResumeWorktreeName string   // worktree name when resuming a worktree session
 }
 
 // Session holds information about a running session.
@@ -335,22 +336,23 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	// Start agent
 	o.Log("Starting agent: %s", sess.AgentName)
 	if _, err := o.Containers.StartAgent(ctx, container.AgentOptions{
-		Name:        sess.AgentName,
-		Image:       cfg.Images.Agent,
-		NetworkName: sess.NetworkName,
-		ProjectDir:  proj.Dir,
-		SessionDir:  sessionDir,
-		ClaudeDir:   o.ClaudeDir,
-		ConfigDir:   o.ConfigDir,
-		HomeDir:     o.HomeDir,
-		PluginsDir:  pluginsDir,
-		Env:         agentEnv,
-		Interactive: opts.Interactive,
-		Cmd:         agentCmd,
-		UID:         opts.UID,
-		GID:         opts.GID,
-		CacheDirs:   containerCacheDirs,
-		ExtraMounts: extraMounts,
+		Name:               sess.AgentName,
+		Image:              cfg.Images.Agent,
+		NetworkName:        sess.NetworkName,
+		ProjectDir:         proj.Dir,
+		SessionDir:         sessionDir,
+		ClaudeDir:          o.ClaudeDir,
+		ConfigDir:          o.ConfigDir,
+		HomeDir:            o.HomeDir,
+		PluginsDir:         pluginsDir,
+		Env:                agentEnv,
+		Interactive:        opts.Interactive,
+		Cmd:                agentCmd,
+		UID:                opts.UID,
+		GID:                opts.GID,
+		CacheDirs:          containerCacheDirs,
+		ExtraMounts:        extraMounts,
+		ResumeWorktreeName: opts.ResumeWorktreeName,
 	}); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start agent: %w", err)

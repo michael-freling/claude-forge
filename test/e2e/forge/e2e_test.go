@@ -199,6 +199,8 @@ Reply with the raw command outputs only, no other text.`
 
 	assert.NotContains(t, listOutStr, "No sessions found.",
 		"resume --list should not be empty after a session was created")
+	assert.Contains(t, listOutStr, "WORKTREE",
+		"resume --list should include the WORKTREE column header")
 	expectedID := strings.TrimSuffix(sessionFile, ".jsonl")
 	assert.Contains(t, listOutStr, expectedID,
 		"resume --list should include the session ID %s", expectedID)
@@ -317,4 +319,162 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 	for _, c := range containers {
 		t.Errorf("forge container still running after gateway failure: %s (image=%s, status=%s)", c.Name, c.Image, c.Status)
 	}
+}
+
+// buildForge builds the claude-forge binary and returns its path.
+func buildForge(t *testing.T) string {
+	t.Helper()
+	projectRoot := findProjectRoot(t)
+	binaryPath := filepath.Join(t.TempDir(), "claude-forge")
+	buildBinary := exec.Command("go", "build", "-o", binaryPath, "./cmd/claude-forge/")
+	buildBinary.Dir = projectRoot
+	out, err := buildBinary.CombinedOutput()
+	require.NoError(t, err, "failed to build claude-forge binary: %s", out)
+	return binaryPath
+}
+
+// writeTestSession creates a JSONL session file at the given path.
+func writeTestSession(t *testing.T, path, timestamp, message string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	content := fmt.Sprintf(
+		"{\"type\":\"system\",\"timestamp\":\"%s\",\"message\":\"init\"}\n"+
+			"{\"type\":\"human\",\"timestamp\":\"%s\",\"message\":\"%s\"}\n",
+		timestamp, timestamp, message,
+	)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+// TestResumeList_NonWorktreeSession verifies that `resume --list` shows
+// non-worktree sessions with an empty WORKTREE column.
+func TestResumeList_NonWorktreeSession(t *testing.T) {
+	binaryPath := buildForge(t)
+	projectRoot := findProjectRoot(t)
+
+	tempHome := t.TempDir()
+	projectID := strings.ReplaceAll(projectRoot, "/", "-")
+
+	writeTestSession(t,
+		filepath.Join(tempHome, ".claude-forge", projectID, "-work", "non-wt-session.jsonl"),
+		"2026-05-20T10:00:00Z", "regular session")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd.Dir = projectRoot
+	cmd.Env = append(os.Environ(), "HOME="+tempHome)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+	t.Logf("resume --list output:\n%s", outputStr)
+	require.NoError(t, err, "resume --list failed: %s", outputStr)
+
+	assert.Contains(t, outputStr, "SESSION ID")
+	assert.Contains(t, outputStr, "WORKTREE")
+	assert.Contains(t, outputStr, "FIRST MESSAGE")
+	assert.Contains(t, outputStr, "non-wt-session")
+	assert.Contains(t, outputStr, "regular session")
+
+	// Split into lines and verify the data row has no worktree name
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	require.GreaterOrEqual(t, len(lines), 2, "expected header + at least one data line")
+	dataLine := lines[1]
+	assert.Contains(t, dataLine, "non-wt-session")
+	// The worktree column should be empty for non-worktree sessions.
+	// Between the timestamp and "regular session" there should be no worktree name.
+	assert.NotContains(t, dataLine, "worktrees")
+}
+
+// TestResumeList_WorktreeSession verifies that `resume --list` shows
+// worktree sessions with the worktree name in the WORKTREE column.
+func TestResumeList_WorktreeSession(t *testing.T) {
+	binaryPath := buildForge(t)
+	projectRoot := findProjectRoot(t)
+
+	tempHome := t.TempDir()
+	projectID := strings.ReplaceAll(projectRoot, "/", "-")
+
+	writeTestSession(t,
+		filepath.Join(tempHome, ".claude-forge", projectID, "-work", "main-session.jsonl"),
+		"2026-05-20T10:00:00Z", "main workspace")
+
+	writeTestSession(t,
+		filepath.Join(tempHome, ".claude-forge", projectID, "-work-.claude-worktrees-my-feature", "wt-session.jsonl"),
+		"2026-05-20T11:00:00Z", "worktree task")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd.Dir = projectRoot
+	cmd.Env = append(os.Environ(), "HOME="+tempHome)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+	t.Logf("resume --list output:\n%s", outputStr)
+	require.NoError(t, err, "resume --list failed: %s", outputStr)
+
+	assert.Contains(t, outputStr, "WORKTREE")
+	assert.Contains(t, outputStr, "wt-session")
+	assert.Contains(t, outputStr, "my-feature")
+	assert.Contains(t, outputStr, "main-session")
+
+	// Verify both sessions are listed: worktree session first (more recent)
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	require.GreaterOrEqual(t, len(lines), 3, "expected header + 2 data lines")
+
+	// First data line: worktree session (newer timestamp)
+	assert.Contains(t, lines[1], "wt-session")
+	assert.Contains(t, lines[1], "my-feature")
+
+	// Second data line: main session (no worktree)
+	assert.Contains(t, lines[2], "main-session")
+}
+
+// TestResumeList_MixedSessions verifies correct display when there are
+// sessions from both the main workspace and multiple worktrees.
+func TestResumeList_MixedSessions(t *testing.T) {
+	binaryPath := buildForge(t)
+	projectRoot := findProjectRoot(t)
+
+	tempHome := t.TempDir()
+	projectID := strings.ReplaceAll(projectRoot, "/", "-")
+	baseDir := filepath.Join(tempHome, ".claude-forge", projectID)
+
+	writeTestSession(t,
+		filepath.Join(baseDir, "-work", "session-a.jsonl"),
+		"2026-05-20T09:00:00Z", "main work")
+
+	writeTestSession(t,
+		filepath.Join(baseDir, "-work-.claude-worktrees-feature-auth", "session-b.jsonl"),
+		"2026-05-20T10:00:00Z", "auth feature")
+
+	writeTestSession(t,
+		filepath.Join(baseDir, "-work-.claude-worktrees-bugfix-login", "session-c.jsonl"),
+		"2026-05-20T11:00:00Z", "login bugfix")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd.Dir = projectRoot
+	cmd.Env = append(os.Environ(), "HOME="+tempHome)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+	t.Logf("resume --list output:\n%s", outputStr)
+	require.NoError(t, err, "resume --list failed: %s", outputStr)
+
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	require.GreaterOrEqual(t, len(lines), 4, "expected header + 3 data lines")
+
+	// Most recent first
+	assert.Contains(t, lines[1], "session-c")
+	assert.Contains(t, lines[1], "bugfix-login")
+
+	assert.Contains(t, lines[2], "session-b")
+	assert.Contains(t, lines[2], "feature-auth")
+
+	assert.Contains(t, lines[3], "session-a")
 }
