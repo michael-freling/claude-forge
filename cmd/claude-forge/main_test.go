@@ -589,6 +589,32 @@ func TestResumeCmd_FindSessionNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestResumeCmd_ContinueNoSessions(t *testing.T) {
+	setupTestOrchestrator(t, &stubContainerManager{})
+	repoDir := setupTestGitRepo(t)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(repoDir))
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	projID := strings.ReplaceAll(repoDir, "/", "-")
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	sessionDir := filepath.Join(homeDir, ".claude-forge", projID)
+	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
+	t.Cleanup(func() { os.RemoveAll(sessionDir) })
+
+	cmd := newResumeCmd()
+	cmd.SetArgs([]string{}) // no args, no --list → continue most recent
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no sessions found")
+}
+
 func writeSessionFile(t *testing.T, path, timestamp, message string) {
 	t.Helper()
 	lines := []map[string]string{

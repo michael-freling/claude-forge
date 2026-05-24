@@ -275,6 +275,15 @@ func TestFind(t *testing.T) {
 	})
 }
 
+func TestFind_ReadError(t *testing.T) {
+	// Use a path that exists but can't be read (not a directory)
+	tmpFile := filepath.Join(t.TempDir(), "not-a-dir")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("x"), 0o644))
+
+	_, err := Find(tmpFile, "any-id")
+	require.Error(t, err)
+}
+
 func TestParseSessionFile(t *testing.T) {
 	tests := []struct {
 		name        string

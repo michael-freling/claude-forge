@@ -747,6 +747,50 @@ func TestStartAgent_NoCacheDirs(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStartAgent_ResumeWorktreeSession(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockAPI := NewMockDockerAPI(ctrl)
+
+	opts := AgentOptions{
+		Name:               "forge-agent-wt-resume",
+		Image:              "agent:latest",
+		NetworkName:        "forge_net",
+		ProjectDir:         "/home/user/project",
+		Cmd:                []string{"--dangerously-skip-permissions", "--resume", "abc-123"},
+		ResumeWorktreeName: "my-feature",
+	}
+
+	mockAPI.EXPECT().
+		ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
+			// When ResumeWorktreeName is set, the command should be a bash wrapper
+			// that creates the worktree and cds into it before running claude.
+			require.Len(t, config.Cmd, 3)
+			assert.Equal(t, "bash", config.Cmd[0])
+			assert.Equal(t, "-c", config.Cmd[1])
+			shellCmd := config.Cmd[2]
+			assert.Contains(t, shellCmd, "git worktree add .claude/worktrees/my-feature HEAD")
+			assert.Contains(t, shellCmd, "cd /work/.claude/worktrees/my-feature")
+			assert.Contains(t, shellCmd, "exec claude")
+			assert.Contains(t, shellCmd, "'--dangerously-skip-permissions'")
+			assert.Contains(t, shellCmd, "'--resume'")
+			assert.Contains(t, shellCmd, "'abc-123'")
+			return container.CreateResponse{ID: "c-wt"}, nil
+		})
+
+	mockAPI.EXPECT().
+		ContainerStart(gomock.Any(), "c-wt", container.StartOptions{}).
+		Return(nil)
+
+	client := newClientWithAPI(mockAPI)
+	ctx := context.Background()
+
+	_, err := client.StartAgent(ctx, opts)
+	require.NoError(t, err)
+}
+
 func TestStartGateway(t *testing.T) {
 	tests := []struct {
 		name        string
