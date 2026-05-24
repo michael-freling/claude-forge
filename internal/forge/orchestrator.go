@@ -87,6 +87,10 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
+	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) == 0 {
+		return nil, fmt.Errorf("kubernetes is enabled but no contexts are configured; run 'claude-forge init' and configure kubernetes.contexts in %s/config.yaml", o.ConfigDir)
+	}
+
 	// Identify project
 	proj, err := project.Identify(projectDir)
 	if err != nil {
@@ -158,7 +162,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 
 	// Pull images if not present
 	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+	if cfg.Kubernetes.Enabled {
 		imagesToPull = append(imagesToPull, cfg.Kubernetes.Image)
 	}
 	for _, img := range imagesToPull {
@@ -244,7 +248,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 
 	// Add Kubernetes MCP if enabled
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+	if cfg.Kubernetes.Enabled {
 		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:8090/mcp"}
 	}
 
@@ -333,7 +337,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 
 	// Start Kubernetes MCP shared service if enabled
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+	if cfg.Kubernetes.Enabled {
 		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
 			o.Log("Warning: failed to start Kubernetes MCP: %v", err)
 		}
@@ -365,7 +369,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 
 	// Connect agent to shared network for Kubernetes MCP access
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+	if cfg.Kubernetes.Enabled {
 		if err := o.Containers.ConnectNetwork(ctx, "forge-shared", sess.AgentName, nil); err != nil {
 			o.Log("Warning: failed to connect agent to shared network: %v", err)
 		}
@@ -520,11 +524,8 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 		return fmt.Errorf("failed to generate kubeconfig: %w", err)
 	}
 
-	// Build command for the MCP server
-	cmd := []string{"--transport", "http", "--port", "8090"}
-	if cfg.Kubernetes.ReadOnly {
-		cmd = append(cmd, "--read-only")
-	}
+	// Build command for the MCP server (always read-only for safety)
+	cmd := []string{"--transport", "http", "--port", "8090", "--read-only"}
 
 	o.Log("Starting Kubernetes MCP: %s", k8sMCPName)
 	k8sID, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{

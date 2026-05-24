@@ -1015,9 +1015,8 @@ current-context: my-cluster
 
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
-			Enabled:  true,
-			Image:    "k8s-mcp:latest",
-			ReadOnly: true,
+			Enabled: true,
+			Image:   "k8s-mcp:latest",
 			Contexts: []config.KubeContextEntry{
 				{HostContext: "my-cluster", ServiceAccountName: "forge-sa", ServiceAccountNamespace: "default"},
 			},

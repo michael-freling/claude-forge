@@ -45,7 +45,6 @@ type DefaultsConfig struct {
 // KubernetesConfig holds Kubernetes MCP integration configuration.
 type KubernetesConfig struct {
 	Enabled        bool               `yaml:"enabled"`
-	ReadOnly       bool               `yaml:"read_only"`
 	Image          string             `yaml:"image"`
 	Contexts       []KubeContextEntry `yaml:"contexts"`
 	DefaultContext string             `yaml:"default_context"`

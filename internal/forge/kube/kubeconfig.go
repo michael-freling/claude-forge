@@ -129,6 +129,23 @@ func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext
 	return nil
 }
 
+// ListContexts reads a kubeconfig file and returns all context names.
+func ListContexts(kubeconfigPath string) ([]string, error) {
+	data, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+	var cfg kubeConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse kubeconfig: %w", err)
+	}
+	var names []string
+	for _, c := range cfg.Contexts {
+		names = append(names, c.Name)
+	}
+	return names, nil
+}
+
 // resolveToken calls `kubectl create token` to get a short-lived SA token.
 var resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
 	args := []string{

@@ -50,6 +50,7 @@ containers, Docker networks, and session state.`,
 	}
 
 	rootCmd.AddCommand(
+		newInitCmd(),
 		newStartCmd(),
 		newResumeCmd(),
 		newStopCmd(),
@@ -145,6 +146,111 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 	orch.Cleanup(context.Background(), sess)
 	return nil
 }
+
+// newInitCmd creates the "init" subcommand.
+func newInitCmd() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Create a default config file",
+		Long: `Write a config.yaml to ~/.config/claude-forge/ with detected settings.
+Kubernetes contexts are auto-detected from your kubeconfig.
+If the file already exists, use --force to overwrite it.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to get home directory: %w", err)
+			}
+			configDir := filepath.Join(homeDir, ".config", "claude-forge")
+			configPath := filepath.Join(configDir, "config.yaml")
+
+			if !force {
+				if _, err := os.Stat(configPath); err == nil {
+					return fmt.Errorf("config already exists at %s (use --force to overwrite)", configPath)
+				}
+			}
+
+			content := buildConfigTemplate(homeDir)
+
+			if err := os.MkdirAll(configDir, 0o755); err != nil {
+				return fmt.Errorf("failed to create config directory: %w", err)
+			}
+			if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+				return fmt.Errorf("failed to write config: %w", err)
+			}
+
+			fmt.Printf("Config written to %s\n", configPath)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing config file")
+	return cmd
+}
+
+// buildConfigTemplate generates the config.yaml content, auto-detecting
+// Kubernetes contexts from the user's kubeconfig.
+func buildConfigTemplate(homeDir string) string {
+	var b strings.Builder
+
+	b.WriteString(`# claude-forge configuration
+# Location: ~/.config/claude-forge/config.yaml
+
+# Docker images used for each container role.
+images:
+  agent: ` + forgeconfig.DefaultAgentImage + `
+  gateway: ` + forgeconfig.DefaultGatewayImage + `
+  github_mcp: ` + forgeconfig.DefaultGitHubMCPImage + `
+
+# Default flags applied to every "start" invocation.
+defaults:
+  skip_permissions: false
+  worktree: false
+
+# Kubernetes MCP server integration.
+# When enabled, a shared MCP server container gives agents read-only
+# access to your clusters via short-lived ServiceAccount tokens.
+#
+# Prerequisites:
+#   1. Create RBAC resources:  claude-forge kube render --context <ctx> | kubectl apply -f -
+#   2. Uncomment the section below.
+`)
+
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
+	}
+
+	contexts, err := kube.ListContexts(kubeconfigPath)
+	if err != nil || len(contexts) == 0 {
+		b.WriteString(`#
+# kubernetes:
+#   enabled: true
+#   image: ` + forgeconfig.DefaultKubernetesMCPImage + `
+#   default_context: my-cluster
+#   contexts:
+#     - host_context: my-cluster
+#       service_account_name: claude-forge-agent
+#       service_account_namespace: default
+`)
+		return b.String()
+	}
+
+	b.WriteString("# kubernetes:\n")
+	b.WriteString("#   enabled: true\n")
+	b.WriteString("#   image: " + forgeconfig.DefaultKubernetesMCPImage + "\n")
+	b.WriteString("#   default_context: " + contexts[0] + "\n")
+	b.WriteString("#   contexts:\n")
+	for _, ctx := range contexts {
+		b.WriteString("#     - host_context: " + ctx + "\n")
+		b.WriteString("#       service_account_name: claude-forge-agent\n")
+		b.WriteString("#       service_account_namespace: default\n")
+	}
+
+	return b.String()
+}
+
 
 // newStartCmd creates the "start" subcommand.
 func newStartCmd() *cobra.Command {
