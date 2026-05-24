@@ -101,7 +101,39 @@ func TestGenerateKubeconfig_Success(t *testing.T) {
 	// Verify file permissions
 	info, err := os.Stat(outPath)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+}
+
+func TestGenerateKubeconfig_OverwritesRestrictivePermissions(t *testing.T) {
+	origResolveToken := resolveToken
+	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
+		return "sa-token-" + ctx.HostContext, nil
+	}
+	t.Cleanup(func() { resolveToken = origResolveToken })
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outPath := filepath.Join(tmpDir, "kubeconfig-out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	// Pre-create the output file with restrictive 0600 permissions, simulating
+	// a file left over from a prior run.
+	require.NoError(t, os.WriteFile(outPath, []byte("old-content"), 0o600))
+	info, err := os.Stat(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "precondition: file should start with 0600")
+
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+	}
+
+	err = GenerateKubeconfig(contexts, srcPath, "ctx-a", outPath)
+	require.NoError(t, err)
+
+	// Verify permissions were updated to 0644 despite the pre-existing 0600 file.
+	info, err = os.Stat(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(), "permissions should be 0644 after regeneration")
 }
 
 func TestGenerateKubeconfig_KubeconfigNotFound(t *testing.T) {
@@ -191,4 +223,31 @@ func TestGenerateKubeconfig_CurrentContext(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &out))
 
 	assert.Equal(t, "ctx-b", out.CurrentContext)
+}
+
+func TestListContexts(t *testing.T) {
+	t.Run("returns context names", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		kubeconfigPath := filepath.Join(tmpDir, "config")
+		require.NoError(t, os.WriteFile(kubeconfigPath, []byte(sampleKubeconfig()), 0o600))
+
+		contexts, err := ListContexts(kubeconfigPath)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ctx-a", "ctx-b"}, contexts)
+	})
+
+	t.Run("returns error for missing file", func(t *testing.T) {
+		_, err := ListContexts("/nonexistent/kubeconfig")
+		assert.Error(t, err)
+	})
+
+	t.Run("returns nil for empty contexts", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		kubeconfigPath := filepath.Join(tmpDir, "config")
+		require.NoError(t, os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\nkind: Config\n"), 0o600))
+
+		contexts, err := ListContexts(kubeconfigPath)
+		require.NoError(t, err)
+		assert.Nil(t, contexts)
+	})
 }

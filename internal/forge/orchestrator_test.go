@@ -527,15 +527,115 @@ func TestStart_ResumeSession(t *testing.T) {
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Contains(t, opts.Cmd, "--resume")
-			assert.Contains(t, opts.Cmd, "abc12345")
-			// --continue should NOT be set when ResumeID is provided
+			assert.Contains(t, opts.Cmd, "/home/user/.claude/projects/-work/abc12345.jsonl")
 			assert.NotContains(t, opts.Cmd, "--continue")
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		ResumeID:     "abc12345",
+		ResumeSubdir: "-work",
+		ProjectDir:   projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
+func TestStart_ResumeSession_WithoutSubdir(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Contains(t, opts.Cmd, "--resume")
+			assert.Contains(t, opts.Cmd, "abc12345")
+			assert.NotContains(t, opts.Cmd, ".jsonl")
 			return "agent-id", nil
 		})
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		ResumeID:   "abc12345",
 		ProjectDir: projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
+func TestStart_ResumeWorktreeSession(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Contains(t, opts.Cmd, "--worktree")
+			assert.Contains(t, opts.Cmd, "--resume")
+			assert.Contains(t, opts.Cmd, "/home/user/.claude/projects/-work--claude-worktrees-my-feature/wt123456.jsonl")
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		Worktree:           true,
+		ResumeID:           "wt123456",
+		ResumeSubdir:       "-work--claude-worktrees-my-feature",
+		ResumeWorktreeName: "my-feature",
+		ProjectDir:         projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
+func TestStart_ResumeNonWorktreeSession_NoWorktreeFlag(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.NotContains(t, opts.Cmd, "--worktree")
+			assert.Contains(t, opts.Cmd, "--resume")
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		Worktree:     false,
+		ResumeID:     "abc12345",
+		ResumeSubdir: "-work",
+		ProjectDir:   projectDir,
 	})
 
 	require.NoError(t, err)
@@ -892,12 +992,12 @@ kubernetes:
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
 	// startKubernetesMCP will be called but will fail at GenerateKubeconfig (no kubeconfig file)
-	// Start logs a warning and continues
+	// Start logs a warning and continues without adding kubernetes to settings.json
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("shared-net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
-	// ConnectNetwork is called after agent starts when Kubernetes is enabled
-	mockCM.EXPECT().ConnectNetwork(gomock.Any(), "forge-shared", gomock.Any(), gomock.Nil()).Return(nil)
+	// ExtraNetworks is NOT set because startKubernetesMCP failed
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		ProjectDir: projectDir,
@@ -907,7 +1007,7 @@ kubernetes:
 	assert.NotNil(t, sess)
 }
 
-func TestStart_WithKubernetesEnabled_ConnectNetworkFails(t *testing.T) {
+func TestStart_WithKubernetesEnabled_MCPFailsGracefully(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	mockCM := NewMockContainerManager(ctrl)
@@ -938,11 +1038,12 @@ kubernetes:
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	// startKubernetesMCP fails (no kubeconfig) — Start continues without
+	// kubernetes in settings.json
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("shared-net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
-	// ConnectNetwork fails - Start should still succeed (just logs a warning)
-	mockCM.EXPECT().ConnectNetwork(gomock.Any(), "forge-shared", gomock.Any(), gomock.Nil()).Return(fmt.Errorf("network connect failed"))
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		ProjectDir: projectDir,
@@ -983,9 +1084,8 @@ current-context: my-cluster
 
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
-			Enabled:  true,
-			Image:    "k8s-mcp:latest",
-			ReadOnly: true,
+			Enabled: true,
+			Image:   "k8s-mcp:latest",
 			Contexts: []config.KubeContextEntry{
 				{HostContext: "my-cluster", ServiceAccountName: "forge-sa", ServiceAccountNamespace: "default"},
 			},
@@ -994,9 +1094,9 @@ current-context: my-cluster
 
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	// GenerateKubeconfig will fail because kubectl isn't available,
 	// but this test verifies the code path up to that point
-	// (lines 468-510 of orchestrator.go)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	// Will fail at GenerateKubeconfig (no kubectl), but exercises the setup code
@@ -1025,6 +1125,7 @@ func TestStartKubernetesMCP_KUBECONFIGEnvVar(t *testing.T) {
 
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	require.Error(t, err)
@@ -1050,6 +1151,7 @@ func TestStartKubernetesMCP_DefaultContextFallback(t *testing.T) {
 
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	// Will fail at GenerateKubeconfig, but exercises the DefaultContext path
@@ -1124,6 +1226,84 @@ func TestStartKubernetesMCP_CheckRunningFails(t *testing.T) {
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to check k8s-mcp status")
+}
+
+func TestRestartSharedMCP_StopsAndRestarts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `images:
+  agent: agent:latest
+  gateway: gateway:latest
+  github_mcp: mcp:latest
+kubernetes:
+  enabled: true
+  image: k8s-mcp:latest
+  contexts:
+    - host_context: my-cluster
+      service_account_name: forge-sa
+      service_account_namespace: default
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	// Container is currently running
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
+	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	// startKubernetesMCP is called to restart
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+
+	err := orch.RestartSharedMCP(context.Background())
+	// Will fail at GenerateKubeconfig (no real kubectl), but exercises stop+start path
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to restart Kubernetes MCP")
+}
+
+func TestRestartSharedMCP_NotRunning(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `images:
+  agent: agent:latest
+  gateway: gateway:latest
+  github_mcp: mcp:latest
+kubernetes:
+  enabled: true
+  image: k8s-mcp:latest
+  contexts:
+    - host_context: my-cluster
+      service_account_name: forge-sa
+      service_account_namespace: default
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	// Container is NOT running — skip stop, go straight to start
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+
+	err := orch.RestartSharedMCP(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to restart Kubernetes MCP")
+}
+
+func TestRestartSharedMCP_KubernetesDisabled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	err := orch.RestartSharedMCP(context.Background())
+	require.NoError(t, err)
 }
 
 func TestBuild_WithKubernetesEnabled(t *testing.T) {

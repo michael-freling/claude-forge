@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
+	"github.com/michael-freling/claude-code-tools/internal/forge/kube"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -199,6 +200,8 @@ Reply with the raw command outputs only, no other text.`
 
 	assert.NotContains(t, listOutStr, "No sessions found.",
 		"resume --list should not be empty after a session was created")
+	assert.Contains(t, listOutStr, "WORKTREE",
+		"resume --list should include the WORKTREE column header")
 	expectedID := strings.TrimSuffix(sessionFile, ".jsonl")
 	assert.Contains(t, listOutStr, expectedID,
 		"resume --list should include the session ID %s", expectedID)
@@ -317,4 +320,379 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 	for _, c := range containers {
 		t.Errorf("forge container still running after gateway failure: %s (image=%s, status=%s)", c.Name, c.Image, c.Status)
 	}
+}
+
+// TestKubernetesMCPServer_Starts verifies that the kubernetes-mcp-server
+// container starts successfully with the flags used by the orchestrator.
+// This catches flag incompatibilities between our code and the upstream image.
+func TestKubernetesMCPServer_Starts(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	image := "ghcr.io/containers/kubernetes-mcp-server:latest"
+
+	// Pull the image
+	pullCmd := exec.CommandContext(ctx, "docker", "pull", image)
+	out, err := pullCmd.CombinedOutput()
+	require.NoError(t, err, "failed to pull k8s-mcp image: %s", out)
+
+	// Create a minimal kubeconfig (no real cluster needed — the server starts
+	// regardless and serves MCP tooling; k8s calls would fail but startup won't)
+	tmpDir := t.TempDir()
+	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
+	kubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+  - name: dummy
+    cluster:
+      server: https://localhost:6443
+contexts:
+  - name: dummy
+    context:
+      cluster: dummy
+      user: dummy
+users:
+  - name: dummy
+    user:
+      token: dummy-token
+current-context: dummy
+`
+	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644))
+
+	containerName := "forge-e2e-k8s-mcp-test"
+
+	// Clean up any previous run
+	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	})
+
+	runArgs := []string{
+		"run", "-d",
+		"--name", containerName,
+		"-v", kubeconfigPath + ":" + kube.MCPServerKubeconfigPath + ":ro",
+		image,
+	}
+	runArgs = append(runArgs, kube.MCPServerArgs()...)
+	runCmd := exec.CommandContext(ctx, "docker", runArgs...)
+	out, err = runCmd.CombinedOutput()
+	require.NoError(t, err, "failed to start k8s-mcp container: %s", out)
+
+	// Wait for the container to be running (not immediately exited).
+	// waitForRunning includes a 1s stabilization delay to catch immediate crashes.
+	waitForRunning(t, ctx, containerName, 15*time.Second)
+}
+
+// TestKubernetesMCPServer_AgentConnectivity verifies that a container connected
+// to the shared network (simulating the agent) can reach the k8s MCP server via
+// its DNS alias. This reproduces the full networking path: k8s-mcp on a shared
+// network, client on a per-session network, client connected to shared network
+// before start (the ExtraNetworks pattern).
+func TestKubernetesMCPServer_AgentConnectivity(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	k8sImage := "ghcr.io/containers/kubernetes-mcp-server:latest"
+	clientImage := "alpine:latest"
+
+	// Pull images
+	for _, img := range []string{k8sImage, clientImage} {
+		pullCmd := exec.CommandContext(ctx, "docker", "pull", img)
+		out, err := pullCmd.CombinedOutput()
+		require.NoError(t, err, "failed to pull %s: %s", img, out)
+	}
+
+	// Create networks
+	sharedNet := "forge-e2e-shared"
+	sessionNet := "forge-e2e-session"
+	for _, net := range []string{sharedNet, sessionNet} {
+		_ = exec.Command("docker", "network", "rm", net).Run()
+		out, err := exec.CommandContext(ctx, "docker", "network", "create", net).CombinedOutput()
+		require.NoError(t, err, "failed to create network %s: %s", net, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "network", "rm", sharedNet).Run()
+		_ = exec.Command("docker", "network", "rm", sessionNet).Run()
+	})
+
+	// Create kubeconfig with 0644 (testing the permission fix)
+	tmpDir := t.TempDir()
+	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
+	kubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+  - name: dummy
+    cluster:
+      server: https://localhost:6443
+contexts:
+  - name: dummy
+    context:
+      cluster: dummy
+      user: dummy
+users:
+  - name: dummy
+    user:
+      token: dummy-token
+current-context: dummy
+`
+	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644))
+
+	// Start k8s MCP on the shared network with alias "k8s-mcp"
+	k8sName := "forge-e2e-k8s-mcp-conn"
+	_ = exec.Command("docker", "rm", "-f", k8sName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", k8sName).Run()
+	})
+
+	k8sArgs := []string{
+		"run", "-d",
+		"--name", k8sName,
+		"--network", sharedNet,
+		"--network-alias", "k8s-mcp",
+		"-v", kubeconfigPath + ":" + kube.MCPServerKubeconfigPath + ":ro",
+		k8sImage,
+	}
+	k8sArgs = append(k8sArgs, kube.MCPServerArgs()...)
+	out, err := exec.CommandContext(ctx, "docker", k8sArgs...).CombinedOutput()
+	require.NoError(t, err, "failed to start k8s-mcp: %s", out)
+
+	// Wait for k8s MCP to be running
+	waitForRunning(t, ctx, k8sName, 15*time.Second)
+
+	// Create a client container on the per-session network (don't start yet)
+	clientName := "forge-e2e-agent-conn"
+	_ = exec.Command("docker", "rm", "-f", clientName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", clientName).Run()
+	})
+
+	createArgs := []string{
+		"create",
+		"--name", clientName,
+		"--network", sessionNet,
+		clientImage,
+		"sleep", "30",
+	}
+	out, err = exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput()
+	require.NoError(t, err, "failed to create client container: %s", out)
+
+	// Connect to shared network BEFORE starting (the ExtraNetworks pattern)
+	out, err = exec.CommandContext(ctx, "docker", "network", "connect", sharedNet, clientName).CombinedOutput()
+	require.NoError(t, err, "failed to connect client to shared network: %s", out)
+
+	// Now start the client
+	out, err = exec.CommandContext(ctx, "docker", "start", clientName).CombinedOutput()
+	require.NoError(t, err, "failed to start client container: %s", out)
+
+	// Verify the client can reach k8s-mcp via DNS alias
+	execCmd := exec.CommandContext(ctx, "docker", "exec", clientName,
+		"wget", "-q", "-O-", "-T", "5", "http://k8s-mcp:"+kube.MCPServerPort+"/healthz")
+	healthOut, err := execCmd.CombinedOutput()
+	require.NoError(t, err, "client cannot reach k8s-mcp healthz: %s", healthOut)
+	t.Logf("healthz response: %s", strings.TrimSpace(string(healthOut)))
+
+	// Verify the MCP endpoint responds (HTTP-level, not MCP protocol)
+	execCmd2 := exec.CommandContext(ctx, "docker", "exec", clientName,
+		"wget", "-q", "-S", "-O", "/dev/null", "-T", "5", "http://k8s-mcp:"+kube.MCPServerPort+"/mcp", "--post-data=")
+	mcpOut, _ := execCmd2.CombinedOutput()
+	mcpOutStr := string(mcpOut)
+	t.Logf("MCP endpoint response headers: %s", mcpOutStr)
+	// The /mcp endpoint should respond (any HTTP status is fine — it proves connectivity)
+	assert.NotContains(t, mcpOutStr, "bad address", "k8s-mcp DNS should resolve from client")
+}
+
+// waitForRunning polls until a container is running or fails.
+func waitForRunning(t *testing.T, ctx context.Context, name string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		inspectCmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Status}}", name)
+		statusOut, err := inspectCmd.Output()
+		require.NoError(t, err, "failed to inspect %s", name)
+		status := strings.TrimSpace(string(statusOut))
+
+		if status == "running" {
+			time.Sleep(1 * time.Second)
+			return
+		}
+		if status == "exited" || status == "dead" {
+			logsCmd := exec.Command("docker", "logs", name)
+			logs, _ := logsCmd.CombinedOutput()
+			t.Fatalf("%s exited unexpectedly (status=%s):\n%s", name, status, logs)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("%s did not reach running state within %s", name, timeout)
+}
+
+// buildForge builds the claude-forge binary and returns its path.
+func buildForge(t *testing.T) string {
+	t.Helper()
+	projectRoot := findProjectRoot(t)
+	binaryPath := filepath.Join(t.TempDir(), "claude-forge")
+	buildBinary := exec.Command("go", "build", "-o", binaryPath, "./cmd/claude-forge/")
+	buildBinary.Dir = projectRoot
+	out, err := buildBinary.CombinedOutput()
+	require.NoError(t, err, "failed to build claude-forge binary: %s", out)
+	return binaryPath
+}
+
+// writeTestSession creates a JSONL session file matching Claude Code's real format.
+func writeTestSession(t *testing.T, path, timestamp, message string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	content := fmt.Sprintf(
+		"{\"type\":\"permission-mode\",\"permissionMode\":\"bypassPermissions\"}\n"+
+			"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"%s\"},\"timestamp\":\"%s\"}\n",
+		message, timestamp,
+	)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+// TestResumeList_NonWorktreeSession verifies that `resume --list` shows
+// non-worktree sessions with an empty WORKTREE column.
+func TestResumeList_NonWorktreeSession(t *testing.T) {
+	binaryPath := buildForge(t)
+	projectRoot := findProjectRoot(t)
+
+	tempHome := t.TempDir()
+	projectID := strings.ReplaceAll(projectRoot, "/", "-")
+
+	writeTestSession(t,
+		filepath.Join(tempHome, ".claude-forge", projectID, "-work", "non-wt-session.jsonl"),
+		"2026-05-20T10:00:00Z", "regular session")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd.Dir = projectRoot
+	cmd.Env = append(os.Environ(), "HOME="+tempHome)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+	t.Logf("resume --list output:\n%s", outputStr)
+	require.NoError(t, err, "resume --list failed: %s", outputStr)
+
+	assert.Contains(t, outputStr, "SESSION ID")
+	assert.Contains(t, outputStr, "WORKTREE")
+	assert.Contains(t, outputStr, "FIRST MESSAGE")
+	assert.Contains(t, outputStr, "non-wt-session")
+	assert.Contains(t, outputStr, "regular session")
+
+	// Split into lines and verify the data row has no worktree name
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	require.GreaterOrEqual(t, len(lines), 2, "expected header + at least one data line")
+	dataLine := lines[1]
+	assert.Contains(t, dataLine, "non-wt-session")
+	// The worktree column should be empty for non-worktree sessions.
+	// Between the timestamp and "regular session" there should be no worktree name.
+	assert.NotContains(t, dataLine, "worktrees")
+}
+
+// TestResumeList_WorktreeSession verifies that `resume --list` shows
+// worktree sessions with the worktree name in the WORKTREE column.
+func TestResumeList_WorktreeSession(t *testing.T) {
+	binaryPath := buildForge(t)
+	projectRoot := findProjectRoot(t)
+
+	tempHome := t.TempDir()
+	projectID := strings.ReplaceAll(projectRoot, "/", "-")
+
+	writeTestSession(t,
+		filepath.Join(tempHome, ".claude-forge", projectID, "-work", "main-session.jsonl"),
+		"2026-05-20T10:00:00Z", "main workspace")
+
+	writeTestSession(t,
+		filepath.Join(tempHome, ".claude-forge", projectID, "-work--claude-worktrees-my-feature", "wt-session.jsonl"),
+		"2026-05-20T11:00:00Z", "worktree task")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd.Dir = projectRoot
+	cmd.Env = append(os.Environ(), "HOME="+tempHome)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+	t.Logf("resume --list output:\n%s", outputStr)
+	require.NoError(t, err, "resume --list failed: %s", outputStr)
+
+	assert.Contains(t, outputStr, "WORKTREE")
+	assert.Contains(t, outputStr, "wt-session")
+	assert.Contains(t, outputStr, "my-feature")
+	assert.Contains(t, outputStr, "main-session")
+
+	// Verify both sessions are listed: worktree session first (more recent)
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	require.GreaterOrEqual(t, len(lines), 3, "expected header + 2 data lines")
+
+	// First data line: worktree session (newer timestamp)
+	assert.Contains(t, lines[1], "wt-session")
+	assert.Contains(t, lines[1], "my-feature")
+
+	// Second data line: main session (no worktree)
+	assert.Contains(t, lines[2], "main-session")
+}
+
+// TestResumeList_MixedSessions verifies correct display when there are
+// sessions from both the main workspace and multiple worktrees.
+func TestResumeList_MixedSessions(t *testing.T) {
+	binaryPath := buildForge(t)
+	projectRoot := findProjectRoot(t)
+
+	tempHome := t.TempDir()
+	projectID := strings.ReplaceAll(projectRoot, "/", "-")
+	baseDir := filepath.Join(tempHome, ".claude-forge", projectID)
+
+	writeTestSession(t,
+		filepath.Join(baseDir, "-work", "session-a.jsonl"),
+		"2026-05-20T09:00:00Z", "main work")
+
+	writeTestSession(t,
+		filepath.Join(baseDir, "-work--claude-worktrees-feature-auth", "session-b.jsonl"),
+		"2026-05-20T10:00:00Z", "auth feature")
+
+	writeTestSession(t,
+		filepath.Join(baseDir, "-work--claude-worktrees-bugfix-login", "session-c.jsonl"),
+		"2026-05-20T11:00:00Z", "login bugfix")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd.Dir = projectRoot
+	cmd.Env = append(os.Environ(), "HOME="+tempHome)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+	t.Logf("resume --list output:\n%s", outputStr)
+	require.NoError(t, err, "resume --list failed: %s", outputStr)
+
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	require.GreaterOrEqual(t, len(lines), 4, "expected header + 3 data lines")
+
+	// Most recent first
+	assert.Contains(t, lines[1], "session-c")
+	assert.Contains(t, lines[1], "bugfix-login")
+
+	assert.Contains(t, lines[2], "session-b")
+	assert.Contains(t, lines[2], "feature-auth")
+
+	assert.Contains(t, lines[3], "session-a")
 }

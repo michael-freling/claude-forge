@@ -177,25 +177,33 @@ type CacheDir struct {
 	Target string // container path
 }
 
+// NetworkAttachment describes a network to connect to a container before starting it.
+type NetworkAttachment struct {
+	NetworkName string   // Docker network name
+	Aliases     []string // optional DNS aliases within the network
+}
+
 // AgentOptions holds configuration for starting an agent container.
 type AgentOptions struct {
-	Name        string            // container name: forge-agent-<project-id>-<session-id>
-	Image       string            // agent image
-	NetworkName string            // Docker network to attach to
-	ProjectDir  string            // host path to project (mounted at /work)
-	SessionDir  string            // host path to session storage
-	ClaudeDir   string            // host path to ~/.claude/
-	ConfigDir   string            // host path to ~/.config/claude-forge/
-	HomeDir     string            // host home dir for CLAUDE.md paths
-	Env         map[string]string // environment variables
-	Privileged  bool
-	Interactive bool       // allocate TTY and stdin (for docker attach)
-	Cmd         []string   // claude args: --dangerously-skip-permissions, --worktree, etc.
-	UID         int        // host user UID (for file ownership mapping)
-	GID         int        // host user GID (for file ownership mapping)
-	PluginsDir  string     // host path to forge plugins dir (mounted rw at ~/.claude/plugins)
-	CacheDirs   []CacheDir // host dependency cache directories to mount (rw)
-	ExtraMounts []CacheDir // additional user-specified bind mounts (rw)
+	Name               string            // container name: forge-agent-<project-id>-<session-id>
+	Image              string            // agent image
+	NetworkName        string            // Docker network to attach to
+	ProjectDir         string            // host path to project (mounted at /work)
+	SessionDir         string            // host path to session storage
+	ClaudeDir          string            // host path to ~/.claude/
+	ConfigDir          string            // host path to ~/.config/claude-forge/
+	HomeDir            string            // host home dir for CLAUDE.md paths
+	Env                map[string]string // environment variables
+	Privileged         bool
+	Interactive        bool                // allocate TTY and stdin (for docker attach)
+	Cmd                []string            // claude args: --dangerously-skip-permissions, --worktree, etc.
+	UID                int                 // host user UID (for file ownership mapping)
+	GID                int                 // host user GID (for file ownership mapping)
+	PluginsDir         string              // host path to forge plugins dir (mounted rw at ~/.claude/plugins)
+	CacheDirs          []CacheDir          // host dependency cache directories to mount (rw)
+	ExtraMounts        []CacheDir          // additional user-specified bind mounts (rw)
+	ResumeWorktreeName string              // worktree name when resuming a worktree session
+	ExtraNetworks      []NetworkAttachment // additional networks to connect before starting
 }
 
 // StartAgent creates and starts an agent container.
@@ -222,7 +230,7 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 	// Session directory mount.
 	// Mounted at the projects parent so Claude Code's session JSONL files for both
 	// the main /work cwd (encoded as -work) and any worktree cwd (encoded as
-	// -work-.claude-worktrees-<name>) persist to the host.
+	// -work--claude-worktrees-<name>) persist to the host.
 	if opts.SessionDir != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
@@ -321,10 +329,27 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		})
 	}
 
+	var cmd []string
+	if opts.ResumeWorktreeName != "" {
+		wtPath := ".claude/worktrees/" + opts.ResumeWorktreeName
+		var quotedArgs []string
+		for _, arg := range opts.Cmd {
+			quotedArgs = append(quotedArgs, "'"+arg+"'")
+		}
+		claudeArgs := strings.Join(quotedArgs, " ")
+		shellCmd := fmt.Sprintf(
+			"git worktree add %s HEAD 2>/dev/null || true && cd /work/%s && exec claude %s",
+			wtPath, wtPath, claudeArgs,
+		)
+		cmd = []string{"bash", "-c", shellCmd}
+	} else {
+		cmd = append([]string{"claude"}, opts.Cmd...)
+	}
+
 	containerConfig := &container.Config{
 		Image:      opts.Image,
 		Env:        env,
-		Cmd:        append([]string{"claude"}, opts.Cmd...),
+		Cmd:        cmd,
 		WorkingDir: "/work",
 		Tty:        opts.Interactive,
 		OpenStdin:  opts.Interactive,
@@ -344,6 +369,17 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 	resp, err := c.docker.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, opts.Name)
 	if err != nil {
 		return "", fmt.Errorf("failed to create agent container: %w", err)
+	}
+
+	// Connect extra networks before starting so DNS is available at boot
+	for _, net := range opts.ExtraNetworks {
+		endpointConfig := &network.EndpointSettings{}
+		if len(net.Aliases) > 0 {
+			endpointConfig.Aliases = net.Aliases
+		}
+		if err := c.docker.NetworkConnect(ctx, net.NetworkName, resp.ID, endpointConfig); err != nil {
+			return "", fmt.Errorf("failed to connect container to network %s: %w", net.NetworkName, err)
+		}
 	}
 
 	if err := c.docker.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {

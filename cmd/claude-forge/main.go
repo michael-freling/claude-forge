@@ -50,6 +50,7 @@ containers, Docker networks, and session state.`,
 	}
 
 	rootCmd.AddCommand(
+		newInitCmd(),
 		newStartCmd(),
 		newResumeCmd(),
 		newStopCmd(),
@@ -60,6 +61,7 @@ containers, Docker networks, and session state.`,
 		newVersionCmd(),
 		newGatewayCmd(),
 		newKubeCmd(),
+		newMcpCmd(),
 	)
 
 	return rootCmd
@@ -81,7 +83,7 @@ func newOrchestrator() (*forge.Orchestrator, func(), error) {
 }
 
 // startSession runs the common logic for the start and resume commands.
-func startSession(skipPermissions, worktree bool, prompt, resumeID string, continueSession bool, mounts []string) error {
+func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName string) error {
 	orch, cleanup, err := createOrchestrator()
 	if err != nil {
 		return err
@@ -94,15 +96,17 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID string, conti
 	interactive := prompt == ""
 
 	sess, err := orch.Start(ctx, forge.StartOptions{
-		SkipPermissions: skipPermissions,
-		Worktree:        worktree,
-		Prompt:          prompt,
-		ResumeID:        resumeID,
-		Continue:        continueSession,
-		Interactive:     interactive,
-		UID:             hostUID,
-		GID:             hostGID,
-		Mounts:          mounts,
+		SkipPermissions:    skipPermissions,
+		Worktree:           worktree,
+		Prompt:             prompt,
+		ResumeID:           resumeID,
+		ResumeSubdir:       resumeSubdir,
+		Continue:           continueSession,
+		Interactive:        interactive,
+		UID:                hostUID,
+		GID:                hostGID,
+		Mounts:             mounts,
+		ResumeWorktreeName: resumeWorktreeName,
 	})
 	if err != nil {
 		return err
@@ -144,6 +148,110 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID string, conti
 	return nil
 }
 
+// newInitCmd creates the "init" subcommand.
+func newInitCmd() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Create a default config file",
+		Long: `Write a config.yaml to ~/.config/claude-forge/ with detected settings.
+Kubernetes contexts are auto-detected from your kubeconfig.
+If the file already exists, use --force to overwrite it.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to get home directory: %w", err)
+			}
+			configDir := filepath.Join(homeDir, ".config", "claude-forge")
+			configPath := filepath.Join(configDir, "config.yaml")
+
+			if !force {
+				if _, err := os.Stat(configPath); err == nil {
+					return fmt.Errorf("config already exists at %s (use --force to overwrite)", configPath)
+				}
+			}
+
+			content := buildConfigTemplate(homeDir)
+
+			if err := os.MkdirAll(configDir, 0o755); err != nil {
+				return fmt.Errorf("failed to create config directory: %w", err)
+			}
+			if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+				return fmt.Errorf("failed to write config: %w", err)
+			}
+
+			fmt.Printf("Config written to %s\n", configPath)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing config file")
+	return cmd
+}
+
+// buildConfigTemplate generates the config.yaml content, auto-detecting
+// Kubernetes contexts from the user's kubeconfig.
+func buildConfigTemplate(homeDir string) string {
+	var b strings.Builder
+
+	b.WriteString(`# claude-forge configuration
+# Location: ~/.config/claude-forge/config.yaml
+
+# Docker images used for each container role.
+images:
+  agent: ` + forgeconfig.DefaultAgentImage + `
+  gateway: ` + forgeconfig.DefaultGatewayImage + `
+  github_mcp: ` + forgeconfig.DefaultGitHubMCPImage + `
+
+# Default flags applied to every "start" invocation.
+defaults:
+  skip_permissions: false
+  worktree: false
+
+# Kubernetes MCP server integration.
+# When enabled, a shared MCP server container gives agents read-only
+# access to your clusters via short-lived ServiceAccount tokens.
+#
+# Prerequisites:
+#   1. Create RBAC resources:  claude-forge kube render --context <ctx> | kubectl apply -f -
+#   2. Uncomment the section below.
+`)
+
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
+	}
+
+	contexts, err := kube.ListContexts(kubeconfigPath)
+	if err != nil || len(contexts) == 0 {
+		b.WriteString(`#
+# kubernetes:
+#   enabled: true
+#   image: ` + forgeconfig.DefaultKubernetesMCPImage + `
+#   default_context: my-cluster
+#   contexts:
+#     - host_context: my-cluster
+#       service_account_name: claude-forge-agent
+#       service_account_namespace: default
+`)
+		return b.String()
+	}
+
+	b.WriteString("# kubernetes:\n")
+	b.WriteString("#   enabled: true\n")
+	b.WriteString("#   image: " + forgeconfig.DefaultKubernetesMCPImage + "\n")
+	b.WriteString("#   default_context: " + contexts[0] + "\n")
+	b.WriteString("#   contexts:\n")
+	for _, ctx := range contexts {
+		b.WriteString("#     - host_context: " + ctx + "\n")
+		b.WriteString("#       service_account_name: claude-forge-agent\n")
+		b.WriteString("#       service_account_namespace: default\n")
+	}
+
+	return b.String()
+}
+
 // newStartCmd creates the "start" subcommand.
 func newStartCmd() *cobra.Command {
 	var (
@@ -161,7 +269,7 @@ By default, --dangerously-skip-permissions is enabled. Use --no-skip-permissions
 to disable it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", false, mounts)
+			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "")
 		},
 	}
 
@@ -175,7 +283,10 @@ to disable it.`,
 
 // newResumeCmd creates the "resume" subcommand.
 func newResumeCmd() *cobra.Command {
-	var list bool
+	var (
+		list   bool
+		mounts []string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "resume [session-id]",
@@ -212,26 +323,40 @@ is continued.`,
 				}
 
 				w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(w, "SESSION ID\tCREATED\tFIRST MESSAGE")
+				fmt.Fprintln(w, "SESSION ID\tCREATED\tWORKTREE\tFIRST MESSAGE")
 				for _, s := range sessions {
 					firstMsg := s.FirstMsg
 					if len(firstMsg) > 60 {
 						firstMsg = firstMsg[:57] + "..."
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\n", s.ID, s.CreatedAt.Format(time.RFC3339), firstMsg)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.WorktreeName(), firstMsg)
 				}
 				return w.Flush()
 			}
 
 			if len(args) == 1 {
-				return startSession(true, false, "", args[0], false, nil)
+				sess, err := session.Find(sessionDir, args[0])
+				if err != nil {
+					return err
+				}
+				return startSession(true, sess.IsWorktree(), "", args[0], sess.Subdir, false, mounts, sess.WorktreeName())
 			}
 
-			return startSession(true, false, "", "", true, nil)
+			// Continue most recent session, detecting worktree if needed
+			sessions, err := session.List(sessionDir)
+			if err != nil {
+				return fmt.Errorf("failed to list sessions: %w", err)
+			}
+			if len(sessions) == 0 {
+				return fmt.Errorf("no sessions found to continue")
+			}
+			mostRecent := sessions[0]
+			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName())
 		},
 	}
 
 	cmd.Flags().BoolVar(&list, "list", false, "List available sessions")
+	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
 
 	return cmd
 }
@@ -672,11 +797,37 @@ The output can be piped directly to kubectl apply:
 		},
 	}
 
-	cmd.Flags().StringVar(&clusterRoleName, "cluster-role-name", "claude-forge-agent", "Name for the generated ClusterRole and ClusterRoleBinding")
+	cmd.Flags().StringVar(&clusterRoleName, "cluster-role-name", "claude-forge-agent",
+		"Name for the generated ClusterRole and ClusterRoleBinding")
 	cmd.Flags().StringVar(&serviceAccountName, "service-account-name", "claude-forge-agent", "Name for the generated ServiceAccount")
 	cmd.Flags().StringVar(&serviceAccountNamespace, "service-account-namespace", "default", "Namespace for the ServiceAccount")
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (defaults to $KUBECONFIG or ~/.kube/config)")
 	cmd.Flags().StringVar(&kubeContext, "context", "", "Kubeconfig context to use for API discovery")
 
 	return cmd
+}
+
+func newMcpCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "Manage shared MCP servers",
+	}
+	cmd.AddCommand(newMcpRestartCmd())
+	return cmd
+}
+
+func newMcpRestartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "Restart all shared MCP server containers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			orch, cleanup, err := createOrchestrator()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			return orch.RestartSharedMCP(context.Background())
+		},
+	}
 }

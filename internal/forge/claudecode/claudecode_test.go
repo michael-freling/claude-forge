@@ -828,6 +828,233 @@ func TestDetectCacheDirs(t *testing.T) {
 	})
 }
 
+func TestRegisterProjectMCPServers(t *testing.T) {
+	t.Run("creates mcpServers in existing .claude.json", func(t *testing.T) {
+		configDir := t.TempDir()
+
+		existing := `{
+  "hasCompletedOnboarding": true,
+  "theme": "dark",
+  "projects": {
+    "/work": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		servers := map[string]MCPServerConfig{
+			"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
+		}
+
+		err := RegisterProjectMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+
+		var config map[string]any
+		require.NoError(t, json.Unmarshal(data, &config))
+
+		// Existing fields should be preserved
+		assert.Equal(t, true, config["hasCompletedOnboarding"])
+		assert.Equal(t, "dark", config["theme"])
+
+		projects := config["projects"].(map[string]any)
+		workProject := projects["/work"].(map[string]any)
+		assert.Equal(t, true, workProject["hasTrustDialogAccepted"])
+
+		mcpServers := workProject["mcpServers"].(map[string]any)
+		github := mcpServers["github"].(map[string]any)
+		assert.Equal(t, "http", github["type"])
+		assert.Equal(t, "http://github-mcp:8083/mcp", github["url"])
+	})
+
+	t.Run("uses type http not url", func(t *testing.T) {
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte("{}"), 0o644))
+
+		servers := map[string]MCPServerConfig{
+			"kubernetes": {Type: "url", URL: "http://k8s-mcp:8090/mcp"},
+		}
+
+		err := RegisterProjectMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+
+		var config map[string]any
+		require.NoError(t, json.Unmarshal(data, &config))
+
+		projects := config["projects"].(map[string]any)
+		workProject := projects["/work"].(map[string]any)
+		mcpServers := workProject["mcpServers"].(map[string]any)
+		k8s := mcpServers["kubernetes"].(map[string]any)
+		// Must be "http" in .claude.json, not "url" as in settings.json
+		assert.Equal(t, "http", k8s["type"])
+		assert.Equal(t, "http://k8s-mcp:8090/mcp", k8s["url"])
+	})
+
+	t.Run("preserves existing .claude.json fields", func(t *testing.T) {
+		configDir := t.TempDir()
+
+		existing := `{
+  "hasCompletedOnboarding": true,
+  "theme": "light-daltonized",
+  "numStartups": 42,
+  "projects": {
+    "/work": {
+      "hasTrustDialogAccepted": true,
+      "customField": "preserved"
+    }
+  }
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		servers := map[string]MCPServerConfig{
+			"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
+		}
+
+		err := RegisterProjectMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+
+		var config map[string]any
+		require.NoError(t, json.Unmarshal(data, &config))
+
+		assert.Equal(t, true, config["hasCompletedOnboarding"])
+		assert.Equal(t, "light-daltonized", config["theme"])
+		assert.Equal(t, float64(42), config["numStartups"])
+
+		projects := config["projects"].(map[string]any)
+		workProject := projects["/work"].(map[string]any)
+		assert.Equal(t, true, workProject["hasTrustDialogAccepted"])
+		assert.Equal(t, "preserved", workProject["customField"])
+	})
+
+	t.Run("removes mcpServers when called with empty map", func(t *testing.T) {
+		configDir := t.TempDir()
+
+		existing := `{
+  "hasCompletedOnboarding": true,
+  "projects": {
+    "/work": {
+      "hasTrustDialogAccepted": true,
+      "mcpServers": {
+        "github": {"type": "http", "url": "http://github-mcp:8083/mcp"}
+      }
+    }
+  }
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		err := RegisterProjectMCPServers(configDir, map[string]MCPServerConfig{})
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+
+		var config map[string]any
+		require.NoError(t, json.Unmarshal(data, &config))
+
+		projects := config["projects"].(map[string]any)
+		workProject := projects["/work"].(map[string]any)
+		_, hasMCP := workProject["mcpServers"]
+		assert.False(t, hasMCP, "mcpServers should be removed when called with empty map")
+		assert.Equal(t, true, workProject["hasTrustDialogAccepted"])
+	})
+
+	t.Run("works when .claude.json does not exist", func(t *testing.T) {
+		configDir := t.TempDir()
+
+		servers := map[string]MCPServerConfig{
+			"github":     {Type: "url", URL: "http://github-mcp:8083/mcp"},
+			"kubernetes": {Type: "url", URL: "http://k8s-mcp:8090/mcp"},
+		}
+
+		err := RegisterProjectMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+
+		var config map[string]any
+		require.NoError(t, json.Unmarshal(data, &config))
+
+		projects := config["projects"].(map[string]any)
+		workProject := projects["/work"].(map[string]any)
+		mcpServers := workProject["mcpServers"].(map[string]any)
+		assert.Len(t, mcpServers, 2)
+
+		github := mcpServers["github"].(map[string]any)
+		assert.Equal(t, "http", github["type"])
+		assert.Equal(t, "http://github-mcp:8083/mcp", github["url"])
+
+		k8s := mcpServers["kubernetes"].(map[string]any)
+		assert.Equal(t, "http", k8s["type"])
+		assert.Equal(t, "http://k8s-mcp:8090/mcp", k8s["url"])
+	})
+
+	t.Run("invalid JSON in existing .claude.json", func(t *testing.T) {
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(`{invalid`), 0o644))
+
+		servers := map[string]MCPServerConfig{
+			"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
+		}
+
+		err := RegisterProjectMCPServers(configDir, servers)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse .claude.json")
+	})
+
+	t.Run("replaces existing mcpServers entries", func(t *testing.T) {
+		configDir := t.TempDir()
+
+		existing := `{
+  "projects": {
+    "/work": {
+      "mcpServers": {
+        "old-server": {"type": "http", "url": "http://old:1111/mcp"}
+      }
+    }
+  }
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		servers := map[string]MCPServerConfig{
+			"new-server": {Type: "url", URL: "http://new:2222/mcp"},
+		}
+
+		err := RegisterProjectMCPServers(configDir, servers)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+
+		var config map[string]any
+		require.NoError(t, json.Unmarshal(data, &config))
+
+		projects := config["projects"].(map[string]any)
+		workProject := projects["/work"].(map[string]any)
+		mcpServers := workProject["mcpServers"].(map[string]any)
+
+		_, hasOld := mcpServers["old-server"]
+		assert.False(t, hasOld, "old-server should be replaced")
+
+		newServer := mcpServers["new-server"].(map[string]any)
+		assert.Equal(t, "http", newServer["type"])
+		assert.Equal(t, "http://new:2222/mcp", newServer["url"])
+	})
+}
+
 func TestUpdateMCPServers(t *testing.T) {
 	t.Run("creates mcpServers in new settings.json", func(t *testing.T) {
 		configDir := filepath.Join(t.TempDir(), "config")
@@ -897,7 +1124,7 @@ func TestUpdateMCPServers(t *testing.T) {
 		assert.Equal(t, "http://gateway:8080/mcp", server["url"])
 	})
 
-	t.Run("overwrites existing mcpServers entries", func(t *testing.T) {
+	t.Run("replaces existing mcpServers entries", func(t *testing.T) {
 		configDir := t.TempDir()
 
 		existingSettings := `{
@@ -926,10 +1153,9 @@ func TestUpdateMCPServers(t *testing.T) {
 		mcpServers, ok := settings["mcpServers"].(map[string]any)
 		require.True(t, ok, "mcpServers should be a map")
 
-		// Old server should be preserved
-		oldServer, ok := mcpServers["old-server"].(map[string]any)
-		require.True(t, ok, "old-server should still exist")
-		assert.Equal(t, "http://old:1111/sse", oldServer["url"])
+		// Old server should be removed (not in the new set)
+		_, ok = mcpServers["old-server"]
+		assert.False(t, ok, "old-server should be removed")
 
 		// Shared server should be overwritten with new URL
 		sharedServer, ok := mcpServers["shared-server"].(map[string]any)
@@ -940,6 +1166,9 @@ func TestUpdateMCPServers(t *testing.T) {
 		newServer, ok := mcpServers["new-server"].(map[string]any)
 		require.True(t, ok, "new-server should exist")
 		assert.Equal(t, "http://new:3333/sse", newServer["url"])
+
+		// Other settings should be preserved
+		assert.Equal(t, "disabled", settings["autoUpdaterStatus"])
 	})
 
 	t.Run("handles nonexistent configDir by creating it", func(t *testing.T) {

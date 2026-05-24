@@ -43,16 +43,18 @@ func NewOrchestrator(containers container.ContainerManager, homeDir string) *Orc
 
 // StartOptions holds options for starting a session.
 type StartOptions struct {
-	SkipPermissions bool
-	Worktree        bool
-	Prompt          string
-	ResumeID        string
-	Continue        bool
-	Interactive     bool     // allocate TTY for docker attach (false for prompt mode)
-	ProjectDir      string   // working directory (defaults to cwd if empty)
-	UID             int      // host user UID
-	GID             int      // host user GID
-	Mounts          []string // additional host:container bind mounts
+	SkipPermissions    bool
+	Worktree           bool
+	Prompt             string
+	ResumeID           string
+	ResumeSubdir       string // session subdir (e.g., "-work") for constructing the resume file path
+	Continue           bool
+	Interactive        bool     // allocate TTY for docker attach (false for prompt mode)
+	ProjectDir         string   // working directory (defaults to cwd if empty)
+	UID                int      // host user UID
+	GID                int      // host user GID
+	Mounts             []string // additional host:container bind mounts
+	ResumeWorktreeName string   // worktree name when resuming a worktree session
 }
 
 // Session holds information about a running session.
@@ -83,6 +85,10 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	cfg, err := config.Load(o.ConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) == 0 {
+		return nil, fmt.Errorf("kubernetes is enabled but no contexts are configured; run 'claude-forge init' and configure kubernetes.contexts in %s/config.yaml", o.ConfigDir)
 	}
 
 	// Identify project
@@ -156,7 +162,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 
 	// Pull images if not present
 	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
+	if cfg.Kubernetes.Enabled {
 		imagesToPull = append(imagesToPull, cfg.Kubernetes.Image)
 	}
 	for _, img := range imagesToPull {
@@ -236,19 +242,33 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("github-mcp failed to start: %w", err)
 	}
 
+	// Start Kubernetes MCP shared service if enabled (before writing settings
+	// so we only advertise it when the server is actually running)
+	k8sRunning := false
+	if cfg.Kubernetes.Enabled {
+		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
+			o.Log("Warning: failed to start Kubernetes MCP: %v", err)
+		} else {
+			k8sRunning = true
+		}
+	}
+
 	// Write MCP server config to settings.json for the agent
 	mcpServers := map[string]claudecode.MCPServerConfig{
 		"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
 	}
-
-	// Add Kubernetes MCP if enabled
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
-		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:8090/mcp"}
+	if k8sRunning {
+		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:" + kube.MCPServerPort + "/mcp"}
 	}
 
 	if err := claudecode.UpdateMCPServers(o.ConfigDir, mcpServers); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to update MCP settings: %w", err)
+	}
+
+	if err := claudecode.RegisterProjectMCPServers(o.ConfigDir, mcpServers); err != nil {
+		o.Cleanup(ctx, sess)
+		return nil, fmt.Errorf("failed to register MCP servers in .claude.json: %w", err)
 	}
 
 	// Build agent command args
@@ -260,7 +280,12 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		agentCmd = append(agentCmd, "--worktree")
 	}
 	if opts.ResumeID != "" {
-		agentCmd = append(agentCmd, "--resume", opts.ResumeID)
+		if opts.ResumeSubdir != "" {
+			resumePath := fmt.Sprintf("/home/user/.claude/projects/%s/%s.jsonl", opts.ResumeSubdir, opts.ResumeID)
+			agentCmd = append(agentCmd, "--resume", resumePath)
+		} else {
+			agentCmd = append(agentCmd, "--resume", opts.ResumeID)
+		}
 	} else if opts.Continue {
 		agentCmd = append(agentCmd, "--continue")
 	}
@@ -325,42 +350,38 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		})
 	}
 
-	// Start Kubernetes MCP shared service if enabled
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
-		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
-			o.Log("Warning: failed to start Kubernetes MCP: %v", err)
-		}
+	// Build extra networks for the agent (connect before start so DNS is ready)
+	var extraNetworks []container.NetworkAttachment
+	if k8sRunning {
+		extraNetworks = append(extraNetworks, container.NetworkAttachment{
+			NetworkName: "forge-shared",
+		})
 	}
 
 	// Start agent
 	o.Log("Starting agent: %s", sess.AgentName)
 	if _, err := o.Containers.StartAgent(ctx, container.AgentOptions{
-		Name:        sess.AgentName,
-		Image:       cfg.Images.Agent,
-		NetworkName: sess.NetworkName,
-		ProjectDir:  proj.Dir,
-		SessionDir:  sessionDir,
-		ClaudeDir:   o.ClaudeDir,
-		ConfigDir:   o.ConfigDir,
-		HomeDir:     o.HomeDir,
-		PluginsDir:  pluginsDir,
-		Env:         agentEnv,
-		Interactive: opts.Interactive,
-		Cmd:         agentCmd,
-		UID:         opts.UID,
-		GID:         opts.GID,
-		CacheDirs:   containerCacheDirs,
-		ExtraMounts: extraMounts,
+		Name:               sess.AgentName,
+		Image:              cfg.Images.Agent,
+		NetworkName:        sess.NetworkName,
+		ProjectDir:         proj.Dir,
+		SessionDir:         sessionDir,
+		ClaudeDir:          o.ClaudeDir,
+		ConfigDir:          o.ConfigDir,
+		HomeDir:            o.HomeDir,
+		PluginsDir:         pluginsDir,
+		Env:                agentEnv,
+		Interactive:        opts.Interactive,
+		Cmd:                agentCmd,
+		UID:                opts.UID,
+		GID:                opts.GID,
+		CacheDirs:          containerCacheDirs,
+		ExtraMounts:        extraMounts,
+		ResumeWorktreeName: opts.ResumeWorktreeName,
+		ExtraNetworks:      extraNetworks,
 	}); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start agent: %w", err)
-	}
-
-	// Connect agent to shared network for Kubernetes MCP access
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) > 0 {
-		if err := o.Containers.ConnectNetwork(ctx, "forge-shared", sess.AgentName, nil); err != nil {
-			o.Log("Warning: failed to connect agent to shared network: %v", err)
-		}
 	}
 
 	return sess, nil
@@ -482,6 +503,10 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 		return nil
 	}
 
+	// Remove stale container if it exists but isn't running (e.g. crashed/exited)
+	// so we can create a fresh one with the same name.
+	_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
+
 	// Generate kubeconfig with SA tokens
 	kubeconfigDir := filepath.Join(o.ConfigDir, "k8s-mcp")
 	if err := os.MkdirAll(kubeconfigDir, 0o700); err != nil {
@@ -512,11 +537,7 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 		return fmt.Errorf("failed to generate kubeconfig: %w", err)
 	}
 
-	// Build command for the MCP server
-	cmd := []string{"--transport", "http", "--port", "8090"}
-	if cfg.Kubernetes.ReadOnly {
-		cmd = append(cmd, "--read-only")
-	}
+	cmd := kube.MCPServerArgs()
 
 	o.Log("Starting Kubernetes MCP: %s", k8sMCPName)
 	k8sID, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
@@ -529,7 +550,7 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 			{
 				Type:     mount.TypeBind,
 				Source:   kubeconfigOutput,
-				Target:   "/home/user/.kube/config",
+				Target:   kube.MCPServerKubeconfigPath,
 				ReadOnly: true,
 			},
 		},
@@ -540,6 +561,36 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 
 	if err := o.Containers.WaitForReady(ctx, k8sID, 10*time.Second); err != nil {
 		return fmt.Errorf("k8s-mcp failed to start: %w", err)
+	}
+
+	return nil
+}
+
+// RestartSharedMCP stops all shared MCP containers and starts them again.
+func (o *Orchestrator) RestartSharedMCP(ctx context.Context) error {
+	cfg, err := config.Load(o.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	if !cfg.Kubernetes.Enabled {
+		o.Log("No shared MCP servers configured.")
+		return nil
+	}
+
+	k8sMCPName := "forge-k8s-mcp"
+	running, err := o.Containers.IsContainerRunning(ctx, k8sMCPName)
+	if err != nil {
+		return fmt.Errorf("failed to check k8s-mcp status: %w", err)
+	}
+	if running {
+		o.Log("Stopping: %s", k8sMCPName)
+		_ = o.Containers.StopContainer(ctx, k8sMCPName)
+		_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
+	}
+
+	if err := o.startKubernetesMCP(ctx, cfg); err != nil {
+		return fmt.Errorf("failed to restart Kubernetes MCP: %w", err)
 	}
 
 	return nil

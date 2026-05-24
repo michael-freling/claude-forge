@@ -26,8 +26,8 @@ func TestNewRootCmd(t *testing.T) {
 	assert.Equal(t, "claude-forge", cmd.Use)
 
 	expectedSubcommands := []string{
-		"start", "resume", "stop", "status",
-		"build", "auth", "plugins", "version", "gateway", "kube",
+		"init", "start", "resume", "stop", "status",
+		"build", "auth", "plugins", "version", "gateway", "kube", "mcp",
 	}
 
 	subcommandNames := make(map[string]bool)
@@ -416,20 +416,9 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
 	t.Cleanup(func() { os.RemoveAll(sessionDir) })
 
-	// Write a minimal JSONL session file
+	// Write a minimal JSONL session file (real Claude Code format)
 	sessionFile := filepath.Join(sessionDir, "abc12345.jsonl")
-	lines := []map[string]string{
-		{"type": "system", "timestamp": "2025-01-15T10:30:00Z", "message": "Session started"},
-		{"type": "human", "timestamp": "2025-01-15T10:30:01Z", "message": "Hello Claude"},
-	}
-	var content []byte
-	for _, line := range lines {
-		b, err := json.Marshal(line)
-		require.NoError(t, err)
-		content = append(content, b...)
-		content = append(content, '\n')
-	}
-	require.NoError(t, os.WriteFile(sessionFile, content, 0o644))
+	writeSessionFile(t, sessionFile, "2025-01-15T10:30:01Z", "Hello Claude")
 
 	cmd := newResumeCmd()
 	cmd.SetArgs([]string{"--list"})
@@ -439,6 +428,7 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, output, "SESSION ID")
+	assert.Contains(t, output, "WORKTREE")
 	assert.Contains(t, output, "abc12345")
 	assert.Contains(t, output, "Hello Claude")
 }
@@ -464,18 +454,7 @@ func TestResumeCmd_List_WithLongMessage(t *testing.T) {
 	// Write a session file with a message longer than 60 characters
 	longMsg := "This is a very long first message that should be truncated because it exceeds sixty characters in total"
 	sessionFile := filepath.Join(sessionDir, "def67890.jsonl")
-	lines := []map[string]string{
-		{"type": "system", "timestamp": "2025-01-15T10:30:00Z", "message": "Session started"},
-		{"type": "human", "timestamp": "2025-01-15T10:30:01Z", "message": longMsg},
-	}
-	var content []byte
-	for _, line := range lines {
-		b, err := json.Marshal(line)
-		require.NoError(t, err)
-		content = append(content, b...)
-		content = append(content, '\n')
-	}
-	require.NoError(t, os.WriteFile(sessionFile, content, 0o644))
+	writeSessionFile(t, sessionFile, "2025-01-15T10:30:01Z", longMsg)
 
 	cmd := newResumeCmd()
 	cmd.SetArgs([]string{"--list"})
@@ -517,6 +496,145 @@ func TestResumeCmd_NotInGitRepo(t *testing.T) {
 	err = cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to identify project")
+}
+
+func TestResumeCmd_List_ShowsWorktreeName(t *testing.T) {
+	setupTestOrchestrator(t, &stubContainerManager{})
+	repoDir := setupTestGitRepo(t)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(repoDir))
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	projID := strings.ReplaceAll(repoDir, "/", "-")
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	sessionDir := filepath.Join(homeDir, ".claude-forge", projID)
+	t.Cleanup(func() { os.RemoveAll(sessionDir) })
+
+	// Create a regular session in -work/
+	workDir := filepath.Join(sessionDir, "-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	writeSessionFile(t, filepath.Join(workDir, "regular-session.jsonl"),
+		"2025-01-15T10:30:00Z", "regular work")
+
+	// Create a worktree session in -work--claude-worktrees-feature/
+	wtDir := filepath.Join(sessionDir, "-work--claude-worktrees-feature")
+	require.NoError(t, os.MkdirAll(wtDir, 0o755))
+	writeSessionFile(t, filepath.Join(wtDir, "wt-session.jsonl"),
+		"2025-01-15T11:00:00Z", "worktree work")
+
+	cmd := newResumeCmd()
+	cmd.SetArgs([]string{"--list"})
+
+	output := captureStdout(t, func() {
+		err = cmd.Execute()
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, output, "WORKTREE")
+	assert.Contains(t, output, "wt-session")
+	assert.Contains(t, output, "feature")
+	assert.Contains(t, output, "regular-session")
+}
+
+func TestResumeCmd_FindSessionNotFound(t *testing.T) {
+	setupTestOrchestrator(t, &stubContainerManager{})
+	repoDir := setupTestGitRepo(t)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(repoDir))
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	projID := strings.ReplaceAll(repoDir, "/", "-")
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	sessionDir := filepath.Join(homeDir, ".claude-forge", projID)
+	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
+	t.Cleanup(func() { os.RemoveAll(sessionDir) })
+
+	cmd := newResumeCmd()
+	cmd.SetArgs([]string{"nonexistent-session-id"})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestResumeCmd_ContinueNoSessions(t *testing.T) {
+	setupTestOrchestrator(t, &stubContainerManager{})
+	repoDir := setupTestGitRepo(t)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(repoDir))
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	projID := strings.ReplaceAll(repoDir, "/", "-")
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	sessionDir := filepath.Join(homeDir, ".claude-forge", projID)
+	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
+	t.Cleanup(func() { os.RemoveAll(sessionDir) })
+
+	cmd := newResumeCmd()
+	cmd.SetArgs([]string{}) // no args, no --list → continue most recent
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no sessions found")
+}
+
+func writeSessionFile(t *testing.T, path, timestamp, message string) {
+	t.Helper()
+	lines := []map[string]any{
+		{"type": "permission-mode", "permissionMode": "bypassPermissions"},
+		{"type": "user", "message": map[string]string{"role": "user", "content": message}, "timestamp": timestamp},
+	}
+	var content []byte
+	for _, line := range lines {
+		b, err := json.Marshal(line)
+		require.NoError(t, err)
+		content = append(content, b...)
+		content = append(content, '\n')
+	}
+	require.NoError(t, os.WriteFile(path, content, 0o644))
+}
+
+func TestMcpRestartCmd_NoSharedMCP(t *testing.T) {
+	setupTestOrchestrator(t, &stubContainerManager{})
+
+	cmd := newMcpCmd()
+	cmd.SetArgs([]string{"restart"})
+
+	output := captureStdout(t, func() {
+		err := cmd.Execute()
+		require.NoError(t, err)
+	})
+	assert.Contains(t, output, "No shared MCP servers configured")
+}
+
+func TestMcpRestartCmd_OrchestratorError(t *testing.T) {
+	original := createOrchestrator
+	createOrchestrator = func() (*forge.Orchestrator, func(), error) {
+		return nil, nil, fmt.Errorf("test orchestrator error")
+	}
+	t.Cleanup(func() { createOrchestrator = original })
+
+	cmd := newMcpCmd()
+	cmd.SetArgs([]string{"restart"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "test orchestrator error")
 }
 
 func TestAuthCmd_WithAPIKey(t *testing.T) {
@@ -845,5 +963,125 @@ func TestEnablePluginsInSettings(t *testing.T) {
 	t.Run("returns error when file missing", func(t *testing.T) {
 		err := enablePluginsInSettings(t.TempDir(), []string{"foo@bar"})
 		assert.Error(t, err)
+	})
+}
+
+func TestBuildConfigTemplate(t *testing.T) {
+	t.Run("without kubeconfig", func(t *testing.T) {
+		homeDir := t.TempDir()
+		content := buildConfigTemplate(homeDir)
+
+		assert.Contains(t, content, "images:")
+		assert.Contains(t, content, "defaults:")
+		assert.Contains(t, content, "# kubernetes:")
+		assert.Contains(t, content, "#   default_context: my-cluster")
+	})
+
+	t.Run("with kubeconfig", func(t *testing.T) {
+		homeDir := t.TempDir()
+		kubeDir := filepath.Join(homeDir, ".kube")
+		require.NoError(t, os.MkdirAll(kubeDir, 0o755))
+		kubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+  - name: prod-cluster
+    cluster:
+      server: https://prod.example.com
+  - name: dev-cluster
+    cluster:
+      server: https://dev.example.com
+contexts:
+  - name: prod
+    context:
+      cluster: prod-cluster
+      user: admin
+  - name: dev
+    context:
+      cluster: dev-cluster
+      user: admin
+current-context: prod
+users:
+  - name: admin
+    user:
+      token: fake
+`
+		require.NoError(t, os.WriteFile(filepath.Join(kubeDir, "config"), []byte(kubeconfig), 0o644))
+
+		content := buildConfigTemplate(homeDir)
+
+		assert.Contains(t, content, "#   default_context: prod")
+		assert.Contains(t, content, "#     - host_context: prod")
+		assert.Contains(t, content, "#     - host_context: dev")
+		assert.Contains(t, content, "#       service_account_name: claude-forge-agent")
+	})
+
+	t.Run("respects KUBECONFIG env", func(t *testing.T) {
+		homeDir := t.TempDir()
+		customPath := filepath.Join(homeDir, "custom-kubeconfig")
+		kubeconfig := `apiVersion: v1
+kind: Config
+contexts:
+  - name: custom-ctx
+    context:
+      cluster: c
+      user: u
+clusters:
+  - name: c
+    cluster:
+      server: https://custom.example.com
+users:
+  - name: u
+    user:
+      token: t
+`
+		require.NoError(t, os.WriteFile(customPath, []byte(kubeconfig), 0o644))
+		t.Setenv("KUBECONFIG", customPath)
+
+		content := buildConfigTemplate(homeDir)
+		assert.Contains(t, content, "#     - host_context: custom-ctx")
+	})
+}
+
+func TestInitCmd(t *testing.T) {
+	t.Run("creates config file", func(t *testing.T) {
+		homeDir := t.TempDir()
+		t.Setenv("HOME", homeDir)
+
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{})
+		require.NoError(t, cmd.Execute())
+
+		configPath := filepath.Join(homeDir, ".config", "claude-forge", "config.yaml")
+		data, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "images:")
+	})
+
+	t.Run("refuses to overwrite without force", func(t *testing.T) {
+		homeDir := t.TempDir()
+		t.Setenv("HOME", homeDir)
+
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{})
+		require.NoError(t, cmd.Execute())
+
+		cmd2 := newInitCmd()
+		cmd2.SetArgs([]string{})
+		err := cmd2.Execute()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "use --force to overwrite")
+	})
+
+	t.Run("overwrites with force", func(t *testing.T) {
+		homeDir := t.TempDir()
+		t.Setenv("HOME", homeDir)
+
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{})
+		require.NoError(t, cmd.Execute())
+
+		cmd2 := newInitCmd()
+		cmd2.SetArgs([]string{"--force"})
+		require.NoError(t, cmd2.Execute())
 	})
 }

@@ -747,6 +747,161 @@ func TestStartAgent_NoCacheDirs(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStartAgent_ResumeWorktreeSession(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockAPI := NewMockDockerAPI(ctrl)
+
+	opts := AgentOptions{
+		Name:               "forge-agent-wt-resume",
+		Image:              "agent:latest",
+		NetworkName:        "forge_net",
+		ProjectDir:         "/home/user/project",
+		Cmd:                []string{"--dangerously-skip-permissions", "--resume", "abc-123"},
+		ResumeWorktreeName: "my-feature",
+	}
+
+	mockAPI.EXPECT().
+		ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
+			// When ResumeWorktreeName is set, the command should be a bash wrapper
+			// that creates the worktree and cds into it before running claude.
+			require.Len(t, config.Cmd, 3)
+			assert.Equal(t, "bash", config.Cmd[0])
+			assert.Equal(t, "-c", config.Cmd[1])
+			shellCmd := config.Cmd[2]
+			assert.Contains(t, shellCmd, "git worktree add .claude/worktrees/my-feature HEAD")
+			assert.Contains(t, shellCmd, "cd /work/.claude/worktrees/my-feature")
+			assert.Contains(t, shellCmd, "exec claude")
+			assert.Contains(t, shellCmd, "'--dangerously-skip-permissions'")
+			assert.Contains(t, shellCmd, "'--resume'")
+			assert.Contains(t, shellCmd, "'abc-123'")
+			return container.CreateResponse{ID: "c-wt"}, nil
+		})
+
+	mockAPI.EXPECT().
+		ContainerStart(gomock.Any(), "c-wt", container.StartOptions{}).
+		Return(nil)
+
+	client := newClientWithAPI(mockAPI)
+	ctx := context.Background()
+
+	_, err := client.StartAgent(ctx, opts)
+	require.NoError(t, err)
+}
+
+func TestStartAgent_ExtraNetworks(t *testing.T) {
+	t.Run("connects extra networks between create and start", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAPI := NewMockDockerAPI(ctrl)
+
+		opts := AgentOptions{
+			Name:        "forge-agent-test-session",
+			Image:       "agent:latest",
+			NetworkName: "forge_net",
+			ProjectDir:  "/home/user/project",
+			ExtraNetworks: []NetworkAttachment{
+				{NetworkName: "forge-shared"},
+				{NetworkName: "other-net", Aliases: []string{"my-alias"}},
+			},
+		}
+
+		// Use gomock.InOrder to verify NetworkConnect is called between Create and Start
+		createCall := mockAPI.EXPECT().
+			ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), "forge-agent-test-session").
+			Return(container.CreateResponse{ID: "c-extra"}, nil)
+
+		connectCall1 := mockAPI.EXPECT().
+			NetworkConnect(gomock.Any(), "forge-shared", "c-extra", gomock.Any()).
+			DoAndReturn(func(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error {
+				assert.Nil(t, config.Aliases, "no aliases expected for forge-shared")
+				return nil
+			}).
+			After(createCall)
+
+		connectCall2 := mockAPI.EXPECT().
+			NetworkConnect(gomock.Any(), "other-net", "c-extra", gomock.Any()).
+			DoAndReturn(func(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error {
+				assert.Equal(t, []string{"my-alias"}, config.Aliases)
+				return nil
+			}).
+			After(connectCall1)
+
+		mockAPI.EXPECT().
+			ContainerStart(gomock.Any(), "c-extra", container.StartOptions{}).
+			Return(nil).
+			After(connectCall2)
+
+		client := newClientWithAPI(mockAPI)
+		id, err := client.StartAgent(context.Background(), opts)
+		require.NoError(t, err)
+		assert.Equal(t, "c-extra", id)
+	})
+
+	t.Run("fails when network connect fails", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAPI := NewMockDockerAPI(ctrl)
+
+		opts := AgentOptions{
+			Name:        "forge-agent-test-session",
+			Image:       "agent:latest",
+			NetworkName: "forge_net",
+			ProjectDir:  "/home/user/project",
+			ExtraNetworks: []NetworkAttachment{
+				{NetworkName: "forge-shared"},
+			},
+		}
+
+		mockAPI.EXPECT().
+			ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(container.CreateResponse{ID: "c-fail"}, nil)
+
+		mockAPI.EXPECT().
+			NetworkConnect(gomock.Any(), "forge-shared", "c-fail", gomock.Any()).
+			Return(fmt.Errorf("network not found"))
+
+		client := newClientWithAPI(mockAPI)
+		_, err := client.StartAgent(context.Background(), opts)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to connect container to network forge-shared")
+	})
+
+	t.Run("no extra networks does not call NetworkConnect", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAPI := NewMockDockerAPI(ctrl)
+
+		opts := AgentOptions{
+			Name:        "forge-agent-test-session",
+			Image:       "agent:latest",
+			NetworkName: "forge_net",
+			ProjectDir:  "/home/user/project",
+			// ExtraNetworks is nil
+		}
+
+		mockAPI.EXPECT().
+			ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(container.CreateResponse{ID: "c-none"}, nil)
+
+		// No NetworkConnect expectation — it should not be called
+
+		mockAPI.EXPECT().
+			ContainerStart(gomock.Any(), "c-none", container.StartOptions{}).
+			Return(nil)
+
+		client := newClientWithAPI(mockAPI)
+		id, err := client.StartAgent(context.Background(), opts)
+		require.NoError(t, err)
+		assert.Equal(t, "c-none", id)
+	})
+}
+
 func TestStartGateway(t *testing.T) {
 	tests := []struct {
 		name        string
