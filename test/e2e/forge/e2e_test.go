@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
+	"github.com/michael-freling/claude-code-tools/internal/forge/kube"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -373,14 +374,14 @@ current-context: dummy
 		_ = exec.Command("docker", "rm", "-f", containerName).Run()
 	})
 
-	// Start with the same flags as orchestrator.startKubernetesMCP.
-	// These must stay in sync — if the orchestrator changes flags, update here too.
-	runCmd := exec.CommandContext(ctx, "docker", "run", "-d",
+	runArgs := []string{
+		"run", "-d",
 		"--name", containerName,
-		"-v", kubeconfigPath+":/home/user/.kube/config:ro",
+		"-v", kubeconfigPath + ":" + kube.MCPServerKubeconfigPath + ":ro",
 		image,
-		"--port", "8090", "--read-only", "--kubeconfig", "/home/user/.kube/config",
-	)
+	}
+	runArgs = append(runArgs, kube.MCPServerArgs()...)
+	runCmd := exec.CommandContext(ctx, "docker", runArgs...)
 	out, err = runCmd.CombinedOutput()
 	require.NoError(t, err, "failed to start k8s-mcp container: %s", out)
 

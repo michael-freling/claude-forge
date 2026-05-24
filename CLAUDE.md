@@ -19,8 +19,7 @@ go test -tags=forge_e2e -v -race -timeout 15m ./test/e2e/forge/...
 Key tests:
 - `TestForgeStart` — full start-to-finish session with Claude Code
 - `TestKubernetesMCPServer_Starts` — verifies the k8s MCP image starts with
-  our flags. **Update this test whenever you change the flags in
-  `orchestrator.startKubernetesMCP`.**
+  our flags (shared via `kube.MCPServerArgs()` — no manual sync needed)
 
 ### Coverage threshold
 
