@@ -417,8 +417,10 @@ type MCPServerConfig struct {
 	URL  string `json:"url"`
 }
 
-// UpdateMCPServers reads settings.json from configDir, merges the given
-// mcpServers map, and writes back. Creates the file with defaults if missing.
+// UpdateMCPServers reads settings.json from configDir, replaces the
+// mcpServers map with the given servers, and writes back. This ensures
+// stale entries from previous sessions are removed.
+// Creates the file with defaults if missing.
 func UpdateMCPServers(configDir string, servers map[string]MCPServerConfig) error {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
@@ -438,10 +440,7 @@ func UpdateMCPServers(configDir string, servers map[string]MCPServerConfig) erro
 		return fmt.Errorf("failed to parse settings.json: %w", err)
 	}
 
-	mcpServers := make(map[string]any)
-	if existing, ok := settings["mcpServers"].(map[string]any); ok {
-		mcpServers = existing
-	}
+	mcpServers := make(map[string]any, len(servers))
 	for name, cfg := range servers {
 		mcpServers[name] = map[string]any{
 			"type": cfg.Type,

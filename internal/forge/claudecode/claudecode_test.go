@@ -897,7 +897,7 @@ func TestUpdateMCPServers(t *testing.T) {
 		assert.Equal(t, "http://gateway:8080/mcp", server["url"])
 	})
 
-	t.Run("overwrites existing mcpServers entries", func(t *testing.T) {
+	t.Run("replaces existing mcpServers entries", func(t *testing.T) {
 		configDir := t.TempDir()
 
 		existingSettings := `{
@@ -926,10 +926,9 @@ func TestUpdateMCPServers(t *testing.T) {
 		mcpServers, ok := settings["mcpServers"].(map[string]any)
 		require.True(t, ok, "mcpServers should be a map")
 
-		// Old server should be preserved
-		oldServer, ok := mcpServers["old-server"].(map[string]any)
-		require.True(t, ok, "old-server should still exist")
-		assert.Equal(t, "http://old:1111/sse", oldServer["url"])
+		// Old server should be removed (not in the new set)
+		_, ok = mcpServers["old-server"]
+		assert.False(t, ok, "old-server should be removed")
 
 		// Shared server should be overwritten with new URL
 		sharedServer, ok := mcpServers["shared-server"].(map[string]any)
@@ -940,6 +939,9 @@ func TestUpdateMCPServers(t *testing.T) {
 		newServer, ok := mcpServers["new-server"].(map[string]any)
 		require.True(t, ok, "new-server should exist")
 		assert.Equal(t, "http://new:3333/sse", newServer["url"])
+
+		// Other settings should be preserved
+		assert.Equal(t, "disabled", settings["autoUpdaterStatus"])
 	})
 
 	t.Run("handles nonexistent configDir by creating it", func(t *testing.T) {
