@@ -416,20 +416,9 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
 	t.Cleanup(func() { os.RemoveAll(sessionDir) })
 
-	// Write a minimal JSONL session file
+	// Write a minimal JSONL session file (real Claude Code format)
 	sessionFile := filepath.Join(sessionDir, "abc12345.jsonl")
-	lines := []map[string]string{
-		{"type": "system", "timestamp": "2025-01-15T10:30:00Z", "message": "Session started"},
-		{"type": "human", "timestamp": "2025-01-15T10:30:01Z", "message": "Hello Claude"},
-	}
-	var content []byte
-	for _, line := range lines {
-		b, err := json.Marshal(line)
-		require.NoError(t, err)
-		content = append(content, b...)
-		content = append(content, '\n')
-	}
-	require.NoError(t, os.WriteFile(sessionFile, content, 0o644))
+	writeSessionFile(t, sessionFile, "2025-01-15T10:30:01Z", "Hello Claude")
 
 	cmd := newResumeCmd()
 	cmd.SetArgs([]string{"--list"})
@@ -465,18 +454,7 @@ func TestResumeCmd_List_WithLongMessage(t *testing.T) {
 	// Write a session file with a message longer than 60 characters
 	longMsg := "This is a very long first message that should be truncated because it exceeds sixty characters in total"
 	sessionFile := filepath.Join(sessionDir, "def67890.jsonl")
-	lines := []map[string]string{
-		{"type": "system", "timestamp": "2025-01-15T10:30:00Z", "message": "Session started"},
-		{"type": "human", "timestamp": "2025-01-15T10:30:01Z", "message": longMsg},
-	}
-	var content []byte
-	for _, line := range lines {
-		b, err := json.Marshal(line)
-		require.NoError(t, err)
-		content = append(content, b...)
-		content = append(content, '\n')
-	}
-	require.NoError(t, os.WriteFile(sessionFile, content, 0o644))
+	writeSessionFile(t, sessionFile, "2025-01-15T10:30:01Z", longMsg)
 
 	cmd := newResumeCmd()
 	cmd.SetArgs([]string{"--list"})
@@ -543,8 +521,8 @@ func TestResumeCmd_List_ShowsWorktreeName(t *testing.T) {
 	writeSessionFile(t, filepath.Join(workDir, "regular-session.jsonl"),
 		"2025-01-15T10:30:00Z", "regular work")
 
-	// Create a worktree session in -work-.claude-worktrees-feature/
-	wtDir := filepath.Join(sessionDir, "-work-.claude-worktrees-feature")
+	// Create a worktree session in -work--claude-worktrees-feature/
+	wtDir := filepath.Join(sessionDir, "-work--claude-worktrees-feature")
 	require.NoError(t, os.MkdirAll(wtDir, 0o755))
 	writeSessionFile(t, filepath.Join(wtDir, "wt-session.jsonl"),
 		"2025-01-15T11:00:00Z", "worktree work")
@@ -617,9 +595,9 @@ func TestResumeCmd_ContinueNoSessions(t *testing.T) {
 
 func writeSessionFile(t *testing.T, path, timestamp, message string) {
 	t.Helper()
-	lines := []map[string]string{
-		{"type": "system", "timestamp": timestamp, "message": "Session started"},
-		{"type": "human", "timestamp": timestamp, "message": message},
+	lines := []map[string]any{
+		{"type": "permission-mode", "permissionMode": "bypassPermissions"},
+		{"type": "user", "message": map[string]string{"role": "user", "content": message}, "timestamp": timestamp},
 	}
 	var content []byte
 	for _, line := range lines {

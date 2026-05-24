@@ -333,14 +333,14 @@ func buildForge(t *testing.T) string {
 	return binaryPath
 }
 
-// writeTestSession creates a JSONL session file at the given path.
+// writeTestSession creates a JSONL session file matching Claude Code's real format.
 func writeTestSession(t *testing.T, path, timestamp, message string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	content := fmt.Sprintf(
-		"{\"type\":\"system\",\"timestamp\":\"%s\",\"message\":\"init\"}\n"+
-			"{\"type\":\"human\",\"timestamp\":\"%s\",\"message\":\"%s\"}\n",
-		timestamp, timestamp, message,
+		"{\"type\":\"permission-mode\",\"permissionMode\":\"bypassPermissions\"}\n"+
+			"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"%s\"},\"timestamp\":\"%s\"}\n",
+		message, timestamp,
 	)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
@@ -400,7 +400,7 @@ func TestResumeList_WorktreeSession(t *testing.T) {
 		"2026-05-20T10:00:00Z", "main workspace")
 
 	writeTestSession(t,
-		filepath.Join(tempHome, ".claude-forge", projectID, "-work-.claude-worktrees-my-feature", "wt-session.jsonl"),
+		filepath.Join(tempHome, ".claude-forge", projectID, "-work--claude-worktrees-my-feature", "wt-session.jsonl"),
 		"2026-05-20T11:00:00Z", "worktree task")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -447,11 +447,11 @@ func TestResumeList_MixedSessions(t *testing.T) {
 		"2026-05-20T09:00:00Z", "main work")
 
 	writeTestSession(t,
-		filepath.Join(baseDir, "-work-.claude-worktrees-feature-auth", "session-b.jsonl"),
+		filepath.Join(baseDir, "-work--claude-worktrees-feature-auth", "session-b.jsonl"),
 		"2026-05-20T10:00:00Z", "auth feature")
 
 	writeTestSession(t,
-		filepath.Join(baseDir, "-work-.claude-worktrees-bugfix-login", "session-c.jsonl"),
+		filepath.Join(baseDir, "-work--claude-worktrees-bugfix-login", "session-c.jsonl"),
 		"2026-05-20T11:00:00Z", "login bugfix")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
