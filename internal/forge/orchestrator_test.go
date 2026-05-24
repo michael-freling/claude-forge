@@ -632,10 +632,10 @@ func TestStart_ResumeNonWorktreeSession_NoWorktreeFlag(t *testing.T) {
 		})
 
 	sess, err := orch.Start(context.Background(), StartOptions{
-		Worktree:   false,
-		ResumeID:   "abc12345",
+		Worktree:     false,
+		ResumeID:     "abc12345",
 		ResumeSubdir: "-work",
-		ProjectDir: projectDir,
+		ProjectDir:   projectDir,
 	})
 
 	require.NoError(t, err)

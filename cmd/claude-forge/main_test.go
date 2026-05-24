@@ -27,7 +27,7 @@ func TestNewRootCmd(t *testing.T) {
 
 	expectedSubcommands := []string{
 		"init", "start", "resume", "stop", "status",
-		"build", "auth", "plugins", "version", "gateway", "kube",
+		"build", "auth", "plugins", "version", "gateway", "kube", "mcp",
 	}
 
 	subcommandNames := make(map[string]bool)
@@ -609,6 +609,33 @@ func writeSessionFile(t *testing.T, path, timestamp, message string) {
 	require.NoError(t, os.WriteFile(path, content, 0o644))
 }
 
+func TestMcpRestartCmd_NoSharedMCP(t *testing.T) {
+	setupTestOrchestrator(t, &stubContainerManager{})
+
+	cmd := newMcpCmd()
+	cmd.SetArgs([]string{"restart"})
+
+	output := captureStdout(t, func() {
+		err := cmd.Execute()
+		require.NoError(t, err)
+	})
+	assert.Contains(t, output, "No shared MCP servers configured")
+}
+
+func TestMcpRestartCmd_OrchestratorError(t *testing.T) {
+	original := createOrchestrator
+	createOrchestrator = func() (*forge.Orchestrator, func(), error) {
+		return nil, nil, fmt.Errorf("test orchestrator error")
+	}
+	t.Cleanup(func() { createOrchestrator = original })
+
+	cmd := newMcpCmd()
+	cmd.SetArgs([]string{"restart"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "test orchestrator error")
+}
 
 func TestAuthCmd_WithAPIKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api-test1234567890abcdef")
