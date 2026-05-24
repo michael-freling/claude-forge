@@ -85,7 +85,7 @@ func (e MCPServerEntry) IsEnabled() bool {
 // MCPMountEntry represents a bind mount for a custom MCP container.
 type MCPMountEntry struct {
 	Source   string `yaml:"source"`
-	Target  string `yaml:"target"`
+	Target   string `yaml:"target"`
 	ReadOnly bool   `yaml:"read_only"`
 }
 
