@@ -339,7 +339,7 @@ is continued.`,
 				if err != nil {
 					return err
 				}
-				return startSession(true, false, "", args[0], sess.Subdir, false, mounts, sess.WorktreeName())
+				return startSession(true, sess.IsWorktree(), "", args[0], sess.Subdir, false, mounts, sess.WorktreeName())
 			}
 
 			// Continue most recent session, detecting worktree if needed
@@ -351,7 +351,7 @@ is continued.`,
 				return fmt.Errorf("no sessions found to continue")
 			}
 			mostRecent := sessions[0]
-			return startSession(true, false, "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName())
+			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName())
 		},
 	}
 
