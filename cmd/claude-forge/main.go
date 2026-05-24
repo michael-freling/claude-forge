@@ -251,7 +251,6 @@ defaults:
 	return b.String()
 }
 
-
 // newStartCmd creates the "start" subcommand.
 func newStartCmd() *cobra.Command {
 	var (
