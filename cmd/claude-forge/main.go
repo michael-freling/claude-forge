@@ -279,7 +279,7 @@ to disable it.`,
 	cmd.Flags().BoolVar(&noSkipPermissions, "no-skip-permissions", false, "Disable --dangerously-skip-permissions")
 	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Initial prompt to send to Claude Code")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
-	cmd.Flags().BoolVar(&enableDocker, "enable-docker", false, "Mount Docker socket into the agent container for Docker-in-Docker")
+	cmd.Flags().BoolVar(&enableDocker, "enable-docker", true, "Mount Docker socket into the agent container for Docker-in-Docker")
 
 	return cmd
 }
@@ -361,7 +361,7 @@ is continued.`,
 
 	cmd.Flags().BoolVar(&list, "list", false, "List available sessions")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
-	cmd.Flags().BoolVar(&enableDocker, "enable-docker", false, "Mount Docker socket into the agent container for Docker-in-Docker")
+	cmd.Flags().BoolVar(&enableDocker, "enable-docker", true, "Mount Docker socket into the agent container for Docker-in-Docker")
 
 	return cmd
 }
