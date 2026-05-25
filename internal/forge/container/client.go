@@ -204,6 +204,8 @@ type AgentOptions struct {
 	ExtraMounts        []CacheDir          // additional user-specified bind mounts (rw)
 	ResumeWorktreeName string              // worktree name when resuming a worktree session
 	ExtraNetworks      []NetworkAttachment // additional networks to connect before starting
+	DockerSocket       string              // host Docker socket path to mount (e.g. /var/run/docker.sock)
+	DockerGID          int                 // GID of the Docker socket on the host
 }
 
 // StartAgent creates and starts an agent container.
@@ -327,6 +329,18 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 			Source: m.Source,
 			Target: m.Target,
 		})
+	}
+
+	// Docker socket mount (for --enable-docker)
+	if opts.DockerSocket != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: opts.DockerSocket,
+			Target: "/var/run/docker.sock",
+		})
+	}
+	if opts.DockerGID > 0 {
+		env = append(env, fmt.Sprintf("FORGE_DOCKER_GID=%d", opts.DockerGID))
 	}
 
 	var cmd []string

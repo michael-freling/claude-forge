@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/docker/docker/api/types/mount"
@@ -55,6 +56,7 @@ type StartOptions struct {
 	GID                int      // host user GID
 	Mounts             []string // additional host:container bind mounts
 	ResumeWorktreeName string   // worktree name when resuming a worktree session
+	EnableDocker       bool     // mount Docker socket into the agent container
 }
 
 // Session holds information about a running session.
@@ -316,6 +318,26 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		agentEnv["FORGE_GID"] = fmt.Sprintf("%d", opts.GID)
 	}
 
+	// Detect Docker socket when --enable-docker is set
+	var dockerSocket string
+	var dockerGID int
+	if opts.EnableDocker {
+		dockerSocket = "/var/run/docker.sock"
+		if dockerHost := os.Getenv("DOCKER_HOST"); dockerHost != "" {
+			dockerSocket = strings.TrimPrefix(dockerHost, "unix://")
+		}
+		fi, err := os.Stat(dockerSocket)
+		if err != nil {
+			return nil, fmt.Errorf("docker socket not found at %s: %w", dockerSocket, err)
+		}
+		stat, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			return nil, fmt.Errorf("failed to get file ownership for %s", dockerSocket)
+		}
+		dockerGID = int(stat.Gid)
+		o.Log("Docker socket: %s (GID %d)", dockerSocket, dockerGID)
+	}
+
 	// Read host model preference and propagate to container
 	if model := claudecode.ReadHostModel(o.ClaudeDir); model != "" {
 		agentEnv["ANTHROPIC_MODEL"] = model
@@ -379,6 +401,8 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		ExtraMounts:        extraMounts,
 		ResumeWorktreeName: opts.ResumeWorktreeName,
 		ExtraNetworks:      extraNetworks,
+		DockerSocket:       dockerSocket,
+		DockerGID:          dockerGID,
 	}); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start agent: %w", err)

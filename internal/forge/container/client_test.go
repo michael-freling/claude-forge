@@ -902,6 +902,52 @@ func TestStartAgent_ExtraNetworks(t *testing.T) {
 	})
 }
 
+func TestStartAgent_DockerSocket(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockAPI := NewMockDockerAPI(ctrl)
+
+	opts := AgentOptions{
+		Name:         "forge-agent-docker-test",
+		Image:        "agent:latest",
+		NetworkName:  "forge_net",
+		ProjectDir:   "/home/user/project",
+		DockerSocket: "/var/run/docker.sock",
+		DockerGID:    999,
+	}
+
+	mockAPI.EXPECT().
+		ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
+			// Verify Docker socket mount
+			foundDockerSocket := false
+			for _, m := range hostConfig.Mounts {
+				if m.Source == "/var/run/docker.sock" && m.Target == "/var/run/docker.sock" {
+					foundDockerSocket = true
+					assert.False(t, m.ReadOnly, "docker socket should be read-write")
+				}
+			}
+			assert.True(t, foundDockerSocket, "docker socket mount not found")
+
+			// Verify FORGE_DOCKER_GID env var
+			assert.Contains(t, config.Env, "FORGE_DOCKER_GID=999")
+
+			return container.CreateResponse{ID: "c-docker"}, nil
+		})
+
+	mockAPI.EXPECT().
+		ContainerStart(gomock.Any(), "c-docker", container.StartOptions{}).
+		Return(nil)
+
+	client := newClientWithAPI(mockAPI)
+	ctx := context.Background()
+
+	id, err := client.StartAgent(ctx, opts)
+	require.NoError(t, err)
+	assert.Equal(t, "c-docker", id)
+}
+
 func TestStartGateway(t *testing.T) {
 	tests := []struct {
 		name        string

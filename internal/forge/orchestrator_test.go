@@ -1392,6 +1392,116 @@ func TestStart_FailsOnGitHubMCPReady(t *testing.T) {
 	assert.Contains(t, err.Error(), "github-mcp failed to start")
 }
 
+func TestStart_EnableDocker(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	// Create a fake socket file in a temp dir
+	socketDir := t.TempDir()
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	require.NoError(t, os.WriteFile(socketPath, []byte(""), 0o660))
+
+	t.Setenv("DOCKER_HOST", "unix://"+socketPath)
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Equal(t, socketPath, opts.DockerSocket)
+			assert.Greater(t, opts.DockerGID, 0)
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		SkipPermissions: true,
+		ProjectDir:      projectDir,
+		UID:             1000,
+		GID:             1000,
+		EnableDocker:    true,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
+func TestStart_EnableDocker_DefaultSocket(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	t.Setenv("DOCKER_HOST", "") // ensure default path is used
+
+	// If /var/run/docker.sock doesn't exist, should error
+	if _, err := os.Stat("/var/run/docker.sock"); os.IsNotExist(err) {
+		mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+		mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+		mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+		mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+		mockCM.EXPECT().ContainerLogs(gomock.Any(), gomock.Any()).Return("", nil).AnyTimes()
+		mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+		_, err := orch.Start(context.Background(), StartOptions{
+			SkipPermissions: true,
+			ProjectDir:      projectDir,
+			UID:             1000,
+			GID:             1000,
+			EnableDocker:    true,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "docker socket not found")
+	} else {
+		t.Skip("skipping: /var/run/docker.sock exists on this host")
+	}
+}
+
+func TestStart_EnableDocker_SocketNotFound(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().ContainerLogs(gomock.Any(), gomock.Any()).Return("", nil).AnyTimes()
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		SkipPermissions: true,
+		ProjectDir:      projectDir,
+		UID:             1000,
+		GID:             1000,
+		EnableDocker:    true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "docker socket not found")
+}
+
 func TestReadGHToken(t *testing.T) {
 	t.Run("valid hosts.yml", func(t *testing.T) {
 		dir := t.TempDir()

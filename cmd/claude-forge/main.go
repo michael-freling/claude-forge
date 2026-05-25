@@ -83,7 +83,7 @@ func newOrchestrator() (*forge.Orchestrator, func(), error) {
 }
 
 // startSession runs the common logic for the start and resume commands.
-func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName string) error {
+func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName string, enableDocker bool) error {
 	orch, cleanup, err := createOrchestrator()
 	if err != nil {
 		return err
@@ -107,6 +107,7 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 		GID:                hostGID,
 		Mounts:             mounts,
 		ResumeWorktreeName: resumeWorktreeName,
+		EnableDocker:       enableDocker,
 	})
 	if err != nil {
 		return err
@@ -259,6 +260,7 @@ func newStartCmd() *cobra.Command {
 		noSkipPermissions bool
 		prompt            string
 		mounts            []string
+		enableDocker      bool
 	)
 
 	cmd := &cobra.Command{
@@ -269,7 +271,7 @@ By default, --dangerously-skip-permissions is enabled. Use --no-skip-permissions
 to disable it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "")
+			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "", enableDocker)
 		},
 	}
 
@@ -277,6 +279,7 @@ to disable it.`,
 	cmd.Flags().BoolVar(&noSkipPermissions, "no-skip-permissions", false, "Disable --dangerously-skip-permissions")
 	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Initial prompt to send to Claude Code")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
+	cmd.Flags().BoolVar(&enableDocker, "enable-docker", false, "Mount Docker socket into the agent container for Docker-in-Docker")
 
 	return cmd
 }
@@ -284,8 +287,9 @@ to disable it.`,
 // newResumeCmd creates the "resume" subcommand.
 func newResumeCmd() *cobra.Command {
 	var (
-		list   bool
-		mounts []string
+		list         bool
+		mounts       []string
+		enableDocker bool
 	)
 
 	cmd := &cobra.Command{
@@ -339,7 +343,7 @@ is continued.`,
 				if err != nil {
 					return err
 				}
-				return startSession(true, sess.IsWorktree(), "", args[0], sess.Subdir, false, mounts, sess.WorktreeName())
+				return startSession(true, sess.IsWorktree(), "", args[0], sess.Subdir, false, mounts, sess.WorktreeName(), enableDocker)
 			}
 
 			// Continue most recent session, detecting worktree if needed
@@ -351,12 +355,13 @@ is continued.`,
 				return fmt.Errorf("no sessions found to continue")
 			}
 			mostRecent := sessions[0]
-			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName())
+			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName(), enableDocker)
 		},
 	}
 
 	cmd.Flags().BoolVar(&list, "list", false, "List available sessions")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
+	cmd.Flags().BoolVar(&enableDocker, "enable-docker", false, "Mount Docker socket into the agent container for Docker-in-Docker")
 
 	return cmd
 }

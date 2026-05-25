@@ -17,4 +17,15 @@ if [ -n "$FORGE_UID" ] && [ -n "$FORGE_GID" ]; then
     chown -R user:user /home/user 2>/dev/null || true
 fi
 
+# Add user to the Docker socket group when FORGE_DOCKER_GID is set.
+# This allows the container user to access the host Docker daemon.
+if [ -n "$FORGE_DOCKER_GID" ]; then
+    existing_group=$(getent group "$FORGE_DOCKER_GID" | cut -d: -f1)
+    if [ -z "$existing_group" ]; then
+        groupadd -g "$FORGE_DOCKER_GID" docker 2>/dev/null || true
+        existing_group="docker"
+    fi
+    usermod -aG "$existing_group" user 2>/dev/null || true
+fi
+
 exec runuser -u user -- "$@"
