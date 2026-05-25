@@ -1451,7 +1451,7 @@ func TestStart_EnableDocker(t *testing.T) {
 	projectDir := setupGitProject(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-123")
 
-	// Expect 4 image checks (agent, gateway, github-mcp, docker-mcp)
+	// 3 required image checks + 1 separate docker-mcp check
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
@@ -1512,7 +1512,7 @@ func TestStart_EnableDocker_Disabled(t *testing.T) {
 	assert.Empty(t, sess.DockerMCPName)
 }
 
-func TestStart_EnableDocker_FailsOnStart(t *testing.T) {
+func TestStart_EnableDocker_FailsGracefully(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	mockCM := NewMockContainerManager(ctrl)
@@ -1521,6 +1521,7 @@ func TestStart_EnableDocker_FailsOnStart(t *testing.T) {
 	projectDir := setupGitProject(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 
+	// 3 required + 1 docker-mcp check
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
@@ -1528,17 +1529,16 @@ func TestStart_EnableDocker_FailsOnStart(t *testing.T) {
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartDockerMCP(gomock.Any(), gomock.Any()).Return("", fmt.Errorf("docker-mcp start failed"))
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
 
-	// Expect cleanup (agent, github-mcp, docker-mcp, gateway)
-	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
-	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
-
-	_, err := orch.Start(context.Background(), StartOptions{
-		ProjectDir:   projectDir,
-		EnableDocker: true,
+	sess, err := orch.Start(context.Background(), StartOptions{
+		SkipPermissions: true,
+		ProjectDir:      projectDir,
+		UID:             1000,
+		GID:             1000,
+		EnableDocker:    true,
 	})
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to start docker-mcp")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sess.DockerMCPName)
 }

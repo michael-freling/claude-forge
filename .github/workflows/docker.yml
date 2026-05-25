@@ -8,6 +8,7 @@ on:
       - 'cmd/claude-forge/**'
       - 'internal/**'
       - 'github-mcp/**'
+      - 'docker-mcp/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/docker.yml'
@@ -21,6 +22,7 @@ env:
   AGENT_IMAGE: ghcr.io/michael-freling/claude-forge-agent
   GATEWAY_IMAGE: ghcr.io/michael-freling/claude-forge-gateway
   GITHUB_MCP_IMAGE: ghcr.io/michael-freling/claude-forge-github-mcp
+  DOCKER_MCP_IMAGE: ghcr.io/michael-freling/claude-forge-docker-mcp
 
 jobs:
   build-gateway:
@@ -142,6 +144,45 @@ jobs:
         with:
           context: github-mcp
           file: github-mcp/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-docker-mcp:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_MCP_IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+            type=raw,value={{date 'YYYYMMDD'}}
+
+      - name: Build and push docker-mcp image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker-mcp
+          file: docker-mcp/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

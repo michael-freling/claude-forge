@@ -167,9 +167,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 
 	// Pull images if not present
 	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
-	if opts.EnableDocker {
-		imagesToPull = append(imagesToPull, cfg.Images.DockerMCP)
-	}
 	if cfg.Kubernetes.Enabled {
 		imagesToPull = append(imagesToPull, cfg.Kubernetes.Image)
 	}
@@ -183,6 +180,21 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 			if err := o.Containers.PullImage(ctx, img); err != nil {
 				return nil, fmt.Errorf("failed to pull image %s: %w", img, err)
 			}
+		}
+	}
+
+	// Pull optional images (failure is non-fatal)
+	if opts.EnableDocker {
+		exists, err := o.Containers.ImageExists(ctx, cfg.Images.DockerMCP)
+		if err == nil && !exists {
+			o.Log("Pulling image: %s", cfg.Images.DockerMCP)
+			if err := o.Containers.PullImage(ctx, cfg.Images.DockerMCP); err != nil {
+				o.Log("Warning: failed to pull docker-mcp image: %v", err)
+				opts.EnableDocker = false
+			}
+		} else if err != nil {
+			o.Log("Warning: failed to check docker-mcp image: %v", err)
+			opts.EnableDocker = false
 		}
 	}
 
@@ -250,7 +262,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("github-mcp failed to start: %w", err)
 	}
 
-	// Start Docker MCP sidecar if enabled
+	// Start Docker MCP sidecar if enabled (non-fatal on failure)
 	dockerMCPRunning := false
 	if opts.EnableDocker {
 		o.Log("Starting Docker MCP: %s", sess.DockerMCPName)
@@ -261,19 +273,12 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 			SessionNetworkName: sess.NetworkName,
 		})
 		if err != nil {
-			o.Cleanup(ctx, sess)
-			return nil, fmt.Errorf("failed to start docker-mcp: %w", err)
+			o.Log("Warning: failed to start Docker MCP: %v", err)
+		} else if err := o.Containers.WaitForReady(ctx, dockerMCPID, 5*time.Second); err != nil {
+			o.Log("Warning: Docker MCP failed to become ready: %v", err)
+		} else {
+			dockerMCPRunning = true
 		}
-
-		if err := o.Containers.WaitForReady(ctx, dockerMCPID, 5*time.Second); err != nil {
-			logs, _ := o.Containers.ContainerLogs(ctx, dockerMCPID)
-			o.Cleanup(ctx, sess)
-			if logs != "" {
-				return nil, fmt.Errorf("docker-mcp failed to start: %w\nLogs:\n%s", err, logs)
-			}
-			return nil, fmt.Errorf("docker-mcp failed to start: %w", err)
-		}
-		dockerMCPRunning = true
 	}
 
 	// Start Kubernetes MCP shared service if enabled (before writing settings
