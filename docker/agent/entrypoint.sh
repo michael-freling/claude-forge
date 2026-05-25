@@ -22,7 +22,11 @@ fi
 if [ -n "$FORGE_DOCKER_GID" ]; then
     existing_group=$(getent group "$FORGE_DOCKER_GID" | cut -d: -f1)
     if [ -z "$existing_group" ]; then
-        groupadd -g "$FORGE_DOCKER_GID" docker 2>/dev/null || true
+        if getent group docker >/dev/null 2>&1; then
+            groupmod -g "$FORGE_DOCKER_GID" docker 2>/dev/null || true
+        else
+            groupadd -g "$FORGE_DOCKER_GID" docker 2>/dev/null || true
+        fi
         existing_group="docker"
     fi
     usermod -aG "$existing_group" user 2>/dev/null || true
