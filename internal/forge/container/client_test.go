@@ -1246,6 +1246,7 @@ func TestListForgeContainers_Filters(t *testing.T) {
 			expectedFilters.Add("name", "forge-agent-")
 			expectedFilters.Add("name", "forge-gateway-")
 			expectedFilters.Add("name", "forge-github-mcp-")
+			expectedFilters.Add("name", "forge-docker-mcp-")
 			expectedFilters.Add("name", "forge-k8s-mcp")
 			assert.Equal(t, expectedFilters, opts.Filters)
 
@@ -1628,6 +1629,117 @@ func TestStartGitHubMCP(t *testing.T) {
 			ctx := context.Background()
 
 			id, err := client.StartGitHubMCP(ctx, tt.opts)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantID, id)
+		})
+	}
+}
+
+func TestStartDockerMCP(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        DockerMCPOptions
+		setupMock   func(*MockDockerAPI)
+		wantID      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "creates and starts docker-mcp container with socket mount",
+			opts: DockerMCPOptions{
+				Name:               "forge-docker-mcp-project-session1",
+				Image:              "docker-mcp:latest",
+				NetworkName:        "forge_net",
+				SessionNetworkName: "forge-session-net",
+				Env:                map[string]string{"LOG_LEVEL": "debug"},
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(
+						gomock.Any(),
+						gomock.Any(),
+						gomock.Any(),
+						gomock.Any(),
+						"forge-docker-mcp-project-session1",
+					).
+					DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
+						assert.Equal(t, "docker-mcp:latest", config.Image)
+						assert.Equal(t, []string{"--network", "forge-session-net"}, []string(config.Cmd))
+						assert.Contains(t, config.Env, "LOG_LEVEL=debug")
+
+						// Verify Docker socket mount
+						require.Len(t, hostConfig.Mounts, 1)
+						assert.Equal(t, "/var/run/docker.sock", hostConfig.Mounts[0].Source)
+						assert.Equal(t, "/var/run/docker.sock", hostConfig.Mounts[0].Target)
+
+						// Verify network alias
+						assert.Contains(t, netConfig.EndpointsConfig, "forge_net")
+						assert.Equal(t, []string{"docker-mcp"}, netConfig.EndpointsConfig["forge_net"].Aliases)
+
+						return container.CreateResponse{ID: "docker-mcp-123"}, nil
+					})
+				m.EXPECT().
+					ContainerStart(gomock.Any(), "docker-mcp-123", container.StartOptions{}).
+					Return(nil)
+			},
+			wantID: "docker-mcp-123",
+		},
+		{
+			name: "fails when container create fails",
+			opts: DockerMCPOptions{
+				Name:               "forge-docker-mcp-test",
+				Image:              "docker-mcp:latest",
+				NetworkName:        "forge_net",
+				SessionNetworkName: "forge-session-net",
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(container.CreateResponse{}, fmt.Errorf("image not found"))
+			},
+			wantErr:     true,
+			errContains: "failed to create docker-mcp container",
+		},
+		{
+			name: "fails when container start fails",
+			opts: DockerMCPOptions{
+				Name:               "forge-docker-mcp-test",
+				Image:              "docker-mcp:latest",
+				NetworkName:        "forge_net",
+				SessionNetworkName: "forge-session-net",
+			},
+			setupMock: func(m *MockDockerAPI) {
+				m.EXPECT().
+					ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(container.CreateResponse{ID: "docker-mcp-123"}, nil)
+				m.EXPECT().
+					ContainerStart(gomock.Any(), "docker-mcp-123", container.StartOptions{}).
+					Return(fmt.Errorf("start failed"))
+			},
+			wantErr:     true,
+			errContains: "failed to start docker-mcp container",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockAPI := NewMockDockerAPI(ctrl)
+			tt.setupMock(mockAPI)
+
+			client := newClientWithAPI(mockAPI)
+			ctx := context.Background()
+
+			id, err := client.StartDockerMCP(ctx, tt.opts)
 
 			if tt.wantErr {
 				require.Error(t, err)

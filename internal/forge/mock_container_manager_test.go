@@ -217,6 +217,21 @@ func (mr *MockContainerManagerMockRecorder) StartAgent(ctx, opts any) *gomock.Ca
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartAgent", reflect.TypeOf((*MockContainerManager)(nil).StartAgent), ctx, opts)
 }
 
+// StartDockerMCP mocks base method.
+func (m *MockContainerManager) StartDockerMCP(ctx context.Context, opts container.DockerMCPOptions) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "StartDockerMCP", ctx, opts)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// StartDockerMCP indicates an expected call of StartDockerMCP.
+func (mr *MockContainerManagerMockRecorder) StartDockerMCP(ctx, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartDockerMCP", reflect.TypeOf((*MockContainerManager)(nil).StartDockerMCP), ctx, opts)
+}
+
 // StartGateway mocks base method.
 func (m *MockContainerManager) StartGateway(ctx context.Context, opts container.GatewayOptions) (string, error) {
 	m.ctrl.T.Helper()

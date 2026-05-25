@@ -179,6 +179,9 @@ func (s *stubContainerManager) ContainerLogs(_ context.Context, _ string) (strin
 func (s *stubContainerManager) StartGitHubMCP(_ context.Context, _ container.GitHubMCPOptions) (string, error) {
 	return "mcp-id", nil
 }
+func (s *stubContainerManager) StartDockerMCP(_ context.Context, _ container.DockerMCPOptions) (string, error) {
+	return "docker-mcp-id", nil
+}
 func (s *stubContainerManager) EnsureSharedNetwork(_ context.Context, _ string) (string, error) {
 	return "shared-net-id", nil
 }

@@ -165,17 +165,18 @@ func TestStart_FailsOnGatewayStart(t *testing.T) {
 	projectDir := setupGitProject(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 
-	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("", fmt.Errorf("gateway start failed"))
 
-	// Expect cleanup calls (agent, github-mcp, gateway)
-	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	// Expect cleanup calls (agent, github-mcp, docker-mcp, gateway)
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
 	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 
 	_, err := orch.Start(context.Background(), StartOptions{
-		ProjectDir: projectDir,
+		ProjectDir:   projectDir,
+		EnableDocker: true,
 	})
 
 	require.Error(t, err)
@@ -191,19 +192,20 @@ func TestStart_FailsOnGatewayCrash(t *testing.T) {
 	projectDir := setupGitProject(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 
-	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(fmt.Errorf("container gw-id exited with code 1"))
 	mockCM.EXPECT().ContainerLogs(gomock.Any(), "gw-id").Return("Error: no GITHUB_TOKEN set", nil)
 
-	// Expect cleanup calls (agent, github-mcp, gateway)
-	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	// Expect cleanup calls (agent, github-mcp, docker-mcp, gateway)
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
 	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 
 	_, err := orch.Start(context.Background(), StartOptions{
-		ProjectDir: projectDir,
+		ProjectDir:   projectDir,
+		EnableDocker: true,
 	})
 
 	require.Error(t, err)
@@ -220,21 +222,24 @@ func TestStart_FailsOnAgentStart(t *testing.T) {
 	projectDir := setupGitProject(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 
-	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartDockerMCP(gomock.Any(), gomock.Any()).Return("docker-mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "docker-mcp-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("", fmt.Errorf("agent start failed"))
 
-	// Expect cleanup calls (agent, github-mcp, gateway)
-	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	// Expect cleanup calls (agent, github-mcp, docker-mcp, gateway)
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
 	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 
 	_, err := orch.Start(context.Background(), StartOptions{
-		ProjectDir: projectDir,
+		ProjectDir:   projectDir,
+		EnableDocker: true,
 	})
 
 	require.Error(t, err)
@@ -310,7 +315,7 @@ func TestBuild(t *testing.T) {
 	mockCM := NewMockContainerManager(ctrl)
 	orch, _ := setupOrchestrator(t, mockCM)
 
-	mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil).Times(4)
 
 	err := orch.Build(context.Background())
 	require.NoError(t, err)
@@ -326,6 +331,7 @@ func TestCleanup(t *testing.T) {
 		AgentName:     "forge-agent-proj-sess1234",
 		GatewayName:   "forge-gateway-proj-sess1234",
 		GitHubMCPName: "forge-github-mcp-proj-sess1234",
+		DockerMCPName: "forge-docker-mcp-proj-sess1234",
 		NetworkName:   "forge_net_proj_sess1234",
 	}
 
@@ -333,6 +339,8 @@ func TestCleanup(t *testing.T) {
 	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-agent-proj-sess1234").Return(nil)
 	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-github-mcp-proj-sess1234").Return(nil)
 	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-github-mcp-proj-sess1234").Return(nil)
+	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-docker-mcp-proj-sess1234").Return(nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-docker-mcp-proj-sess1234").Return(nil)
 	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-gateway-proj-sess1234").Return(nil)
 	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-gateway-proj-sess1234").Return(nil)
 	mockCM.EXPECT().RemoveNetwork(gomock.Any(), "forge_net_proj_sess1234").Return(nil)
@@ -698,8 +706,9 @@ func TestBuild_PullImageFails(t *testing.T) {
 	mockCM := NewMockContainerManager(ctrl)
 	orch, _ := setupOrchestrator(t, mockCM)
 
-	// First two image pulls succeed, third fails
+	// First three image pulls succeed, fourth fails
 	gomock.InOrder(
+		mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil),
 		mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil),
 		mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil),
 		mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(fmt.Errorf("network timeout")),
@@ -1328,7 +1337,7 @@ kubernetes:
 `
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
 
-	mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+	mockCM.EXPECT().PullImage(gomock.Any(), gomock.Any()).Return(nil).Times(5)
 
 	err := orch.Build(context.Background())
 	require.NoError(t, err)
@@ -1343,19 +1352,20 @@ func TestStart_FailsOnGitHubMCPStart(t *testing.T) {
 	projectDir := setupGitProject(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 
-	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("", fmt.Errorf("mcp start failed"))
 
-	// Expect cleanup
-	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	// Expect cleanup (agent, github-mcp, docker-mcp, gateway)
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
 	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 
 	_, err := orch.Start(context.Background(), StartOptions{
-		ProjectDir: projectDir,
+		ProjectDir:   projectDir,
+		EnableDocker: true,
 	})
 
 	require.Error(t, err)
@@ -1371,7 +1381,7 @@ func TestStart_FailsOnGitHubMCPReady(t *testing.T) {
 	projectDir := setupGitProject(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 
-	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
@@ -1379,13 +1389,14 @@ func TestStart_FailsOnGitHubMCPReady(t *testing.T) {
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(fmt.Errorf("mcp exited with code 1"))
 	mockCM.EXPECT().ContainerLogs(gomock.Any(), "mcp-id").Return("connection refused", nil)
 
-	// Expect cleanup
-	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(3)
+	// Expect cleanup (agent, github-mcp, docker-mcp, gateway)
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
 	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 
 	_, err := orch.Start(context.Background(), StartOptions{
-		ProjectDir: projectDir,
+		ProjectDir:   projectDir,
+		EnableDocker: true,
 	})
 
 	require.Error(t, err)
@@ -1429,4 +1440,105 @@ func TestReadGHToken(t *testing.T) {
 		token := readGHToken(dir)
 		assert.Empty(t, token)
 	})
+}
+
+func TestStart_EnableDocker(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-123")
+
+	// Expect 4 image checks (agent, gateway, github-mcp, docker-mcp)
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartDockerMCP(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.DockerMCPOptions) (string, error) {
+			assert.Contains(t, opts.Name, "forge-docker-mcp-")
+			assert.NotEmpty(t, opts.NetworkName)
+			assert.Equal(t, opts.NetworkName, opts.SessionNetworkName)
+			return "docker-mcp-id", nil
+		})
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "docker-mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		SkipPermissions: true,
+		ProjectDir:      projectDir,
+		UID:             1000,
+		GID:             1000,
+		EnableDocker:    true,
+	})
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, sess.DockerMCPName)
+	assert.Contains(t, sess.DockerMCPName, "forge-docker-mcp-")
+}
+
+func TestStart_EnableDocker_Disabled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-123")
+
+	// Expect only 3 image checks (no docker-mcp)
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	// StartDockerMCP should NOT be called
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		SkipPermissions: true,
+		ProjectDir:      projectDir,
+		UID:             1000,
+		GID:             1000,
+		EnableDocker:    false,
+	})
+
+	require.NoError(t, err)
+	assert.Empty(t, sess.DockerMCPName)
+}
+
+func TestStart_EnableDocker_FailsOnStart(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(4)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartDockerMCP(gomock.Any(), gomock.Any()).Return("", fmt.Errorf("docker-mcp start failed"))
+
+	// Expect cleanup (agent, github-mcp, docker-mcp, gateway)
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).Times(4)
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir:   projectDir,
+		EnableDocker: true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start docker-mcp")
 }

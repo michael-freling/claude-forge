@@ -28,6 +28,7 @@ type ContainerManager interface {
 	StartAgent(ctx context.Context, opts AgentOptions) (string, error)
 	StartGateway(ctx context.Context, opts GatewayOptions) (string, error)
 	StartGitHubMCP(ctx context.Context, opts GitHubMCPOptions) (string, error)
+	StartDockerMCP(ctx context.Context, opts DockerMCPOptions) (string, error)
 	StartSharedService(ctx context.Context, opts SharedServiceOptions) (string, error)
 	IsContainerRunning(ctx context.Context, name string) (bool, error)
 	WaitForReady(ctx context.Context, containerID string, timeout time.Duration) error
@@ -503,6 +504,60 @@ func (c *Client) StartGitHubMCP(ctx context.Context, opts GitHubMCPOptions) (str
 	return resp.ID, nil
 }
 
+// DockerMCPOptions holds configuration for starting a Docker MCP sidecar container.
+type DockerMCPOptions struct {
+	Name               string            // container name: forge-docker-mcp-<project-id>-<session-id>
+	Image              string            // docker-mcp image
+	NetworkName        string            // Docker network to attach to
+	SessionNetworkName string            // session network name passed as --network flag to the MCP server
+	Env                map[string]string // environment variables
+}
+
+// StartDockerMCP creates and starts a Docker MCP sidecar container.
+// The container has the Docker socket mounted so it can manage containers
+// on behalf of the agent.
+func (c *Client) StartDockerMCP(ctx context.Context, opts DockerMCPOptions) (string, error) {
+	env := make([]string, 0, len(opts.Env))
+	for k, v := range opts.Env {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	containerConfig := &container.Config{
+		Image: opts.Image,
+		Env:   env,
+		Cmd:   []string{"--network", opts.SessionNetworkName},
+	}
+
+	hostConfig := &container.HostConfig{
+		Mounts: []mount.Mount{
+			{
+				Type:   mount.TypeBind,
+				Source: "/var/run/docker.sock",
+				Target: "/var/run/docker.sock",
+			},
+		},
+	}
+
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			opts.NetworkName: {
+				Aliases: []string{"docker-mcp"},
+			},
+		},
+	}
+
+	resp, err := c.docker.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, opts.Name)
+	if err != nil {
+		return "", fmt.Errorf("failed to create docker-mcp container: %w", err)
+	}
+
+	if err := c.docker.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", fmt.Errorf("failed to start docker-mcp container: %w", err)
+	}
+
+	return resp.ID, nil
+}
+
 // SharedServiceOptions holds configuration for starting a shared singleton service container.
 type SharedServiceOptions struct {
 	Name        string            // container name, e.g. "forge-k8s-mcp"
@@ -698,6 +753,7 @@ func (c *Client) ListForgeContainers(ctx context.Context) ([]ContainerInfo, erro
 	filterArgs.Add("name", "forge-agent-")
 	filterArgs.Add("name", "forge-gateway-")
 	filterArgs.Add("name", "forge-github-mcp-")
+	filterArgs.Add("name", "forge-docker-mcp-")
 	filterArgs.Add("name", "forge-k8s-mcp")
 
 	containers, err := c.docker.ContainerList(ctx, container.ListOptions{

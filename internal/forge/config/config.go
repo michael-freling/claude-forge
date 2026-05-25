@@ -20,6 +20,9 @@ const (
 
 	// DefaultKubernetesMCPImage is the default Docker image for the Kubernetes MCP server.
 	DefaultKubernetesMCPImage = "ghcr.io/containers/kubernetes-mcp-server:latest"
+
+	// DefaultDockerMCPImage is the default Docker image for the Docker MCP sidecar.
+	DefaultDockerMCPImage = "ghcr.io/michael-freling/claude-forge-docker-mcp:latest"
 )
 
 // Config holds the claude-forge configuration.
@@ -34,6 +37,7 @@ type ImagesConfig struct {
 	Agent     string `yaml:"agent"`
 	Gateway   string `yaml:"gateway"`
 	GitHubMCP string `yaml:"github_mcp"`
+	DockerMCP string `yaml:"docker_mcp"`
 }
 
 // DefaultsConfig holds default behavior configuration.
@@ -64,6 +68,7 @@ func DefaultConfig() *Config {
 			Agent:     DefaultAgentImage,
 			Gateway:   DefaultGatewayImage,
 			GitHubMCP: DefaultGitHubMCPImage,
+			DockerMCP: DefaultDockerMCPImage,
 		},
 		Kubernetes: KubernetesConfig{
 			Image: DefaultKubernetesMCPImage,
@@ -99,6 +104,9 @@ func Load(configDir string) (*Config, error) {
 	}
 	if cfg.Images.GitHubMCP == "" {
 		cfg.Images.GitHubMCP = DefaultGitHubMCPImage
+	}
+	if cfg.Images.DockerMCP == "" {
+		cfg.Images.DockerMCP = DefaultDockerMCPImage
 	}
 	if cfg.Kubernetes.Image == "" {
 		cfg.Kubernetes.Image = DefaultKubernetesMCPImage

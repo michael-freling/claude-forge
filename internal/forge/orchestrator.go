@@ -55,6 +55,7 @@ type StartOptions struct {
 	GID                int      // host user GID
 	Mounts             []string // additional host:container bind mounts
 	ResumeWorktreeName string   // worktree name when resuming a worktree session
+	EnableDocker       bool     // start Docker MCP sidecar (default: true)
 }
 
 // Session holds information about a running session.
@@ -62,6 +63,7 @@ type Session struct {
 	AgentName     string
 	GatewayName   string
 	GitHubMCPName string
+	DockerMCPName string
 	NetworkName   string
 	SessionID     string
 	ProjectID     string
@@ -126,6 +128,9 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		SessionID:     sessionID,
 		ProjectID:     proj.ID,
 	}
+	if opts.EnableDocker {
+		sess.DockerMCPName = fmt.Sprintf("forge-docker-mcp-%s-%s", proj.ID, sessionID)
+	}
 
 	// Create session directory
 	sessionDir := filepath.Join(o.HomeDir, ".claude-forge", proj.ID)
@@ -162,6 +167,9 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 
 	// Pull images if not present
 	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
+	if opts.EnableDocker {
+		imagesToPull = append(imagesToPull, cfg.Images.DockerMCP)
+	}
 	if cfg.Kubernetes.Enabled {
 		imagesToPull = append(imagesToPull, cfg.Kubernetes.Image)
 	}
@@ -242,6 +250,32 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("github-mcp failed to start: %w", err)
 	}
 
+	// Start Docker MCP sidecar if enabled
+	dockerMCPRunning := false
+	if opts.EnableDocker {
+		o.Log("Starting Docker MCP: %s", sess.DockerMCPName)
+		dockerMCPID, err := o.Containers.StartDockerMCP(ctx, container.DockerMCPOptions{
+			Name:               sess.DockerMCPName,
+			Image:              cfg.Images.DockerMCP,
+			NetworkName:        sess.NetworkName,
+			SessionNetworkName: sess.NetworkName,
+		})
+		if err != nil {
+			o.Cleanup(ctx, sess)
+			return nil, fmt.Errorf("failed to start docker-mcp: %w", err)
+		}
+
+		if err := o.Containers.WaitForReady(ctx, dockerMCPID, 5*time.Second); err != nil {
+			logs, _ := o.Containers.ContainerLogs(ctx, dockerMCPID)
+			o.Cleanup(ctx, sess)
+			if logs != "" {
+				return nil, fmt.Errorf("docker-mcp failed to start: %w\nLogs:\n%s", err, logs)
+			}
+			return nil, fmt.Errorf("docker-mcp failed to start: %w", err)
+		}
+		dockerMCPRunning = true
+	}
+
 	// Start Kubernetes MCP shared service if enabled (before writing settings
 	// so we only advertise it when the server is actually running)
 	k8sRunning := false
@@ -256,6 +290,9 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	// Write MCP server config to settings.json for the agent
 	mcpServers := map[string]claudecode.MCPServerConfig{
 		"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
+	}
+	if dockerMCPRunning {
+		mcpServers["docker"] = claudecode.MCPServerConfig{Type: "url", URL: "http://docker-mcp:8084/mcp"}
 	}
 	if k8sRunning {
 		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:" + kube.MCPServerPort + "/mcp"}
@@ -394,6 +431,10 @@ func (o *Orchestrator) Cleanup(ctx context.Context, sess *Session) {
 	_ = o.Containers.RemoveContainer(ctx, sess.AgentName)
 	_ = o.Containers.StopContainer(ctx, sess.GitHubMCPName)
 	_ = o.Containers.RemoveContainer(ctx, sess.GitHubMCPName)
+	if sess.DockerMCPName != "" {
+		_ = o.Containers.StopContainer(ctx, sess.DockerMCPName)
+		_ = o.Containers.RemoveContainer(ctx, sess.DockerMCPName)
+	}
 	_ = o.Containers.StopContainer(ctx, sess.GatewayName)
 	_ = o.Containers.RemoveContainer(ctx, sess.GatewayName)
 	_ = o.Containers.RemoveNetwork(ctx, sess.NetworkName)
@@ -434,7 +475,7 @@ func (o *Orchestrator) Stop(ctx context.Context, projectDir string) error {
 	// Container names follow the pattern: forge-<type>-<project-id>-<session-id>
 	// where session-id is the last 8 hex characters.
 	sessionIDs := make(map[string]bool)
-	prefixes := []string{"forge-agent-", "forge-gateway-", "forge-github-mcp-"}
+	prefixes := []string{"forge-agent-", "forge-gateway-", "forge-github-mcp-", "forge-docker-mcp-"}
 	for _, c := range matched {
 		name := c.Name
 		for _, prefix := range prefixes {
@@ -603,7 +644,7 @@ func (o *Orchestrator) Build(ctx context.Context) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	images := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
+	images := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP, cfg.Images.DockerMCP}
 	if cfg.Kubernetes.Enabled {
 		images = append(images, cfg.Kubernetes.Image)
 	}

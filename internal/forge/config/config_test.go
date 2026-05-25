@@ -40,6 +40,7 @@ defaults:
 					Agent:     "custom-agent:v1",
 					Gateway:   "custom-gateway:v2",
 					GitHubMCP: DefaultGitHubMCPImage,
+					DockerMCP: DefaultDockerMCPImage,
 				},
 				Defaults: DefaultsConfig{
 					SkipPermissions: true,
@@ -60,6 +61,7 @@ defaults:
 					Agent:     DefaultAgentImage,
 					Gateway:   DefaultGatewayImage,
 					GitHubMCP: DefaultGitHubMCPImage,
+					DockerMCP: DefaultDockerMCPImage,
 				},
 				Defaults: DefaultsConfig{
 					SkipPermissions: true,
@@ -80,6 +82,7 @@ defaults:
 					Agent:     "my-agent:latest",
 					Gateway:   DefaultGatewayImage,
 					GitHubMCP: DefaultGitHubMCPImage,
+					DockerMCP: DefaultDockerMCPImage,
 				},
 				Kubernetes: KubernetesConfig{
 					Image: DefaultKubernetesMCPImage,
