@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,13 +39,34 @@ func TestNewGitHubAuth_FromHostsFile(t *testing.T) {
 	assert.Equal(t, "gh-token-from-file", auth.Token())
 }
 
+func TestNewGitHubAuth_FromGHCLI(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+
+	orig := runGHAuthToken
+	runGHAuthToken = func() (string, error) {
+		return "gho_from_cli", nil
+	}
+	t.Cleanup(func() { runGHAuthToken = orig })
+
+	auth, err := NewGitHubAuth()
+	require.NoError(t, err)
+	assert.Equal(t, "gho_from_cli", auth.Token())
+}
+
 func TestNewGitHubAuth_NoTokenAvailable(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("HOME", t.TempDir())
 
+	orig := runGHAuthToken
+	runGHAuthToken = func() (string, error) {
+		return "", fmt.Errorf("gh not installed")
+	}
+	t.Cleanup(func() { runGHAuthToken = orig })
+
 	_, err := NewGitHubAuth()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no GITHUB_TOKEN set")
+	assert.Contains(t, err.Error(), "could not resolve GitHub token")
 }
 
 func TestNewGitHubAuthFromToken(t *testing.T) {
@@ -52,25 +74,6 @@ func TestNewGitHubAuthFromToken(t *testing.T) {
 	assert.Equal(t, "explicit-token", auth.Token())
 }
 
-func TestGitHubAuth_Token_HostsFileReread(t *testing.T) {
-	homeDir := t.TempDir()
-	ghDir := filepath.Join(homeDir, ".config", "gh")
-	require.NoError(t, os.MkdirAll(ghDir, 0o755))
-	hostsPath := filepath.Join(ghDir, "hosts.yml")
-
-	require.NoError(t, os.WriteFile(hostsPath, []byte("github.com:\n  oauth_token: token-v1\n"), 0o644))
-
-	auth := &GitHubAuth{hostsPath: hostsPath}
-	assert.Equal(t, "token-v1", auth.Token())
-
-	require.NoError(t, os.WriteFile(hostsPath, []byte("github.com:\n  oauth_token: token-v2\n"), 0o644))
-	assert.Equal(t, "token-v2", auth.Token())
-}
-
-func TestGitHubAuth_Token_HostsFileMissing(t *testing.T) {
-	auth := &GitHubAuth{hostsPath: "/nonexistent/hosts.yml"}
-	assert.Equal(t, "", auth.Token())
-}
 
 func TestParseGHHostsFile(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {

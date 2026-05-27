@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,15 +42,36 @@ func TestNewGitHubAuth_GHHostsFile(t *testing.T) {
 	assert.Equal(t, "gho_from_hosts", auth.Token())
 }
 
+func TestNewGitHubAuth_GHAuthToken(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+
+	orig := runGHAuthToken
+	runGHAuthToken = func() (string, error) {
+		return "gho_from_cli", nil
+	}
+	t.Cleanup(func() { runGHAuthToken = orig })
+
+	auth, err := NewGitHubAuth()
+
+	require.NoError(t, err)
+	assert.Equal(t, "gho_from_cli", auth.Token())
+}
+
 func TestNewGitHubAuth_NoAuthAvailable(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
-	// Set HOME to a temp dir without gh config
 	t.Setenv("HOME", t.TempDir())
+
+	orig := runGHAuthToken
+	runGHAuthToken = func() (string, error) {
+		return "", fmt.Errorf("gh not installed")
+	}
+	t.Cleanup(func() { runGHAuthToken = orig })
 
 	_, err := NewGitHubAuth()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no GITHUB_TOKEN set")
+	assert.Contains(t, err.Error(), "could not resolve GitHub token")
 }
 
 func TestNewGitHubAuthFromToken(t *testing.T) {
@@ -132,48 +154,6 @@ gitlab.com:
 	}
 }
 
-func TestGitHubAuth_TokenRefresh(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "")
-
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	ghDir := filepath.Join(tmpHome, ".config", "gh")
-	require.NoError(t, os.MkdirAll(ghDir, 0o755))
-
-	hostsPath := filepath.Join(ghDir, "hosts.yml")
-	require.NoError(t, os.WriteFile(hostsPath, []byte("github.com:\n    oauth_token: old_token\n    user: testuser\n"), 0o600))
-
-	auth, err := NewGitHubAuth()
-	require.NoError(t, err)
-	assert.Equal(t, "old_token", auth.Token())
-
-	// Simulate gh CLI refreshing the token on the host
-	require.NoError(t, os.WriteFile(hostsPath, []byte("github.com:\n    oauth_token: new_refreshed_token\n    user: testuser\n"), 0o600))
-
-	assert.Equal(t, "new_refreshed_token", auth.Token())
-}
-
-func TestGitHubAuth_Token_HostsFileDeleted(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "")
-
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	ghDir := filepath.Join(tmpHome, ".config", "gh")
-	require.NoError(t, os.MkdirAll(ghDir, 0o755))
-
-	hostsPath := filepath.Join(ghDir, "hosts.yml")
-	require.NoError(t, os.WriteFile(hostsPath, []byte("github.com:\n    oauth_token: temp_token\n    user: testuser\n"), 0o600))
-
-	auth, err := NewGitHubAuth()
-	require.NoError(t, err)
-	assert.Equal(t, "temp_token", auth.Token())
-
-	require.NoError(t, os.Remove(hostsPath))
-
-	assert.Equal(t, "", auth.Token())
-}
 
 func TestParseGHHostsFile_FileNotFound(t *testing.T) {
 	_, err := parseGHHostsFile("/nonexistent/path/hosts.yml")
