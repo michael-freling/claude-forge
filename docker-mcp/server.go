@@ -3,13 +3,12 @@ package main
 import (
 	"net/http"
 
-	"github.com/docker/docker/client"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Server wraps the MCP server with Docker-specific state.
 type Server struct {
-	docker      *client.Client
+	docker      DockerClient
 	tracker     *Tracker
 	networkName string
 	mcpServer   *mcp.Server
@@ -17,7 +16,7 @@ type Server struct {
 }
 
 // NewServer creates a new MCP server with Docker tools registered.
-func NewServer(dockerClient *client.Client, tracker *Tracker, networkName string) *Server {
+func NewServer(dockerClient DockerClient, tracker *Tracker, networkName string) *Server {
 	s := &Server{
 		docker:      dockerClient,
 		tracker:     tracker,
