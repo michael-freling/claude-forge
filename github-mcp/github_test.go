@@ -74,7 +74,6 @@ func TestNewGitHubAuthFromToken(t *testing.T) {
 	assert.Equal(t, "explicit-token", auth.Token())
 }
 
-
 func TestParseGHHostsFile(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "hosts.yml")

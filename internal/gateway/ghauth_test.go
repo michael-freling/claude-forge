@@ -154,7 +154,6 @@ gitlab.com:
 	}
 }
 
-
 func TestParseGHHostsFile_FileNotFound(t *testing.T) {
 	_, err := parseGHHostsFile("/nonexistent/path/hosts.yml")
 
