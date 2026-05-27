@@ -1,0 +1,82 @@
+name: Docker MCP
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'docker-mcp/**'
+      - 'docker-mcp/Dockerfile'
+      - '.github/workflows/docker-mcp.yml'
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'docker-mcp/**'
+      - 'docker-mcp/Dockerfile'
+      - '.github/workflows/docker-mcp.yml'
+
+defaults:
+  run:
+    working-directory: docker-mcp
+
+jobs:
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+        cache-dependency-path: docker-mcp/go.sum
+
+    - name: Install golangci-lint
+      run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2
+
+    - name: golangci-lint
+      run: golangci-lint run ./...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+        cache-dependency-path: docker-mcp/go.sum
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Test
+      run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+    - name: Calculate coverage
+      run: go tool cover -func=coverage.txt
+
+    # NEVER lower this threshold. Coverage must stay at or above 90%.
+    - name: Check coverage threshold
+      run: |
+        grep -v "main.go" coverage.txt > coverage_filtered.txt
+        coverage=$(go tool cover -func=coverage_filtered.txt | grep total | awk '{print $3}' | sed 's/%//')
+        threshold=90.0
+        echo "Total coverage (excluding main.go): ${coverage}%"
+        echo "Threshold: ${threshold}%"
+        if (( $(echo "$coverage < $threshold" | bc -l) )); then
+          echo "Error: Coverage ${coverage}% is below threshold ${threshold}%"
+          exit 1
+        else
+          echo "Coverage ${coverage}% meets threshold ${threshold}%"
+        fi
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker image
+      working-directory: .
+      run: docker build -t docker-mcp-test docker-mcp/
