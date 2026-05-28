@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -510,24 +511,29 @@ func (o *Orchestrator) Status(ctx context.Context) ([]StatusEntry, error) {
 	return o.Containers.ListForgeContainers(ctx)
 }
 
-// readGHToken reads the GitHub OAuth token from gh CLI's hosts.yml file.
-// Returns empty string if the file doesn't exist or can't be read.
+// readGHToken reads the GitHub OAuth token, trying in order:
+// 1. oauth_token from gh CLI's hosts.yml (legacy storage)
+// 2. `gh auth token` command (keyring-based storage, gh 2.40.0+)
+// Returns empty string if neither method works.
 func readGHToken(ghConfigDir string) string {
 	hostsPath := filepath.Join(ghConfigDir, "hosts.yml")
 	data, err := os.ReadFile(hostsPath)
-	if err != nil {
-		return ""
+	if err == nil {
+		var hosts map[string]struct {
+			OAuthToken string `yaml:"oauth_token"`
+		}
+		if err := yaml.Unmarshal(data, &hosts); err == nil {
+			if gh, ok := hosts["github.com"]; ok && gh.OAuthToken != "" {
+				return gh.OAuthToken
+			}
+		}
 	}
 
-	var hosts map[string]struct {
-		OAuthToken string `yaml:"oauth_token"`
-	}
-	if err := yaml.Unmarshal(data, &hosts); err != nil {
-		return ""
-	}
-
-	if gh, ok := hosts["github.com"]; ok {
-		return gh.OAuthToken
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err == nil {
+		if token := strings.TrimSpace(string(out)); token != "" {
+			return token
+		}
 	}
 	return ""
 }

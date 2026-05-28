@@ -1416,13 +1416,15 @@ func TestReadGHToken(t *testing.T) {
 		assert.Equal(t, "gho_test_token_123", token)
 	})
 
-	t.Run("file does not exist", func(t *testing.T) {
+	t.Run("file does not exist no gh cli", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
 		dir := t.TempDir()
 		token := readGHToken(dir)
 		assert.Empty(t, token)
 	})
 
-	t.Run("invalid yaml", func(t *testing.T) {
+	t.Run("invalid yaml no gh cli", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(":::invalid"), 0o644))
 
@@ -1430,7 +1432,8 @@ func TestReadGHToken(t *testing.T) {
 		assert.Empty(t, token)
 	})
 
-	t.Run("no github.com entry", func(t *testing.T) {
+	t.Run("no github.com entry no gh cli", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
 		dir := t.TempDir()
 		hostsContent := `gitlab.com:
   oauth_token: glpat_something
@@ -1439,6 +1442,23 @@ func TestReadGHToken(t *testing.T) {
 
 		token := readGHToken(dir)
 		assert.Empty(t, token)
+	})
+
+	t.Run("empty oauth_token falls back to gh auth token", func(t *testing.T) {
+		dir := t.TempDir()
+		hostsContent := `github.com:
+  user: testuser
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsContent), 0o644))
+
+		// Create a fake gh script that outputs a token
+		fakeGH := t.TempDir()
+		script := filepath.Join(fakeGH, "gh")
+		require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho gho_from_keyring\n"), 0o755))
+		t.Setenv("PATH", fakeGH)
+
+		token := readGHToken(dir)
+		assert.Equal(t, "gho_from_keyring", token)
 	})
 }
 
