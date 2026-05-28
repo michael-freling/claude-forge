@@ -306,8 +306,8 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 	}
 
 	require.Error(t, err, "expected error when no GitHub auth is available")
-	assert.Contains(t, outputStr, "gateway container failed to start",
-		"expected error message about gateway failure")
+	assert.Contains(t, outputStr, "no GitHub token found",
+		"expected error message about missing GitHub token")
 
 	// Verify all containers are cleaned up
 	dockerClient, err := container.NewClient()
