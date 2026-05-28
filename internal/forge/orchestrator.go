@@ -19,7 +19,6 @@ import (
 	"github.com/michael-freling/claude-code-tools/internal/forge/kube"
 	"github.com/michael-freling/claude-code-tools/internal/forge/project"
 	"github.com/michael-freling/claude-code-tools/internal/forge/session"
-	"gopkg.in/yaml.v3"
 )
 
 // Orchestrator manages the lifecycle of claude-forge sessions.
@@ -212,8 +211,11 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	gatewayEnv := map[string]string{}
 	if ghToken := os.Getenv("GITHUB_TOKEN"); ghToken != "" {
 		gatewayEnv["GITHUB_TOKEN"] = ghToken
-	} else if token := readGHToken(ghConfigDir); token != "" {
+	} else if token := readGHToken(); token != "" {
 		gatewayEnv["GITHUB_TOKEN"] = token
+	} else {
+		o.Cleanup(ctx, sess)
+		return nil, fmt.Errorf("no GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'")
 	}
 	gatewayID, err := o.Containers.StartGateway(ctx, container.GatewayOptions{
 		Name:        sess.GatewayName,
@@ -511,31 +513,13 @@ func (o *Orchestrator) Status(ctx context.Context) ([]StatusEntry, error) {
 	return o.Containers.ListForgeContainers(ctx)
 }
 
-// readGHToken reads the GitHub OAuth token, trying in order:
-// 1. oauth_token from gh CLI's hosts.yml (legacy storage)
-// 2. `gh auth token` command (keyring-based storage, gh 2.40.0+)
-// Returns empty string if neither method works.
-func readGHToken(ghConfigDir string) string {
-	hostsPath := filepath.Join(ghConfigDir, "hosts.yml")
-	data, err := os.ReadFile(hostsPath)
-	if err == nil {
-		var hosts map[string]struct {
-			OAuthToken string `yaml:"oauth_token"`
-		}
-		if err := yaml.Unmarshal(data, &hosts); err == nil {
-			if gh, ok := hosts["github.com"]; ok && gh.OAuthToken != "" {
-				return gh.OAuthToken
-			}
-		}
-	}
-
+// readGHToken reads the GitHub token via `gh auth token`.
+func readGHToken() string {
 	out, err := exec.Command("gh", "auth", "token").Output()
-	if err == nil {
-		if token := strings.TrimSpace(string(out)); token != "" {
-			return token
-		}
+	if err != nil {
+		return ""
 	}
-	return ""
+	return strings.TrimSpace(string(out))
 }
 
 // startKubernetesMCP ensures the shared Kubernetes MCP service is running.

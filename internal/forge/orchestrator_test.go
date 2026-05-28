@@ -44,6 +44,8 @@ func setupOrchestrator(t *testing.T, mock *MockContainerManager) (*Orchestrator,
 	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".config", "claude-forge"), 0o755))
 
+	t.Setenv("GITHUB_TOKEN", "ghp_test_token")
+
 	orch := NewOrchestrator(mock, homeDir)
 	orch.Log = func(format string, args ...any) {} // silent in tests
 	return orch, homeDir
@@ -930,27 +932,26 @@ func TestStart_ExtraMounts_NonexistentSource(t *testing.T) {
 	assert.Contains(t, err.Error(), "mount source path does not exist")
 }
 
-func TestStart_GHTokenFromHostsFile(t *testing.T) {
+func TestStart_GHTokenFromGHCLI(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	mockCM := NewMockContainerManager(ctrl)
-	orch, homeDir := setupOrchestrator(t, mockCM)
+	orch, _ := setupOrchestrator(t, mockCM)
 
 	projectDir := setupGitProject(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 	t.Setenv("GITHUB_TOKEN", "") // explicitly unset
 
-	// Write gh hosts.yml
-	ghConfigDir := filepath.Join(homeDir, ".config", "gh")
-	require.NoError(t, os.MkdirAll(ghConfigDir, 0o755))
-	hostsContent := "github.com:\n  oauth_token: gho_from_hosts_file\n  user: testuser\n"
-	require.NoError(t, os.WriteFile(filepath.Join(ghConfigDir, "hosts.yml"), []byte(hostsContent), 0o644))
+	// Create a fake gh that returns a token
+	fakeGHDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeGHDir, "gh"), []byte("#!/bin/sh\necho gho_from_gh_cli\n"), 0o755))
+	t.Setenv("PATH", fakeGHDir+":"+os.Getenv("PATH"))
 
 	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
 	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
 	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.GatewayOptions) (string, error) {
-			assert.Equal(t, "gho_from_hosts_file", opts.Env["GITHUB_TOKEN"])
+			assert.Equal(t, "gho_from_gh_cli", opts.Env["GITHUB_TOKEN"])
 			return "gw-id", nil
 		})
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
@@ -967,6 +968,39 @@ func TestStart_GHTokenFromHostsFile(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.NotEmpty(t, sess.AgentName)
+}
+
+func TestStart_NoGitHubToken(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	// Create a fake gh that fails, but keep git available
+	fakeGHDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeGHDir, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	t.Setenv("PATH", fakeGHDir+":"+os.Getenv("PATH"))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	// Cleanup stops/removes all containers and network even if none were started
+	mockCM.EXPECT().StopContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockCM.EXPECT().RemoveNetwork(gomock.Any(), gomock.Any()).Return(nil)
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		SkipPermissions: true,
+		ProjectDir:      projectDir,
+		UID:             1000,
+		GID:             1000,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GitHub token found")
 }
 
 func TestStart_WithKubernetesEnabled(t *testing.T) {
@@ -1404,61 +1438,29 @@ func TestStart_FailsOnGitHubMCPReady(t *testing.T) {
 }
 
 func TestReadGHToken(t *testing.T) {
-	t.Run("valid hosts.yml", func(t *testing.T) {
-		dir := t.TempDir()
-		hostsContent := `github.com:
-  oauth_token: gho_test_token_123
-  user: testuser
-`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsContent), 0o644))
+	t.Run("gh auth token succeeds", func(t *testing.T) {
+		fakeGH := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(fakeGH, "gh"), []byte("#!/bin/sh\necho gho_test_token_123\n"), 0o755))
+		t.Setenv("PATH", fakeGH)
 
-		token := readGHToken(dir)
+		token := readGHToken()
 		assert.Equal(t, "gho_test_token_123", token)
 	})
 
-	t.Run("file does not exist no gh cli", func(t *testing.T) {
+	t.Run("gh not installed", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		dir := t.TempDir()
-		token := readGHToken(dir)
+
+		token := readGHToken()
 		assert.Empty(t, token)
 	})
 
-	t.Run("invalid yaml no gh cli", func(t *testing.T) {
-		t.Setenv("PATH", t.TempDir())
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(":::invalid"), 0o644))
-
-		token := readGHToken(dir)
-		assert.Empty(t, token)
-	})
-
-	t.Run("no github.com entry no gh cli", func(t *testing.T) {
-		t.Setenv("PATH", t.TempDir())
-		dir := t.TempDir()
-		hostsContent := `gitlab.com:
-  oauth_token: glpat_something
-`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsContent), 0o644))
-
-		token := readGHToken(dir)
-		assert.Empty(t, token)
-	})
-
-	t.Run("empty oauth_token falls back to gh auth token", func(t *testing.T) {
-		dir := t.TempDir()
-		hostsContent := `github.com:
-  user: testuser
-`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsContent), 0o644))
-
-		// Create a fake gh script that outputs a token
+	t.Run("gh auth token fails", func(t *testing.T) {
 		fakeGH := t.TempDir()
-		script := filepath.Join(fakeGH, "gh")
-		require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho gho_from_keyring\n"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(fakeGH, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755))
 		t.Setenv("PATH", fakeGH)
 
-		token := readGHToken(dir)
-		assert.Equal(t, "gho_from_keyring", token)
+		token := readGHToken()
+		assert.Empty(t, token)
 	})
 }
 
