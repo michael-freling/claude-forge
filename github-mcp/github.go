@@ -6,58 +6,73 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 // GitHubAuth handles GitHub authentication.
-// When backed by a hosts file, Token() re-reads the file on each call so the
-// server picks up refreshed tokens without requiring a restart.
 type GitHubAuth struct {
-	staticToken string
-	hostsPath   string
+	token string
 }
+
+// runGHAuthToken executes `gh auth token` to retrieve the token.
+// It is a variable so tests can replace it.
+var runGHAuthToken = defaultRunGHAuthToken
 
 // NewGitHubAuth creates auth by trying methods in order:
 //  1. GITHUB_TOKEN env var
-//  2. Read PAT from ~/.config/gh/hosts.yml
-//  3. Error
+//  2. Read PAT from ~/.config/gh/hosts.yml (legacy gh installs)
+//  3. Run `gh auth token` (works with keyring-backed installs)
+//  4. Error
 func NewGitHubAuth() (*GitHubAuth, error) {
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		return &GitHubAuth{staticToken: token}, nil
+		return &GitHubAuth{token: token}, nil
 	}
 
 	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("no GITHUB_TOKEN set and failed to get home directory: %w", err)
+	if err == nil {
+		hostsPath := filepath.Join(homeDir, ".config", "gh", "hosts.yml")
+		if token, err := parseGHHostsFile(hostsPath); err == nil {
+			return &GitHubAuth{token: token}, nil
+		}
 	}
 
-	hostsPath := filepath.Join(homeDir, ".config", "gh", "hosts.yml")
-	// Validate that the file is readable and contains a token at startup.
-	if _, err := parseGHHostsFile(hostsPath); err != nil {
-		return nil, fmt.Errorf("no GITHUB_TOKEN set and failed to read gh hosts file: %w", err)
+	if token, err := runGHAuthToken(); err == nil {
+		return &GitHubAuth{token: token}, nil
 	}
 
-	return &GitHubAuth{hostsPath: hostsPath}, nil
+	return nil, fmt.Errorf("could not resolve GitHub token: set GITHUB_TOKEN, configure gh CLI (gh auth login), or add oauth_token to ~/.config/gh/hosts.yml")
 }
 
 // NewGitHubAuthFromToken creates auth from an explicit token value.
 func NewGitHubAuthFromToken(token string) *GitHubAuth {
-	return &GitHubAuth{staticToken: token}
+	return &GitHubAuth{token: token}
 }
 
-// Token returns the GitHub token. When backed by a hosts file, it re-reads the
-// file to pick up refreshed tokens.
+// Token returns the GitHub token.
 func (a *GitHubAuth) Token() string {
-	if a.staticToken != "" {
-		return a.staticToken
-	}
-	token, err := parseGHHostsFile(a.hostsPath)
+	return a.token
+}
+
+func defaultRunGHAuthToken() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", "github.com").Output()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("gh auth token failed: %w", err)
 	}
-	return token
+
+	token := strings.TrimSpace(string(out))
+	if token == "" {
+		return "", fmt.Errorf("gh auth token returned empty output")
+	}
+
+	return token, nil
 }
 
 // ghHostsFile represents the structure of ~/.config/gh/hosts.yml.
