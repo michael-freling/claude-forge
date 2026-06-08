@@ -55,8 +55,21 @@ func metadataPath(sessionDir, sessionID string) string {
 	return filepath.Join(sessionDir, sessionID+".json")
 }
 
+// ValidateName checks that a session name is safe to store and display. Names
+// must not contain tab or newline characters, which would corrupt the
+// tab-separated `resume --list` output.
+func ValidateName(name string) error {
+	if strings.ContainsAny(name, "\t\n\r") {
+		return fmt.Errorf("session name must not contain tab or newline characters")
+	}
+	return nil
+}
+
 // WriteMetadata writes the sidecar metadata file for a session.
 func WriteMetadata(sessionDir, sessionID string, meta Metadata) error {
+	if err := ValidateName(meta.Name); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal session metadata: %w", err)

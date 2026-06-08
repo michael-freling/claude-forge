@@ -136,6 +136,18 @@ func TestRun_FromCredentialsSuccess(t *testing.T) {
 	assert.Contains(t, out, "Set CLAUDE_CODE_OAUTH_TOKEN")
 }
 
+func TestRun_OAuthTokenWithCredentialsExplicitlyDisabled(t *testing.T) {
+	// Explicitly disabling credentials while supplying a token is valid.
+	f := &fakeUpdater{masked: "sk-ant-o...abcd"}
+	withFakeUpdater(t, f)
+
+	_, err := runCmd("--from-credentials=false", "--oauth-token", "sk-ant-oat-token")
+	require.NoError(t, err)
+	assert.True(t, f.updateCalled)
+	assert.False(t, f.fromCredsCall)
+	assert.Equal(t, "sk-ant-oat-token", f.gotToken)
+}
+
 func TestRun_UpdaterError(t *testing.T) {
 	f := &fakeUpdater{err: errors.New("gh boom")}
 	withFakeUpdater(t, f)

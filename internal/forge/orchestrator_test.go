@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/michael-freling/claude-code-tools/internal/forge/config"
 	"github.com/michael-freling/claude-code-tools/internal/forge/container"
+	"github.com/michael-freling/claude-code-tools/internal/forge/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -553,7 +555,24 @@ func TestStart_WithName_PinsSessionIDAndWritesSidecar(t *testing.T) {
 	sidecar := filepath.Join(homeDir, ".claude-forge", sess.ProjectID, capturedSessionID+".json")
 	data, err := os.ReadFile(sidecar)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), `"name": "claude"`)
+	var got session.Metadata
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "claude", got.Name)
+}
+
+func TestStart_RejectsInvalidName(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	// No container methods should be called: validation fails first.
+	_, err := orch.Start(context.Background(), StartOptions{
+		Name:       "bad\tname",
+		ProjectDir: setupGitProject(t),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tab or newline")
 }
 
 func TestStart_Resume_WithName_NoSessionID(t *testing.T) {

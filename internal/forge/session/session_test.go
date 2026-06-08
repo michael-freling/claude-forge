@@ -63,6 +63,24 @@ func TestWriteMetadata_Error(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestValidateName(t *testing.T) {
+	require.NoError(t, ValidateName(""))
+	require.NoError(t, ValidateName("my-session"))
+	require.NoError(t, ValidateName("name with spaces"))
+
+	for _, bad := range []string{"a\tb", "a\nb", "a\rb"} {
+		err := ValidateName(bad)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "tab or newline")
+	}
+}
+
+func TestWriteMetadata_RejectsInvalidName(t *testing.T) {
+	err := WriteMetadata(t.TempDir(), "sess-1", Metadata{Name: "bad\tname"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tab or newline")
+}
+
 func TestReadMetadata_MissingOrInvalid(t *testing.T) {
 	tmpDir := t.TempDir()
 

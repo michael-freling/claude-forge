@@ -72,6 +72,13 @@ type Session struct {
 // resolves credentials, creates containers, and returns the session info.
 // The caller is responsible for attaching to the agent and calling Cleanup.
 func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, error) {
+	// Fail fast on an invalid session name before doing any container work.
+	if opts.Name != "" {
+		if err := session.ValidateName(opts.Name); err != nil {
+			return nil, err
+		}
+	}
+
 	// Resolve project directory
 	projectDir := opts.ProjectDir
 	if projectDir == "" {
@@ -301,6 +308,8 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	} else if opts.Continue {
 		agentCmd = append(agentCmd, "--continue")
 	} else {
+		// --session-id and --name are Claude Code CLI flags; re-verify they
+		// still exist against `claude --help` when bumping the agent image.
 		agentCmd = append(agentCmd, "--session-id", claudeSessionID)
 	}
 	if opts.Name != "" {
@@ -308,14 +317,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 	if opts.Prompt != "" {
 		agentCmd = append(agentCmd, "-p", opts.Prompt)
-	}
-
-	// Persist the session name in a sidecar file so `resume --list` and
-	// `resume` can surface and reuse it later.
-	if fresh && opts.Name != "" {
-		if err := session.WriteMetadata(sessionDir, claudeSessionID, session.Metadata{Name: opts.Name}); err != nil {
-			return nil, fmt.Errorf("failed to write session metadata: %w", err)
-		}
 	}
 
 	// Build environment variables
@@ -407,6 +408,16 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start agent: %w", err)
+	}
+
+	// Persist the session name in a sidecar file so `resume --list` and
+	// `resume` can surface and reuse it later. Written only after the agent
+	// starts so a failed start leaves no orphaned sidecar. A write failure is
+	// non-fatal: the session runs, the name just isn't recorded.
+	if fresh && opts.Name != "" {
+		if err := session.WriteMetadata(sessionDir, claudeSessionID, session.Metadata{Name: opts.Name}); err != nil {
+			o.Log("Warning: failed to write session metadata: %v", err)
+		}
 	}
 
 	return sess, nil
