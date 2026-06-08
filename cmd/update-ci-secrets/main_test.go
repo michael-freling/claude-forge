@@ -64,11 +64,21 @@ func TestRun_MutuallyExclusiveFlags(t *testing.T) {
 	assert.ErrorContains(t, err, "mutually exclusive")
 }
 
-func TestRun_DefaultRepoFlag(t *testing.T) {
+func TestRun_RepoFlagDefaultsEmpty(t *testing.T) {
 	cmd := newRootCmd()
 	flag := cmd.Flags().Lookup("repo")
 	assert.NotNil(t, flag)
-	assert.Equal(t, "michael-freling/claude-code-tools", flag.DefValue)
+	assert.Equal(t, "", flag.DefValue)
+}
+
+func TestRun_NoRepoUsesCurrentDirectory(t *testing.T) {
+	f := &fakeUpdater{masked: "sk-ant-o...abcd"}
+	gotRepo := withFakeUpdater(t, f)
+
+	out, err := runCmd("--oauth-token", "sk-ant-oat-token")
+	require.NoError(t, err)
+	assert.Equal(t, "", *gotRepo)
+	assert.Contains(t, out, "on the current repository")
 }
 
 func TestRun_OAuthTokenSuccess(t *testing.T) {

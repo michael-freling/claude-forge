@@ -32,8 +32,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # The OAuth token above is provisioned via cmd/update-ci-secrets
-          # (or scripts/update-ci-secrets.sh).
+          # The OAuth token above is provisioned via cmd/update-ci-secrets.
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in
             ${{ github.repository }}.

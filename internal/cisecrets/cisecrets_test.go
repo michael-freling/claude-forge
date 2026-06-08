@@ -11,9 +11,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewUpdater_DefaultRepo(t *testing.T) {
-	assert.Equal(t, DefaultRepo, NewUpdater("").Repo)
+func TestNewUpdater_StoresRepoVerbatim(t *testing.T) {
+	assert.Equal(t, "", NewUpdater("").Repo)
 	assert.Equal(t, "owner/custom", NewUpdater("owner/custom").Repo)
+}
+
+func TestSecretSetArgs(t *testing.T) {
+	assert.Equal(t, []string{"secret", "set", SecretName}, secretSetArgs("", SecretName))
+	assert.Equal(t, []string{"secret", "set", SecretName, "--repo", "owner/repo"}, secretSetArgs("owner/repo", SecretName))
+}
+
+func TestRepoLabel(t *testing.T) {
+	assert.Equal(t, "the current repository", (&Updater{}).repoLabel())
+	assert.Equal(t, "owner/repo", (&Updater{Repo: "owner/repo"}).repoLabel())
 }
 
 func TestMask(t *testing.T) {
@@ -24,7 +34,7 @@ func TestMask(t *testing.T) {
 
 func TestUpdate(t *testing.T) {
 	t.Run("empty token", func(t *testing.T) {
-		u := &Updater{Repo: DefaultRepo, setter: func(context.Context, string, string, string) error {
+		u := &Updater{Repo: "owner/repo", setter: func(context.Context, string, string, string) error {
 			t.Fatal("setter must not run for empty token")
 			return nil
 		}}
@@ -67,7 +77,7 @@ func TestUpdateFromCredentials(t *testing.T) {
 		writeCreds(t, dir, `{"claudeAiOauth":{"accessToken":"sk-ant-oat-abcdefgh1234"}}`)
 
 		var gotValue string
-		u := &Updater{Repo: DefaultRepo, setter: func(_ context.Context, _, _, value string) error {
+		u := &Updater{Repo: "owner/repo", setter: func(_ context.Context, _, _, value string) error {
 			gotValue = value
 			return nil
 		}}
@@ -79,7 +89,7 @@ func TestUpdateFromCredentials(t *testing.T) {
 
 	t.Run("api key rejected", func(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api-key")
-		u := &Updater{Repo: DefaultRepo, setter: func(context.Context, string, string, string) error {
+		u := &Updater{Repo: "owner/repo", setter: func(context.Context, string, string, string) error {
 			t.Fatal("setter must not run for api_key credential")
 			return nil
 		}}
@@ -88,7 +98,7 @@ func TestUpdateFromCredentials(t *testing.T) {
 	})
 
 	t.Run("resolve error", func(t *testing.T) {
-		u := &Updater{Repo: DefaultRepo, setter: func(context.Context, string, string, string) error { return nil }}
+		u := &Updater{Repo: "owner/repo", setter: func(context.Context, string, string, string) error { return nil }}
 		_, err := u.UpdateFromCredentials(context.Background(), filepath.Join(t.TempDir(), "missing"))
 		assert.Error(t, err)
 	})
@@ -97,7 +107,7 @@ func TestUpdateFromCredentials(t *testing.T) {
 func TestGhSecretSet_CommandError(t *testing.T) {
 	// Point PATH at an empty dir so gh cannot be found, exercising the error path.
 	t.Setenv("PATH", t.TempDir())
-	err := ghSecretSet(context.Background(), DefaultRepo, SecretName, "value")
+	err := ghSecretSet(context.Background(), "owner/repo", SecretName, "value")
 	assert.Error(t, err)
 }
 

@@ -11,9 +11,6 @@ import (
 	"github.com/michael-freling/claude-code-tools/internal/forge/auth"
 )
 
-// DefaultRepo is the GitHub repository whose Actions secrets are updated.
-const DefaultRepo = "michael-freling/claude-code-tools"
-
 // SecretName is the GitHub Actions secret holding the Claude Code OAuth token.
 const SecretName = "CLAUDE_CODE_OAUTH_TOKEN"
 
@@ -22,17 +19,24 @@ type secretSetter func(ctx context.Context, repo, name, value string) error
 
 // Updater sets the Claude Code OAuth token secret on a GitHub repository.
 type Updater struct {
+	// Repo is the target repository (owner/name). When empty, gh resolves the
+	// repository from the current working directory's git remote.
 	Repo   string
 	setter secretSetter
 }
 
 // NewUpdater returns an Updater that uses the gh CLI to set secrets. An empty
-// repo falls back to DefaultRepo.
+// repo lets gh resolve the repository from the current directory.
 func NewUpdater(repo string) *Updater {
-	if repo == "" {
-		repo = DefaultRepo
-	}
 	return &Updater{Repo: repo, setter: ghSecretSet}
+}
+
+// repoLabel describes the target repository for log/error messages.
+func (u *Updater) repoLabel() string {
+	if u.Repo == "" {
+		return "the current repository"
+	}
+	return u.Repo
 }
 
 // Update sets SecretName to token and returns the masked value that was set.
@@ -42,7 +46,7 @@ func (u *Updater) Update(ctx context.Context, token string) (string, error) {
 		return "", fmt.Errorf("empty token")
 	}
 	if err := u.setter(ctx, u.Repo, SecretName, token); err != nil {
-		return "", fmt.Errorf("failed to set %s on %s: %w", SecretName, u.Repo, err)
+		return "", fmt.Errorf("failed to set %s on %s: %w", SecretName, u.repoLabel(), err)
 	}
 	return mask(token), nil
 }
@@ -70,10 +74,20 @@ func mask(token string) string {
 	return token[:8] + "..." + token[len(token)-4:]
 }
 
+// secretSetArgs builds the gh argument list. An empty repo omits --repo so gh
+// resolves the repository from the current directory.
+func secretSetArgs(repo, name string) []string {
+	args := []string{"secret", "set", name}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
+	return args
+}
+
 // ghSecretSet sets a repository secret via the gh CLI, passing the value on
 // stdin so it never appears in the process argument list.
 func ghSecretSet(ctx context.Context, repo, name, value string) error {
-	cmd := exec.CommandContext(ctx, "gh", "secret", "set", name, "--repo", repo)
+	cmd := exec.CommandContext(ctx, "gh", secretSetArgs(repo, name)...)
 	cmd.Stdin = strings.NewReader(value)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

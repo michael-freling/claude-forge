@@ -45,7 +45,9 @@ can authenticate.
 The token comes from --oauth-token, or is resolved from the local Claude Code
 credentials (~/.claude/.credentials.json) when --from-credentials is set.
 
-Requires the gh CLI to be installed and authenticated with repo admin access.`,
+The secret is set on the repository in the current directory unless --repo is
+given. Requires the gh CLI to be installed and authenticated with repo admin
+access.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if oauthToken == "" && !fromCreds {
@@ -55,9 +57,6 @@ Requires the gh CLI to be installed and authenticated with repo admin access.`,
 				return fmt.Errorf("--oauth-token and --from-credentials are mutually exclusive")
 			}
 
-			if repo == "" {
-				repo = cisecrets.DefaultRepo
-			}
 			u := newUpdater(repo)
 			ctx := cmd.Context()
 
@@ -78,12 +77,16 @@ Requires the gh CLI to be installed and authenticated with repo admin access.`,
 				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Set %s (%s) on %s\n", cisecrets.SecretName, masked, repo)
+			target := repo
+			if target == "" {
+				target = "the current repository"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Set %s (%s) on %s\n", cisecrets.SecretName, masked, target)
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&repo, "repo", cisecrets.DefaultRepo, "GitHub repository (owner/name)")
+	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repository (owner/name); defaults to the repository in the current directory")
 	cmd.Flags().StringVar(&oauthToken, "oauth-token", "", "OAuth token to set directly")
 	cmd.Flags().BoolVar(&fromCreds, "from-credentials", false, "Resolve token from local Claude Code credentials")
 
