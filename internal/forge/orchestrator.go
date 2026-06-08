@@ -55,6 +55,7 @@ type StartOptions struct {
 	GID                int      // host user GID
 	Mounts             []string // additional host:container bind mounts
 	ResumeWorktreeName string   // worktree name when resuming a worktree session
+	Name               string   // human-readable session name (passed to Claude Code via --name)
 }
 
 // Session holds information about a running session.
@@ -271,6 +272,17 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to register MCP servers in .claude.json: %w", err)
 	}
 
+	// For fresh sessions, pin the Claude session ID so the resulting JSONL and
+	// the sidecar metadata file share a known identifier.
+	fresh := opts.ResumeID == "" && !opts.Continue
+	var claudeSessionID string
+	if fresh {
+		claudeSessionID, err = session.GenerateUUID()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Build agent command args
 	var agentCmd []string
 	if opts.SkipPermissions {
@@ -288,9 +300,22 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		}
 	} else if opts.Continue {
 		agentCmd = append(agentCmd, "--continue")
+	} else {
+		agentCmd = append(agentCmd, "--session-id", claudeSessionID)
+	}
+	if opts.Name != "" {
+		agentCmd = append(agentCmd, "--name", opts.Name)
 	}
 	if opts.Prompt != "" {
 		agentCmd = append(agentCmd, "-p", opts.Prompt)
+	}
+
+	// Persist the session name in a sidecar file so `resume --list` and
+	// `resume` can surface and reuse it later.
+	if fresh && opts.Name != "" {
+		if err := session.WriteMetadata(sessionDir, claudeSessionID, session.Metadata{Name: opts.Name}); err != nil {
+			return nil, fmt.Errorf("failed to write session metadata: %w", err)
+		}
 	}
 
 	// Build environment variables

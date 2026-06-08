@@ -67,6 +67,25 @@ func TestNewStartCmd(t *testing.T) {
 	require.NotNil(t, promptFlag)
 	assert.Equal(t, "", promptFlag.DefValue)
 	assert.Equal(t, "p", promptFlag.Shorthand)
+
+	nameFlag := cmd.Flags().Lookup("name")
+	require.NotNil(t, nameFlag)
+	assert.Equal(t, "n", nameFlag.Shorthand)
+}
+
+func TestStartCmd_RequiresName(t *testing.T) {
+	cmd := newStartCmd()
+	cmd.SetArgs([]string{})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name")
+}
+
+func TestResumeName(t *testing.T) {
+	assert.Equal(t, "override", resumeName("override", "stored"))
+	assert.Equal(t, "stored", resumeName("", "stored"))
+	assert.Equal(t, "", resumeName("", ""))
 }
 
 func TestNewResumeCmd(t *testing.T) {
@@ -420,6 +439,10 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	sessionFile := filepath.Join(sessionDir, "abc12345.jsonl")
 	writeSessionFile(t, sessionFile, "2025-01-15T10:30:01Z", "Hello Claude")
 
+	// Write a sidecar metadata file so the NAME column is populated.
+	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "abc12345.json"),
+		[]byte(`{"name":"my-session"}`), 0o644))
+
 	cmd := newResumeCmd()
 	cmd.SetArgs([]string{"--list"})
 
@@ -428,8 +451,10 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, output, "SESSION ID")
+	assert.Contains(t, output, "NAME")
 	assert.Contains(t, output, "WORKTREE")
 	assert.Contains(t, output, "abc12345")
+	assert.Contains(t, output, "my-session")
 	assert.Contains(t, output, "Hello Claude")
 }
 

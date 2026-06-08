@@ -509,6 +509,86 @@ func TestStart_CommandArgs(t *testing.T) {
 	assert.NotNil(t, sess)
 }
 
+func TestStart_WithName_PinsSessionIDAndWritesSidecar(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	var capturedSessionID string
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Contains(t, opts.Cmd, "--session-id")
+			assert.Contains(t, opts.Cmd, "--name")
+			assert.Contains(t, opts.Cmd, "claude")
+			assert.NotContains(t, opts.Cmd, "--resume")
+			assert.NotContains(t, opts.Cmd, "--continue")
+			// Capture the value following --session-id.
+			for i, a := range opts.Cmd {
+				if a == "--session-id" && i+1 < len(opts.Cmd) {
+					capturedSessionID = opts.Cmd[i+1]
+				}
+			}
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		SkipPermissions: true,
+		Name:            "claude",
+		ProjectDir:      projectDir,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+
+	require.NotEmpty(t, capturedSessionID)
+	sidecar := filepath.Join(homeDir, ".claude-forge", sess.ProjectID, capturedSessionID+".json")
+	data, err := os.ReadFile(sidecar)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"name": "claude"`)
+}
+
+func TestStart_Resume_WithName_NoSessionID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Contains(t, opts.Cmd, "--resume")
+			assert.Contains(t, opts.Cmd, "--name")
+			assert.Contains(t, opts.Cmd, "claude")
+			assert.NotContains(t, opts.Cmd, "--session-id")
+			return "agent-id", nil
+		})
+
+	_, err := orch.Start(context.Background(), StartOptions{
+		ResumeID:     "abc12345",
+		ResumeSubdir: "-work",
+		Name:         "claude",
+		ProjectDir:   projectDir,
+	})
+	require.NoError(t, err)
+}
+
 func TestStart_ResumeSession(t *testing.T) {
 	ctrl := gomock.NewController(t)
 

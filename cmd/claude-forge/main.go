@@ -83,7 +83,7 @@ func newOrchestrator() (*forge.Orchestrator, func(), error) {
 }
 
 // startSession runs the common logic for the start and resume commands.
-func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName string) error {
+func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName, name string) error {
 	orch, cleanup, err := createOrchestrator()
 	if err != nil {
 		return err
@@ -107,6 +107,7 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 		GID:                hostGID,
 		Mounts:             mounts,
 		ResumeWorktreeName: resumeWorktreeName,
+		Name:               name,
 	})
 	if err != nil {
 		return err
@@ -259,6 +260,7 @@ func newStartCmd() *cobra.Command {
 		noSkipPermissions bool
 		prompt            string
 		mounts            []string
+		name              string
 	)
 
 	cmd := &cobra.Command{
@@ -266,10 +268,10 @@ func newStartCmd() *cobra.Command {
 		Short: "Start a new Claude Code session in a Docker container",
 		Long: `Start launches a new Claude Code agent and gateway in Docker containers.
 By default, --dangerously-skip-permissions is enabled. Use --no-skip-permissions
-to disable it.`,
+to disable it. A session --name is required and is passed to Claude Code.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "")
+			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "", name)
 		},
 	}
 
@@ -277,6 +279,8 @@ to disable it.`,
 	cmd.Flags().BoolVar(&noSkipPermissions, "no-skip-permissions", false, "Disable --dangerously-skip-permissions")
 	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Initial prompt to send to Claude Code")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
+	cmd.Flags().StringVarP(&name, "name", "n", "", "Human-readable name for this session (required)")
+	_ = cmd.MarkFlagRequired("name")
 
 	return cmd
 }
@@ -286,6 +290,7 @@ func newResumeCmd() *cobra.Command {
 	var (
 		list   bool
 		mounts []string
+		name   string
 	)
 
 	cmd := &cobra.Command{
@@ -293,7 +298,7 @@ func newResumeCmd() *cobra.Command {
 		Short: "Resume a past Claude Code session",
 		Long: `Resume a previous session by ID, or use --list to see available sessions.
 If no session ID is given and --list is not set, the most recent session
-is continued.`,
+is continued. The session name is reused unless overridden with --name.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -323,13 +328,13 @@ is continued.`,
 				}
 
 				w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(w, "SESSION ID\tCREATED\tWORKTREE\tFIRST MESSAGE")
+				fmt.Fprintln(w, "SESSION ID\tNAME\tCREATED\tWORKTREE\tFIRST MESSAGE")
 				for _, s := range sessions {
 					firstMsg := s.FirstMsg
 					if len(firstMsg) > 60 {
 						firstMsg = firstMsg[:57] + "..."
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.WorktreeName(), firstMsg)
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, s.CreatedAt.Format(time.RFC3339), s.WorktreeName(), firstMsg)
 				}
 				return w.Flush()
 			}
@@ -339,7 +344,7 @@ is continued.`,
 				if err != nil {
 					return err
 				}
-				return startSession(true, sess.IsWorktree(), "", args[0], sess.Subdir, false, mounts, sess.WorktreeName())
+				return startSession(true, sess.IsWorktree(), "", args[0], sess.Subdir, false, mounts, sess.WorktreeName(), resumeName(name, sess.Name))
 			}
 
 			// Continue most recent session, detecting worktree if needed
@@ -351,14 +356,23 @@ is continued.`,
 				return fmt.Errorf("no sessions found to continue")
 			}
 			mostRecent := sessions[0]
-			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName())
+			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName(), resumeName(name, mostRecent.Name))
 		},
 	}
 
 	cmd.Flags().BoolVar(&list, "list", false, "List available sessions")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
+	cmd.Flags().StringVarP(&name, "name", "n", "", "Override the session name passed to Claude Code (defaults to the stored name)")
 
 	return cmd
+}
+
+// resumeName returns the override name if provided, otherwise the stored name.
+func resumeName(override, stored string) string {
+	if override != "" {
+		return override
+	}
+	return stored
 }
 
 // newStopCmd creates the "stop" subcommand.

@@ -119,7 +119,8 @@ func TestForgeStart(t *testing.T) {
 3. go test ./internal/forge/config/...
 
 Reply with the raw command outputs only, no other text.`
-	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", prompt)
+	sessionName := "e2e-session"
+	cmd := exec.CommandContext(ctx, binaryPath, "start", "--name", sessionName, "-p", prompt)
 	cmd.Dir = projectRoot // Must be a git repo with a GitHub remote for project.Identify.
 	cmd.Env = append(os.Environ(),
 		"HOME="+tempHome,
@@ -185,6 +186,15 @@ Reply with the raw command outputs only, no other text.`
 	require.NotEmpty(t, sessionFile, "expected at least one .jsonl session file under %s", hostSessionDir)
 	t.Logf("session file persisted to host: %s", filepath.Join(hostSessionDir, sessionFile))
 
+	// The session name should be persisted in the sidecar metadata file, keyed
+	// by the same session ID and stored at the project session-dir root.
+	sessionID := strings.TrimSuffix(sessionFile, ".jsonl")
+	sidecarPath := filepath.Join(tempHome, ".claude-forge", projectID, sessionID+".json")
+	sidecarData, err := os.ReadFile(sidecarPath)
+	require.NoError(t, err, "expected sidecar metadata file at %s", sidecarPath)
+	assert.Contains(t, string(sidecarData), sessionName,
+		"sidecar metadata should contain the session name")
+
 	// Step 9: `claude-forge resume --list` must surface that session.
 	// resume reads from the host, so it does not need Docker or auth.
 	listCtx, listCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -202,6 +212,10 @@ Reply with the raw command outputs only, no other text.`
 		"resume --list should not be empty after a session was created")
 	assert.Contains(t, listOutStr, "WORKTREE",
 		"resume --list should include the WORKTREE column header")
+	assert.Contains(t, listOutStr, "NAME",
+		"resume --list should include the NAME column header")
+	assert.Contains(t, listOutStr, sessionName,
+		"resume --list should show the session name %s", sessionName)
 	expectedID := strings.TrimSuffix(sessionFile, ".jsonl")
 	assert.Contains(t, listOutStr, expectedID,
 		"resume --list should include the session ID %s", expectedID)
@@ -293,7 +307,7 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 		"CLAUDE_CODE_OAUTH_TOKEN="+oauthToken,
 	)
 
-	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", "hello")
+	cmd := exec.CommandContext(ctx, binaryPath, "start", "--name", "e2e-noauth", "-p", "hello")
 	cmd.Dir = projectRoot
 	cmd.Env = filteredEnv
 

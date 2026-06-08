@@ -22,12 +22,61 @@ func GenerateID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// GenerateUUID returns a random RFC 4122 version 4 UUID, suitable for use as
+// Claude Code's --session-id. Pinning the session ID lets us name the sidecar
+// metadata file (and the resulting JSONL) by a known identifier.
+func GenerateUUID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate session UUID: %w", err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
 // Session represents a claude-forge session.
 type Session struct {
 	ID        string
 	CreatedAt time.Time
 	FirstMsg  string
+	Name      string // human-readable name from the sidecar metadata file
 	Subdir    string // relative subdirectory within session dir (e.g., "-work", "-work-.claude-worktrees-feature")
+}
+
+// Metadata is sidecar information about a session, stored next to the JSONL
+// file as <session-id>.json under the project's session directory.
+type Metadata struct {
+	Name string `json:"name"`
+}
+
+// metadataPath returns the sidecar metadata path for a session ID.
+func metadataPath(sessionDir, sessionID string) string {
+	return filepath.Join(sessionDir, sessionID+".json")
+}
+
+// WriteMetadata writes the sidecar metadata file for a session.
+func WriteMetadata(sessionDir, sessionID string, meta Metadata) error {
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal session metadata: %w", err)
+	}
+	if err := os.WriteFile(metadataPath(sessionDir, sessionID), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("failed to write session metadata: %w", err)
+	}
+	return nil
+}
+
+// readMetadata reads the sidecar metadata for a session. A missing or invalid
+// file yields a zero Metadata and no error.
+func readMetadata(sessionDir, sessionID string) Metadata {
+	data, err := os.ReadFile(metadataPath(sessionDir, sessionID))
+	if err != nil {
+		return Metadata{}
+	}
+	var meta Metadata
+	_ = json.Unmarshal(data, &meta)
+	return meta
 }
 
 const worktreeSubdirPrefix = "-work--claude-worktrees-"
@@ -110,6 +159,7 @@ func List(sessionDir string) ([]Session, error) {
 				continue
 			}
 			sess.Subdir = subdir
+			sess.Name = readMetadata(sessionDir, sessionID).Name
 			sessions = append(sessions, *sess)
 		}
 	}

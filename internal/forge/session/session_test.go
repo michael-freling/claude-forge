@@ -30,6 +30,67 @@ func TestGenerateID_Unique(t *testing.T) {
 	}
 }
 
+func TestGenerateUUID(t *testing.T) {
+	id, err := GenerateUUID()
+	require.NoError(t, err)
+
+	// RFC 4122 version 4 UUID format: 8-4-4-4-12 hex digits, version 4, variant 8/9/a/b.
+	assert.Regexp(t, regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`), id)
+}
+
+func TestGenerateUUID_Unique(t *testing.T) {
+	ids := make(map[string]bool)
+	for range 100 {
+		id, err := GenerateUUID()
+		require.NoError(t, err)
+		assert.False(t, ids[id], "duplicate UUID generated: %s", id)
+		ids[id] = true
+	}
+}
+
+func TestWriteMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	require.NoError(t, WriteMetadata(tmpDir, "sess-1", Metadata{Name: "claude"}))
+
+	got := readMetadata(tmpDir, "sess-1")
+	assert.Equal(t, "claude", got.Name)
+}
+
+func TestWriteMetadata_Error(t *testing.T) {
+	// Writing into a non-existent directory fails.
+	err := WriteMetadata(filepath.Join(t.TempDir(), "missing"), "sess-1", Metadata{Name: "claude"})
+	require.Error(t, err)
+}
+
+func TestReadMetadata_MissingOrInvalid(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Missing file yields a zero Metadata, no panic.
+	assert.Equal(t, Metadata{}, readMetadata(tmpDir, "absent"))
+
+	// Invalid JSON also yields a zero Metadata.
+	require.NoError(t, os.WriteFile(metadataPath(tmpDir, "broken"), []byte("not json"), 0o644))
+	assert.Equal(t, Metadata{}, readMetadata(tmpDir, "broken"))
+}
+
+func TestList_PopulatesNameFromSidecar(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	workDir := filepath.Join(tmpDir, "-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "sess-1.jsonl"),
+		[]byte(`{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-05-08T14:30:01Z"}`+"\n"), 0o644))
+
+	// Sidecar lives at the session-dir root, keyed by session ID.
+	require.NoError(t, WriteMetadata(tmpDir, "sess-1", Metadata{Name: "my-session"}))
+
+	got, err := List(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "my-session", got[0].Name)
+}
+
 func TestList(t *testing.T) {
 	tests := []struct {
 		name    string
