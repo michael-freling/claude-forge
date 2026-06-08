@@ -54,14 +54,46 @@ func runCmd(args ...string) (string, error) {
 	return out.String(), err
 }
 
-func TestRun_RequiresAFlag(t *testing.T) {
-	_, err := runCmd()
-	assert.ErrorContains(t, err, "--oauth-token or --from-credentials")
+func TestRun_DefaultsToCredentials(t *testing.T) {
+	f := &fakeUpdater{masked: "sk-ant-o...wxyz"}
+	withFakeUpdater(t, f)
+
+	out, err := runCmd()
+	require.NoError(t, err)
+	assert.True(t, f.fromCredsCall)
+	assert.False(t, f.updateCalled)
+	assert.Contains(t, f.gotClaudeDir, ".claude")
+	assert.Contains(t, out, "Set CLAUDE_CODE_OAUTH_TOKEN")
+}
+
+func TestRun_FromCredentialsDisabledWithoutToken(t *testing.T) {
+	_, err := runCmd("--from-credentials=false")
+	assert.ErrorContains(t, err, "--oauth-token or enable --from-credentials")
+}
+
+func TestRun_FromCredentialsDefaultValue(t *testing.T) {
+	cmd := newRootCmd()
+	flag := cmd.Flags().Lookup("from-credentials")
+	assert.NotNil(t, flag)
+	assert.Equal(t, "true", flag.DefValue)
 }
 
 func TestRun_MutuallyExclusiveFlags(t *testing.T) {
 	_, err := runCmd("--oauth-token", "tok", "--from-credentials")
 	assert.ErrorContains(t, err, "mutually exclusive")
+}
+
+func TestRun_OAuthTokenWithDefaultCredentialsFlag(t *testing.T) {
+	// --oauth-token alone must work even though --from-credentials now
+	// defaults to true (it's only a conflict when explicitly set).
+	f := &fakeUpdater{masked: "sk-ant-o...abcd"}
+	withFakeUpdater(t, f)
+
+	_, err := runCmd("--oauth-token", "sk-ant-oat-token")
+	require.NoError(t, err)
+	assert.True(t, f.updateCalled)
+	assert.False(t, f.fromCredsCall)
+	assert.Equal(t, "sk-ant-oat-token", f.gotToken)
 }
 
 func TestRun_RepoFlagDefaultsEmpty(t *testing.T) {
