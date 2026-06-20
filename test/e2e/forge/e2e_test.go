@@ -119,7 +119,8 @@ func TestForgeStart(t *testing.T) {
 3. go test ./internal/forge/config/...
 
 Reply with the raw command outputs only, no other text.`
-	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", prompt)
+	sessionName := "e2e-session"
+	cmd := exec.CommandContext(ctx, binaryPath, "start", sessionName, "-p", prompt)
 	cmd.Dir = projectRoot // Must be a git repo with a GitHub remote for project.Identify.
 	cmd.Env = append(os.Environ(),
 		"HOME="+tempHome,
@@ -168,7 +169,7 @@ Reply with the raw command outputs only, no other text.`
 	}
 
 	// Step 8: Verify the session JSONL was persisted to the host so
-	// `claude-forge resume --list` can find it. Claude Code in the container
+	// `claude-forge list` can find it. Claude Code in the container
 	// (cwd=/work) writes sessions under the encoded path -work/.
 	projectID := strings.ReplaceAll(projectRoot, "/", "-")
 	hostSessionDir := filepath.Join(tempHome, ".claude-forge", projectID, "-work")
@@ -185,26 +186,39 @@ Reply with the raw command outputs only, no other text.`
 	require.NotEmpty(t, sessionFile, "expected at least one .jsonl session file under %s", hostSessionDir)
 	t.Logf("session file persisted to host: %s", filepath.Join(hostSessionDir, sessionFile))
 
-	// Step 9: `claude-forge resume --list` must surface that session.
+	// The session name should be persisted in the sidecar metadata file, keyed
+	// by the same session ID and stored at the project session-dir root.
+	sessionID := strings.TrimSuffix(sessionFile, ".jsonl")
+	sidecarPath := filepath.Join(tempHome, ".claude-forge", projectID, sessionID+".json")
+	sidecarData, err := os.ReadFile(sidecarPath)
+	require.NoError(t, err, "expected sidecar metadata file at %s", sidecarPath)
+	assert.Contains(t, string(sidecarData), sessionName,
+		"sidecar metadata should contain the session name")
+
+	// Step 9: `claude-forge list` must surface that session.
 	// resume reads from the host, so it does not need Docker or auth.
 	listCtx, listCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer listCancel()
-	listCmd := exec.CommandContext(listCtx, binaryPath, "resume", "--list")
+	listCmd := exec.CommandContext(listCtx, binaryPath, "list")
 	listCmd.Dir = projectRoot
 	listCmd.Env = append(os.Environ(), "HOME="+tempHome)
 
 	listOutput, listErr := listCmd.CombinedOutput()
 	listOutStr := string(listOutput)
-	t.Logf("claude-forge resume --list output:\n%s", listOutStr)
-	require.NoError(t, listErr, "resume --list failed: %s", listOutStr)
+	t.Logf("claude-forge list output:\n%s", listOutStr)
+	require.NoError(t, listErr, "list failed: %s", listOutStr)
 
 	assert.NotContains(t, listOutStr, "No sessions found.",
-		"resume --list should not be empty after a session was created")
+		"list should not be empty after a session was created")
 	assert.Contains(t, listOutStr, "WORKTREE",
-		"resume --list should include the WORKTREE column header")
+		"list should include the WORKTREE column header")
+	assert.Contains(t, listOutStr, "NAME",
+		"list should include the NAME column header")
+	assert.Contains(t, listOutStr, sessionName,
+		"list should show the session name %s", sessionName)
 	expectedID := strings.TrimSuffix(sessionFile, ".jsonl")
 	assert.Contains(t, listOutStr, expectedID,
-		"resume --list should include the session ID %s", expectedID)
+		"list should include the session ID %s", expectedID)
 }
 
 // TestForgeStart_NoGitHubAuth verifies that claude-forge fails with a clear
@@ -293,7 +307,7 @@ func TestForgeStart_NoGitHubAuth(t *testing.T) {
 		"CLAUDE_CODE_OAUTH_TOKEN="+oauthToken,
 	)
 
-	cmd := exec.CommandContext(ctx, binaryPath, "start", "-p", "hello")
+	cmd := exec.CommandContext(ctx, binaryPath, "start", "e2e-noauth", "-p", "hello")
 	cmd.Dir = projectRoot
 	cmd.Env = filteredEnv
 
@@ -563,7 +577,7 @@ func writeTestSession(t *testing.T, path, timestamp, message string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
 
-// TestResumeList_NonWorktreeSession verifies that `resume --list` shows
+// TestResumeList_NonWorktreeSession verifies that `list` shows
 // non-worktree sessions with an empty WORKTREE column.
 func TestResumeList_NonWorktreeSession(t *testing.T) {
 	binaryPath := buildForge(t)
@@ -579,14 +593,14 @@ func TestResumeList_NonWorktreeSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd := exec.CommandContext(ctx, binaryPath, "list")
 	cmd.Dir = projectRoot
 	cmd.Env = append(os.Environ(), "HOME="+tempHome)
 
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
-	t.Logf("resume --list output:\n%s", outputStr)
-	require.NoError(t, err, "resume --list failed: %s", outputStr)
+	t.Logf("list output:\n%s", outputStr)
+	require.NoError(t, err, "list failed: %s", outputStr)
 
 	assert.Contains(t, outputStr, "SESSION ID")
 	assert.Contains(t, outputStr, "WORKTREE")
@@ -604,7 +618,7 @@ func TestResumeList_NonWorktreeSession(t *testing.T) {
 	assert.NotContains(t, dataLine, "worktrees")
 }
 
-// TestResumeList_WorktreeSession verifies that `resume --list` shows
+// TestResumeList_WorktreeSession verifies that `list` shows
 // worktree sessions with the worktree name in the WORKTREE column.
 func TestResumeList_WorktreeSession(t *testing.T) {
 	binaryPath := buildForge(t)
@@ -624,14 +638,14 @@ func TestResumeList_WorktreeSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd := exec.CommandContext(ctx, binaryPath, "list")
 	cmd.Dir = projectRoot
 	cmd.Env = append(os.Environ(), "HOME="+tempHome)
 
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
-	t.Logf("resume --list output:\n%s", outputStr)
-	require.NoError(t, err, "resume --list failed: %s", outputStr)
+	t.Logf("list output:\n%s", outputStr)
+	require.NoError(t, err, "list failed: %s", outputStr)
 
 	assert.Contains(t, outputStr, "WORKTREE")
 	assert.Contains(t, outputStr, "wt-session")
@@ -675,14 +689,14 @@ func TestResumeList_MixedSessions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binaryPath, "resume", "--list")
+	cmd := exec.CommandContext(ctx, binaryPath, "list")
 	cmd.Dir = projectRoot
 	cmd.Env = append(os.Environ(), "HOME="+tempHome)
 
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
-	t.Logf("resume --list output:\n%s", outputStr)
-	require.NoError(t, err, "resume --list failed: %s", outputStr)
+	t.Logf("list output:\n%s", outputStr)
+	require.NoError(t, err, "list failed: %s", outputStr)
 
 	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
 	require.GreaterOrEqual(t, len(lines), 4, "expected header + 3 data lines")

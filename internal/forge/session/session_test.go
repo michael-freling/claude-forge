@@ -30,6 +30,85 @@ func TestGenerateID_Unique(t *testing.T) {
 	}
 }
 
+func TestGenerateUUID(t *testing.T) {
+	id, err := GenerateUUID()
+	require.NoError(t, err)
+
+	// RFC 4122 version 4 UUID format: 8-4-4-4-12 hex digits, version 4, variant 8/9/a/b.
+	assert.Regexp(t, regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`), id)
+}
+
+func TestGenerateUUID_Unique(t *testing.T) {
+	ids := make(map[string]bool)
+	for range 100 {
+		id, err := GenerateUUID()
+		require.NoError(t, err)
+		assert.False(t, ids[id], "duplicate UUID generated: %s", id)
+		ids[id] = true
+	}
+}
+
+func TestWriteMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	require.NoError(t, WriteMetadata(tmpDir, "sess-1", Metadata{Name: "claude"}))
+
+	got := readMetadata(tmpDir, "sess-1")
+	assert.Equal(t, "claude", got.Name)
+}
+
+func TestWriteMetadata_Error(t *testing.T) {
+	// Writing into a non-existent directory fails.
+	err := WriteMetadata(filepath.Join(t.TempDir(), "missing"), "sess-1", Metadata{Name: "claude"})
+	require.Error(t, err)
+}
+
+func TestValidateName(t *testing.T) {
+	require.NoError(t, ValidateName(""))
+	require.NoError(t, ValidateName("my-session"))
+	require.NoError(t, ValidateName("name with spaces"))
+
+	for _, bad := range []string{"a\tb", "a\nb", "a\rb"} {
+		err := ValidateName(bad)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "tab or newline")
+	}
+}
+
+func TestWriteMetadata_RejectsInvalidName(t *testing.T) {
+	err := WriteMetadata(t.TempDir(), "sess-1", Metadata{Name: "bad\tname"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tab or newline")
+}
+
+func TestReadMetadata_MissingOrInvalid(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Missing file yields a zero Metadata, no panic.
+	assert.Equal(t, Metadata{}, readMetadata(tmpDir, "absent"))
+
+	// Invalid JSON also yields a zero Metadata.
+	require.NoError(t, os.WriteFile(metadataPath(tmpDir, "broken"), []byte("not json"), 0o644))
+	assert.Equal(t, Metadata{}, readMetadata(tmpDir, "broken"))
+}
+
+func TestList_PopulatesNameFromSidecar(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	workDir := filepath.Join(tmpDir, "-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "sess-1.jsonl"),
+		[]byte(`{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-05-08T14:30:01Z"}`+"\n"), 0o644))
+
+	// Sidecar lives at the session-dir root, keyed by session ID.
+	require.NoError(t, WriteMetadata(tmpDir, "sess-1", Metadata{Name: "my-session"}))
+
+	got, err := List(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "my-session", got[0].Name)
+}
+
 func TestList(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -268,6 +347,71 @@ func TestFind(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "nonexistent")
 		assert.Contains(t, err.Error(), "not found")
+	})
+}
+
+func TestDelete(t *testing.T) {
+	tmp := t.TempDir()
+
+	t.Run("removes transcript and sidecar", func(t *testing.T) {
+		work := filepath.Join(tmp, "-work")
+		require.NoError(t, os.MkdirAll(work, 0o755))
+		jsonl := filepath.Join(work, "s1.jsonl")
+		require.NoError(t, os.WriteFile(jsonl, []byte("{}"), 0o644))
+		require.NoError(t, WriteMetadata(tmp, "s1", Metadata{Name: "n1"}))
+
+		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: "-work"}))
+		assert.NoFileExists(t, jsonl)
+		assert.NoFileExists(t, metadataPath(tmp, "s1"))
+
+		// Idempotent: deleting again is not an error.
+		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: "-work"}))
+	})
+
+	t.Run("removes legacy root transcript", func(t *testing.T) {
+		jsonl := filepath.Join(tmp, "s2.jsonl")
+		require.NoError(t, os.WriteFile(jsonl, []byte("{}"), 0o644))
+		require.NoError(t, Delete(tmp, Session{ID: "s2"}))
+		assert.NoFileExists(t, jsonl)
+	})
+}
+
+func TestFind_ByName(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	workDir := filepath.Join(tmpDir, "-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+
+	// Two sessions named "hello"; the more recent one should win.
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "old.jsonl"),
+		[]byte(`{"type":"user","message":{"role":"user","content":"a"},"timestamp":"2026-05-08T10:00:00Z"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "new.jsonl"),
+		[]byte(`{"type":"user","message":{"role":"user","content":"b"},"timestamp":"2026-05-09T10:00:00Z"}`+"\n"), 0o644))
+	require.NoError(t, WriteMetadata(tmpDir, "old", Metadata{Name: "hello"}))
+	require.NoError(t, WriteMetadata(tmpDir, "new", Metadata{Name: "hello"}))
+
+	// A third session whose ID equals another session's name, to prove ID wins.
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "hello.jsonl"),
+		[]byte(`{"type":"user","message":{"role":"user","content":"c"},"timestamp":"2026-05-07T10:00:00Z"}`+"\n"), 0o644))
+
+	t.Run("resolves by name to most recent match", func(t *testing.T) {
+		// "hello" matches the session whose ID is literally "hello" first (ID wins).
+		sess, err := Find(tmpDir, "hello")
+		require.NoError(t, err)
+		assert.Equal(t, "hello", sess.ID)
+	})
+
+	t.Run("name-only ref resolves to most recent named session", func(t *testing.T) {
+		sess, err := Find(tmpDir, "world-does-not-exist")
+		require.Error(t, err)
+		assert.Nil(t, sess)
+	})
+
+	t.Run("name match when no ID collision", func(t *testing.T) {
+		require.NoError(t, WriteMetadata(tmpDir, "new", Metadata{Name: "greeting"}))
+		sess, err := Find(tmpDir, "greeting")
+		require.NoError(t, err)
+		assert.Equal(t, "new", sess.ID)
 	})
 }
 

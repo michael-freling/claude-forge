@@ -55,6 +55,7 @@ type StartOptions struct {
 	GID                int      // host user GID
 	Mounts             []string // additional host:container bind mounts
 	ResumeWorktreeName string   // worktree name when resuming a worktree session
+	Name               string   // human-readable session name (passed to Claude Code via --name)
 }
 
 // Session holds information about a running session.
@@ -71,6 +72,13 @@ type Session struct {
 // resolves credentials, creates containers, and returns the session info.
 // The caller is responsible for attaching to the agent and calling Cleanup.
 func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, error) {
+	// Fail fast on an invalid session name before doing any container work.
+	if opts.Name != "" {
+		if err := session.ValidateName(opts.Name); err != nil {
+			return nil, err
+		}
+	}
+
 	// Resolve project directory
 	projectDir := opts.ProjectDir
 	if projectDir == "" {
@@ -271,6 +279,17 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to register MCP servers in .claude.json: %w", err)
 	}
 
+	// For fresh sessions, pin the Claude session ID so the resulting JSONL and
+	// the sidecar metadata file share a known identifier.
+	fresh := opts.ResumeID == "" && !opts.Continue
+	var claudeSessionID string
+	if fresh {
+		claudeSessionID, err = session.GenerateUUID()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Build agent command args
 	var agentCmd []string
 	if opts.SkipPermissions {
@@ -288,6 +307,16 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		}
 	} else if opts.Continue {
 		agentCmd = append(agentCmd, "--continue")
+	} else {
+		// --session-id is a Claude Code CLI flag; re-verify it still exists
+		// against `claude --help` when bumping the agent image.
+		agentCmd = append(agentCmd, "--session-id", claudeSessionID)
+	}
+	if opts.Name != "" {
+		// --name is a Claude Code CLI flag (passed on fresh and resume/continue
+		// paths); re-verify it still exists against `claude --help` when bumping
+		// the agent image.
+		agentCmd = append(agentCmd, "--name", opts.Name)
 	}
 	if opts.Prompt != "" {
 		agentCmd = append(agentCmd, "-p", opts.Prompt)
@@ -382,6 +411,16 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start agent: %w", err)
+	}
+
+	// Persist the session name in a sidecar file so `resume --list` and
+	// `resume` can surface and reuse it later. Written only after the agent
+	// starts so a failed start leaves no orphaned sidecar. A write failure is
+	// non-fatal: the session runs, the name just isn't recorded.
+	if fresh && opts.Name != "" {
+		if err := session.WriteMetadata(sessionDir, claudeSessionID, session.Metadata{Name: opts.Name}); err != nil {
+			o.Log("Warning: failed to write session metadata: %v", err)
+		}
 	}
 
 	return sess, nil

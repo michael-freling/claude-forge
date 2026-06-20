@@ -22,12 +22,79 @@ func GenerateID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// GenerateUUID returns a random RFC 4122 version 4 UUID, suitable for use as
+// Claude Code's --session-id. Pinning the session ID lets us name the sidecar
+// metadata file (and the resulting JSONL) by a known identifier.
+func GenerateUUID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate session UUID: %w", err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
 // Session represents a claude-forge session.
 type Session struct {
 	ID        string
 	CreatedAt time.Time
 	FirstMsg  string
+	Name      string // human-readable name from the sidecar metadata file
 	Subdir    string // relative subdirectory within session dir (e.g., "-work", "-work-.claude-worktrees-feature")
+}
+
+// Metadata is sidecar information about a session, stored next to the JSONL
+// file as <session-id>.json under the project's session directory.
+type Metadata struct {
+	Name string `json:"name"`
+}
+
+// metadataPath returns the sidecar metadata path for a session ID.
+func metadataPath(sessionDir, sessionID string) string {
+	return filepath.Join(sessionDir, sessionID+".json")
+}
+
+// ValidateName checks that a session name is safe to store and display. Names
+// must not contain tab or newline characters, which would corrupt the
+// tab-separated `resume --list` output.
+func ValidateName(name string) error {
+	if strings.ContainsAny(name, "\t\n\r") {
+		return fmt.Errorf("session name must not contain tab or newline characters")
+	}
+	return nil
+}
+
+// WriteMetadata writes the sidecar metadata file for a session.
+func WriteMetadata(sessionDir, sessionID string, meta Metadata) error {
+	if err := ValidateName(meta.Name); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal session metadata: %w", err)
+	}
+	if err := os.WriteFile(metadataPath(sessionDir, sessionID), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("failed to write session metadata: %w", err)
+	}
+	return nil
+}
+
+// readMetadata reads the sidecar metadata for a session. A missing, unreadable,
+// or corrupt sidecar is treated the same: it yields a zero Metadata and no
+// error, so the name simply renders blank in `resume --list` rather than
+// failing the listing. Sidecars are only ever written by WriteMetadata (valid
+// JSON), so corruption indicates external tampering.
+func readMetadata(sessionDir, sessionID string) Metadata {
+	data, err := os.ReadFile(metadataPath(sessionDir, sessionID))
+	if err != nil {
+		return Metadata{}
+	}
+	var meta Metadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return Metadata{}
+	}
+	return meta
 }
 
 const worktreeSubdirPrefix = "-work--claude-worktrees-"
@@ -110,6 +177,7 @@ func List(sessionDir string) ([]Session, error) {
 				continue
 			}
 			sess.Subdir = subdir
+			sess.Name = readMetadata(sessionDir, sessionID).Name
 			sessions = append(sessions, *sess)
 		}
 	}
@@ -189,16 +257,37 @@ func parseSessionFile(sessionID string, filePath string) (*Session, error) {
 	}, nil
 }
 
-// Find locates a session by ID across all subdirectories in sessionDir.
-func Find(sessionDir, sessionID string) (*Session, error) {
+// Delete removes a session's transcript (.jsonl) and its sidecar metadata
+// (.json), if present. Missing files are not an error.
+func Delete(sessionDir string, s Session) error {
+	jsonl := filepath.Join(sessionDir, s.Subdir, s.ID+".jsonl")
+	if err := os.Remove(jsonl); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove session transcript: %w", err)
+	}
+	if err := os.Remove(metadataPath(sessionDir, s.ID)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove session metadata: %w", err)
+	}
+	return nil
+}
+
+// Find locates a session by exact ID, or failing that by name, across all
+// subdirectories in sessionDir. An ID match always wins over a name match.
+// Because names are not unique, the most recently created session with a
+// matching name is returned (List is sorted most-recent-first).
+func Find(sessionDir, ref string) (*Session, error) {
 	sessions, err := List(sessionDir)
 	if err != nil {
 		return nil, err
 	}
 	for i := range sessions {
-		if sessions[i].ID == sessionID {
+		if sessions[i].ID == ref {
 			return &sessions[i], nil
 		}
 	}
-	return nil, fmt.Errorf("session %s not found", sessionID)
+	for i := range sessions {
+		if sessions[i].Name != "" && sessions[i].Name == ref {
+			return &sessions[i], nil
+		}
+	}
+	return nil, fmt.Errorf("session %q not found (by id or name)", ref)
 }

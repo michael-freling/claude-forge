@@ -42,19 +42,21 @@ func newRootCmd() *cobra.Command {
 repository so the Claude Code PR review workflow (.github/workflows/claude-review.yml)
 can authenticate.
 
-The token comes from --oauth-token, or is resolved from the local Claude Code
-credentials (~/.claude/.credentials.json) when --from-credentials is set.
+By default the token is resolved from the local Claude Code credentials
+(~/.claude/.credentials.json). Pass --oauth-token to set a token directly
+instead.
 
 The secret is set on the repository in the current directory unless --repo is
 given. Requires the gh CLI to be installed and authenticated with repo admin
 access.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if oauthToken == "" && !fromCreds {
-				return fmt.Errorf("provide --oauth-token or --from-credentials")
-			}
-			if oauthToken != "" && fromCreds {
+			fromCredsSet := cmd.Flags().Changed("from-credentials")
+			if oauthToken != "" && fromCreds && fromCredsSet {
 				return fmt.Errorf("--oauth-token and --from-credentials are mutually exclusive")
+			}
+			if oauthToken == "" && fromCredsSet && !fromCreds {
+				return fmt.Errorf("provide --oauth-token or enable --from-credentials")
 			}
 
 			u := newUpdater(repo)
@@ -64,14 +66,16 @@ access.`,
 				masked string
 				err    error
 			)
-			if fromCreds {
+			// Default to resolving from local Claude Code credentials unless an
+			// explicit --oauth-token is given.
+			if oauthToken != "" {
+				masked, err = u.Update(ctx, oauthToken)
+			} else {
 				home, herr := os.UserHomeDir()
 				if herr != nil {
 					return fmt.Errorf("failed to locate home directory: %w", herr)
 				}
 				masked, err = u.UpdateFromCredentials(ctx, filepath.Join(home, ".claude"))
-			} else {
-				masked, err = u.Update(ctx, oauthToken)
 			}
 			if err != nil {
 				return err
@@ -88,7 +92,7 @@ access.`,
 
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repository (owner/name); defaults to the repository in the current directory")
 	cmd.Flags().StringVar(&oauthToken, "oauth-token", "", "OAuth token to set directly")
-	cmd.Flags().BoolVar(&fromCreds, "from-credentials", false, "Resolve token from local Claude Code credentials")
+	cmd.Flags().BoolVar(&fromCreds, "from-credentials", true, "Resolve token from local Claude Code credentials")
 
 	return cmd
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -53,6 +55,8 @@ containers, Docker networks, and session state.`,
 		newInitCmd(),
 		newStartCmd(),
 		newResumeCmd(),
+		newListCmd(),
+		newPruneCmd(),
 		newStopCmd(),
 		newStatusCmd(),
 		newBuildCmd(),
@@ -83,7 +87,7 @@ func newOrchestrator() (*forge.Orchestrator, func(), error) {
 }
 
 // startSession runs the common logic for the start and resume commands.
-func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName string) error {
+func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName, name string) error {
 	orch, cleanup, err := createOrchestrator()
 	if err != nil {
 		return err
@@ -107,6 +111,7 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 		GID:                hostGID,
 		Mounts:             mounts,
 		ResumeWorktreeName: resumeWorktreeName,
+		Name:               name,
 	})
 	if err != nil {
 		return err
@@ -262,14 +267,17 @@ func newStartCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "start",
+		Use:   "start <name>",
 		Short: "Start a new Claude Code session in a Docker container",
 		Long: `Start launches a new Claude Code agent and gateway in Docker containers.
-By default, --dangerously-skip-permissions is enabled. Use --no-skip-permissions
-to disable it.`,
+The required <name> argument is a human-readable session name; it is passed to
+Claude Code and shown in 'resume --list'. By default,
+--dangerously-skip-permissions is enabled; use --no-skip-permissions to disable
+it.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "")
+			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "", args[0])
 		},
 	}
 
@@ -281,57 +289,174 @@ to disable it.`,
 	return cmd
 }
 
-// newResumeCmd creates the "resume" subcommand.
-func newResumeCmd() *cobra.Command {
+// projectSessionDir resolves the host session directory for the project in the
+// current working directory.
+func projectSessionDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+	proj, err := project.Identify(cwd)
+	if err != nil {
+		return "", fmt.Errorf("failed to identify project: %w", err)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".claude-forge", proj.ID), nil
+}
+
+// listSessions writes the session table for sessionDir to w.
+func listSessions(w io.Writer, sessionDir string) error {
+	sessions, err := session.List(sessionDir)
+	if err != nil {
+		return fmt.Errorf("failed to list sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		fmt.Fprintln(w, "No sessions found.")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "SESSION ID\tNAME\tCREATED\tWORKTREE\tFIRST MESSAGE")
+	for _, s := range sessions {
+		firstMsg := s.FirstMsg
+		if len(firstMsg) > 60 {
+			firstMsg = firstMsg[:57] + "..."
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, s.CreatedAt.Format(time.RFC3339), s.WorktreeName(), firstMsg)
+	}
+	return tw.Flush()
+}
+
+// newListCmd creates the "list" subcommand.
+func newListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List past Claude Code sessions for the current project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sessionDir, err := projectSessionDir()
+			if err != nil {
+				return err
+			}
+			return listSessions(cmd.OutOrStdout(), sessionDir)
+		},
+	}
+}
+
+// parseAge parses a session age. It accepts standard Go durations (e.g. "720h")
+// plus a "<N>d" day form (e.g. "30d").
+func parseAge(s string) (time.Duration, error) {
+	if rest, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.Atoi(rest)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q", s)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
+// newPruneCmd creates the "prune" subcommand.
+func newPruneCmd() *cobra.Command {
 	var (
-		list   bool
-		mounts []string
+		olderThan string
+		keep      int
+		dryRun    bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "resume [session-id]",
+		Use:   "prune",
+		Short: "Delete old Claude Code sessions for the current project",
+		Long: `Prune removes session transcripts (and their name sidecars) for the
+current project. By default it deletes sessions older than 30 days. Narrow
+or widen the window with --older-than, and protect the N most recent
+sessions with --keep. Use --dry-run to preview.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var maxAge time.Duration
+			if olderThan != "" {
+				var err error
+				maxAge, err = parseAge(olderThan)
+				if err != nil {
+					return fmt.Errorf("invalid --older-than: %w", err)
+				}
+			}
+
+			sessionDir, err := projectSessionDir()
+			if err != nil {
+				return err
+			}
+			sessions, err := session.List(sessionDir)
+			if err != nil {
+				return fmt.Errorf("failed to list sessions: %w", err)
+			}
+
+			// sessions are sorted most-recent-first.
+			now := time.Now()
+			var toPrune []session.Session
+			for i, s := range sessions {
+				if keep >= 0 && i < keep {
+					continue // protected: among the N newest
+				}
+				if olderThan != "" && now.Sub(s.CreatedAt) < maxAge {
+					continue // not old enough
+				}
+				toPrune = append(toPrune, s)
+			}
+
+			w := cmd.OutOrStdout()
+			if len(toPrune) == 0 {
+				fmt.Fprintln(w, "No sessions to prune.")
+				return nil
+			}
+
+			for _, s := range toPrune {
+				if dryRun {
+					fmt.Fprintf(w, "would delete  %s  %s  %s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.Name)
+					continue
+				}
+				if err := session.Delete(sessionDir, s); err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "deleted  %s  %s  %s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.Name)
+			}
+
+			verb := "Deleted"
+			if dryRun {
+				verb = "Would delete"
+			}
+			fmt.Fprintf(w, "%s %d session(s).\n", verb, len(toPrune))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&olderThan, "older-than", "30d", "Delete sessions older than this age (e.g. 30d, 720h)")
+	cmd.Flags().IntVar(&keep, "keep", -1, "Keep the N most recent sessions, delete the rest")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be deleted without deleting")
+
+	return cmd
+}
+
+// newResumeCmd creates the "resume" subcommand.
+func newResumeCmd() *cobra.Command {
+	var (
+		mounts []string
+		name   string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "resume [session-id|name]",
 		Short: "Resume a past Claude Code session",
-		Long: `Resume a previous session by ID, or use --list to see available sessions.
-If no session ID is given and --list is not set, the most recent session
-is continued.`,
+		Long: `Resume a previous session by ID or by name (the most recent session
+with that name). If no argument is given, the most recent session is
+continued. Run 'claude-forge list' to see available sessions. The session
+name is reused unless overridden with --name.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cwd, err := os.Getwd()
+			sessionDir, err := projectSessionDir()
 			if err != nil {
-				return fmt.Errorf("failed to get working directory: %w", err)
-			}
-
-			proj, err := project.Identify(cwd)
-			if err != nil {
-				return fmt.Errorf("failed to identify project: %w", err)
-			}
-
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("failed to get home directory: %w", err)
-			}
-			sessionDir := filepath.Join(homeDir, ".claude-forge", proj.ID)
-
-			if list {
-				sessions, err := session.List(sessionDir)
-				if err != nil {
-					return fmt.Errorf("failed to list sessions: %w", err)
-				}
-				if len(sessions) == 0 {
-					fmt.Println("No sessions found.")
-					return nil
-				}
-
-				w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(w, "SESSION ID\tCREATED\tWORKTREE\tFIRST MESSAGE")
-				for _, s := range sessions {
-					firstMsg := s.FirstMsg
-					if len(firstMsg) > 60 {
-						firstMsg = firstMsg[:57] + "..."
-					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.WorktreeName(), firstMsg)
-				}
-				return w.Flush()
+				return err
 			}
 
 			if len(args) == 1 {
@@ -339,7 +464,8 @@ is continued.`,
 				if err != nil {
 					return err
 				}
-				return startSession(true, sess.IsWorktree(), "", args[0], sess.Subdir, false, mounts, sess.WorktreeName())
+				// Use the resolved session ID (args[0] may be a name).
+				return startSession(true, sess.IsWorktree(), "", sess.ID, sess.Subdir, false, mounts, sess.WorktreeName(), resumeName(name, sess.Name))
 			}
 
 			// Continue most recent session, detecting worktree if needed
@@ -351,14 +477,22 @@ is continued.`,
 				return fmt.Errorf("no sessions found to continue")
 			}
 			mostRecent := sessions[0]
-			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName())
+			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName(), resumeName(name, mostRecent.Name))
 		},
 	}
 
-	cmd.Flags().BoolVar(&list, "list", false, "List available sessions")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
+	cmd.Flags().StringVarP(&name, "name", "n", "", "Override the session name passed to Claude Code (defaults to the stored name)")
 
 	return cmd
+}
+
+// resumeName returns the override name if provided, otherwise the stored name.
+func resumeName(override, stored string) string {
+	if override != "" {
+		return override
+	}
+	return stored
 }
 
 // newStopCmd creates the "stop" subcommand.

@@ -26,7 +26,7 @@ func TestNewRootCmd(t *testing.T) {
 	assert.Equal(t, "claude-forge", cmd.Use)
 
 	expectedSubcommands := []string{
-		"init", "start", "resume", "stop", "status",
+		"init", "start", "resume", "list", "prune", "stop", "status",
 		"build", "auth", "plugins", "version", "gateway", "kube", "mcp",
 	}
 
@@ -53,7 +53,10 @@ func TestNewRootCmd(t *testing.T) {
 func TestNewStartCmd(t *testing.T) {
 	cmd := newStartCmd()
 
-	assert.Equal(t, "start", cmd.Use)
+	assert.Equal(t, "start <name>", cmd.Use)
+
+	// The session name is a required positional argument.
+	require.NotNil(t, cmd.Args)
 
 	worktreeFlag := cmd.Flags().Lookup("worktree")
 	require.NotNil(t, worktreeFlag)
@@ -69,14 +72,160 @@ func TestNewStartCmd(t *testing.T) {
 	assert.Equal(t, "p", promptFlag.Shorthand)
 }
 
+func TestStartCmd_RequiresNameArg(t *testing.T) {
+	cmd := newStartCmd()
+	cmd.SetArgs([]string{})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "accepts 1 arg")
+}
+
+func TestParseAge(t *testing.T) {
+	d, err := parseAge("30d")
+	require.NoError(t, err)
+	assert.Equal(t, 30*24*time.Hour, d)
+
+	d, err = parseAge("48h")
+	require.NoError(t, err)
+	assert.Equal(t, 48*time.Hour, d)
+
+	_, err = parseAge("xd")
+	require.Error(t, err)
+
+	_, err = parseAge("nonsense")
+	require.Error(t, err)
+}
+
+// pruneSetup chdirs into a fresh git repo and returns the project session dir.
+func pruneSetup(t *testing.T) string {
+	t.Helper()
+	repoDir := setupTestGitRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(repoDir))
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+	sessionDir := filepath.Join(homeDir, ".claude-forge", strings.ReplaceAll(repoDir, "/", "-"))
+	require.NoError(t, os.MkdirAll(filepath.Join(sessionDir, "-work"), 0o755))
+	t.Cleanup(func() { os.RemoveAll(sessionDir) })
+	return sessionDir
+}
+
+func TestPruneCmd(t *testing.T) {
+	t.Run("defaults to older-than 30 days", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		writeSessionFile(t, filepath.Join(sessionDir, "-work", "old.jsonl"), "2020-01-01T00:00:00Z", "old")
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		writeSessionFile(t, filepath.Join(sessionDir, "-work", "new.jsonl"), recent, "new")
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{}) // no flags → default 30d window
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "Deleted 1 session")
+		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "old.jsonl"))
+		assert.FileExists(t, filepath.Join(sessionDir, "-work", "new.jsonl"))
+	})
+
+	t.Run("older-than default is 30d", func(t *testing.T) {
+		cmd := newPruneCmd()
+		f := cmd.Flags().Lookup("older-than")
+		require.NotNil(t, f)
+		assert.Equal(t, "30d", f.DefValue)
+	})
+
+	t.Run("invalid older-than", func(t *testing.T) {
+		pruneSetup(t)
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{"--older-than", "notaduration"})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid --older-than")
+	})
+
+	t.Run("older-than dry-run keeps files", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		oldFile := filepath.Join(sessionDir, "-work", "old.jsonl")
+		writeSessionFile(t, oldFile, "2020-01-01T00:00:00Z", "old one")
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		newFile := filepath.Join(sessionDir, "-work", "new.jsonl")
+		writeSessionFile(t, newFile, recent, "new one")
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{"--older-than", "30d", "--dry-run"})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "would delete")
+		assert.Contains(t, out, "old")
+		assert.NotContains(t, out, "new.jsonl")
+		assert.FileExists(t, oldFile) // dry-run: nothing removed
+		assert.FileExists(t, newFile)
+	})
+
+	t.Run("older-than deletes old transcript and sidecar", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		oldFile := filepath.Join(sessionDir, "-work", "old.jsonl")
+		writeSessionFile(t, oldFile, "2020-01-01T00:00:00Z", "old one")
+		require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "old.json"), []byte(`{"name":"gone"}`), 0o644))
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		newFile := filepath.Join(sessionDir, "-work", "new.jsonl")
+		writeSessionFile(t, newFile, recent, "new one")
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{"--older-than", "30d"})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "Deleted 1 session")
+		assert.NoFileExists(t, oldFile)
+		assert.NoFileExists(t, filepath.Join(sessionDir, "old.json"))
+		assert.FileExists(t, newFile) // recent one survives
+	})
+
+	t.Run("keep protects newest", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		writeSessionFile(t, filepath.Join(sessionDir, "-work", "a.jsonl"), "2026-01-01T00:00:00Z", "a")
+		writeSessionFile(t, filepath.Join(sessionDir, "-work", "b.jsonl"), "2026-02-01T00:00:00Z", "b")
+		writeSessionFile(t, filepath.Join(sessionDir, "-work", "c.jsonl"), "2026-03-01T00:00:00Z", "c")
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{"--keep", "1"})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "Deleted 2 session")
+		assert.FileExists(t, filepath.Join(sessionDir, "-work", "c.jsonl"))   // newest kept
+		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "a.jsonl")) // older pruned
+		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "b.jsonl"))
+	})
+
+	t.Run("nothing to prune", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		writeSessionFile(t, filepath.Join(sessionDir, "-work", "new.jsonl"), recent, "new")
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{"--older-than", "30d"})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+		assert.Contains(t, out, "No sessions to prune.")
+	})
+}
+
+func TestResumeName(t *testing.T) {
+	assert.Equal(t, "override", resumeName("override", "stored"))
+	assert.Equal(t, "stored", resumeName("", "stored"))
+	assert.Equal(t, "", resumeName("", ""))
+}
+
 func TestNewResumeCmd(t *testing.T) {
 	cmd := newResumeCmd()
 
-	assert.Equal(t, "resume [session-id]", cmd.Use)
+	assert.Equal(t, "resume [session-id|name]", cmd.Use)
 
-	listFlag := cmd.Flags().Lookup("list")
-	require.NotNil(t, listFlag)
-	assert.Equal(t, "false", listFlag.DefValue)
+	nameFlag := cmd.Flags().Lookup("name")
+	require.NotNil(t, nameFlag)
+	assert.Equal(t, "n", nameFlag.Shorthand)
 
 	// Verify MaximumNArgs(1) is set by checking the Args validator.
 	require.NotNil(t, cmd.Args)
@@ -378,7 +527,7 @@ func TestGatewayCmd_MissingRepo(t *testing.T) {
 	assert.Contains(t, err.Error(), "--owner and --repo are required")
 }
 
-func TestResumeCmd_List_NoSessions(t *testing.T) {
+func TestListCmd_NoSessions(t *testing.T) {
 	setupTestOrchestrator(t, &stubContainerManager{})
 	repoDir := setupTestGitRepo(t)
 
@@ -387,8 +536,8 @@ func TestResumeCmd_List_NoSessions(t *testing.T) {
 	require.NoError(t, os.Chdir(repoDir))
 	t.Cleanup(func() { os.Chdir(origDir) })
 
-	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd := newListCmd()
+	cmd.SetArgs([]string{})
 
 	output := captureStdout(t, func() {
 		err = cmd.Execute()
@@ -397,7 +546,7 @@ func TestResumeCmd_List_NoSessions(t *testing.T) {
 	assert.Contains(t, output, "No sessions found.")
 }
 
-func TestResumeCmd_List_WithSessions(t *testing.T) {
+func TestListCmd_WithSessions(t *testing.T) {
 	setupTestOrchestrator(t, &stubContainerManager{})
 	repoDir := setupTestGitRepo(t)
 
@@ -420,20 +569,26 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	sessionFile := filepath.Join(sessionDir, "abc12345.jsonl")
 	writeSessionFile(t, sessionFile, "2025-01-15T10:30:01Z", "Hello Claude")
 
-	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	// Write a sidecar metadata file so the NAME column is populated.
+	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "abc12345.json"),
+		[]byte(`{"name":"my-session"}`), 0o644))
+
+	cmd := newListCmd()
+	cmd.SetArgs([]string{})
 
 	output := captureStdout(t, func() {
 		err = cmd.Execute()
 	})
 	require.NoError(t, err)
 	assert.Contains(t, output, "SESSION ID")
+	assert.Contains(t, output, "NAME")
 	assert.Contains(t, output, "WORKTREE")
 	assert.Contains(t, output, "abc12345")
+	assert.Contains(t, output, "my-session")
 	assert.Contains(t, output, "Hello Claude")
 }
 
-func TestResumeCmd_List_WithLongMessage(t *testing.T) {
+func TestListCmd_WithLongMessage(t *testing.T) {
 	setupTestOrchestrator(t, &stubContainerManager{})
 	repoDir := setupTestGitRepo(t)
 
@@ -456,8 +611,8 @@ func TestResumeCmd_List_WithLongMessage(t *testing.T) {
 	sessionFile := filepath.Join(sessionDir, "def67890.jsonl")
 	writeSessionFile(t, sessionFile, "2025-01-15T10:30:01Z", longMsg)
 
-	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd := newListCmd()
+	cmd.SetArgs([]string{})
 
 	output := captureStdout(t, func() {
 		err = cmd.Execute()
@@ -491,14 +646,14 @@ func TestResumeCmd_NotInGitRepo(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(origDir) })
 
 	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd.SetArgs([]string{})
 
 	err = cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to identify project")
 }
 
-func TestResumeCmd_List_ShowsWorktreeName(t *testing.T) {
+func TestListCmd_ShowsWorktreeName(t *testing.T) {
 	setupTestOrchestrator(t, &stubContainerManager{})
 	repoDir := setupTestGitRepo(t)
 
@@ -527,8 +682,8 @@ func TestResumeCmd_List_ShowsWorktreeName(t *testing.T) {
 	writeSessionFile(t, filepath.Join(wtDir, "wt-session.jsonl"),
 		"2025-01-15T11:00:00Z", "worktree work")
 
-	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd := newListCmd()
+	cmd.SetArgs([]string{})
 
 	output := captureStdout(t, func() {
 		err = cmd.Execute()
