@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -443,5 +446,93 @@ func TestHelperFunctions(t *testing.T) {
 		o, r = resolveOwnerRepo(map[string]any{}, "x", "y")
 		assert.Equal(t, "x", o)
 		assert.Equal(t, "y", r)
+	})
+}
+
+func TestResolveThreadTool_Execute(t *testing.T) {
+	policy := &Policy{AllowedOwner: "my-owner", AllowedRepo: "my-repo"}
+
+	// graphHandler serves the review-threads query and the resolve mutation.
+	graphHandler := func(threadResolved bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(body), "mutation") {
+				w.Write([]byte(`{"data":{"resolveReviewThread":{"thread":{"id":"T1","isResolved":true}}}}`))
+				return
+			}
+			resolved := "false"
+			if threadResolved {
+				resolved = "true"
+			}
+			w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{` +
+				`"pageInfo":{"hasNextPage":false,"endCursor":""},` +
+				`"nodes":[{"id":"T1","isResolved":` + resolved + `,"comments":{"nodes":[{"databaseId":100}]}}]}}}}}`))
+		}
+	}
+
+	t.Run("resolves an open thread", func(t *testing.T) {
+		gh := httptest.NewServer(graphHandler(false))
+		defer gh.Close()
+		client := newGraphQLClient(gh.URL)
+
+		out, isErr, err := executeTool(context.Background(), "github_pr_resolve_thread",
+			map[string]any{"number": float64(79), "comment_id": float64(100)},
+			"my-owner", "my-repo", policy, client)
+		require.NoError(t, err)
+		assert.False(t, isErr)
+		assert.Contains(t, out, `"isResolved":true`)
+		assert.NotContains(t, out, "alreadyResolved")
+	})
+
+	t.Run("already resolved is a no-op", func(t *testing.T) {
+		gh := httptest.NewServer(graphHandler(true))
+		defer gh.Close()
+		client := newGraphQLClient(gh.URL)
+
+		out, isErr, err := executeTool(context.Background(), "github_pr_resolve_thread",
+			map[string]any{"number": float64(79), "comment_id": float64(100)},
+			"my-owner", "my-repo", policy, client)
+		require.NoError(t, err)
+		assert.False(t, isErr)
+		assert.Contains(t, out, "alreadyResolved")
+	})
+
+	t.Run("comment not found", func(t *testing.T) {
+		gh := httptest.NewServer(graphHandler(false))
+		defer gh.Close()
+		client := newGraphQLClient(gh.URL)
+
+		out, isErr, err := executeTool(context.Background(), "github_pr_resolve_thread",
+			map[string]any{"number": float64(79), "comment_id": float64(999)},
+			"my-owner", "my-repo", policy, client)
+		require.NoError(t, err)
+		assert.True(t, isErr)
+		assert.Contains(t, out, "no review thread found")
+	})
+
+	t.Run("missing number", func(t *testing.T) {
+		_, _, err := executeTool(context.Background(), "github_pr_resolve_thread",
+			map[string]any{"comment_id": float64(100)},
+			"my-owner", "my-repo", policy, newGraphQLClient("http://unused"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "number")
+	})
+
+	t.Run("missing comment_id", func(t *testing.T) {
+		_, _, err := executeTool(context.Background(), "github_pr_resolve_thread",
+			map[string]any{"number": float64(79)},
+			"my-owner", "my-repo", policy, newGraphQLClient("http://unused"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "comment_id")
+	})
+
+	t.Run("policy denies a non-configured repo", func(t *testing.T) {
+		// owner/repo differ from the policy's allowed repo: must be rejected
+		// before any GraphQL call.
+		_, _, err := executeTool(context.Background(), "github_pr_resolve_thread",
+			map[string]any{"number": float64(79), "comment_id": float64(100)},
+			"other-owner", "other-repo", policy, newGraphQLClient("http://unused"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "write access denied")
 	})
 }

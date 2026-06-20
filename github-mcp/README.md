@@ -13,6 +13,7 @@ A GitHub MCP (Model Context Protocol) server that runs as a per-session sidecar 
 | `github_pr_merge` | Merge a pull request | write |
 | `github_pr_comment` | Comment on a pull request | write |
 | `github_pr_reviews` | List PR reviews | read |
+| `github_pr_resolve_thread` | Resolve a PR review comment thread (GraphQL) | write |
 | `github_issue_list` | List issues | read |
 | `github_issue_get` | Get an issue | read |
 | `github_issue_create` | Create an issue | write |
@@ -26,6 +27,10 @@ A GitHub MCP (Model Context Protocol) server that runs as a per-session sidecar 
 
 - **Read** operations are allowed on any repository.
 - **Write** operations are restricted to the configured `--owner`/`--repo`.
+- `github_pr_resolve_thread` is a write op. GraphQL thread node IDs are
+  global, so rather than accept a thread ID it takes a PR `number` plus a
+  review `comment_id` and looks the thread up **within the configured repo**,
+  keeping the single-repo write restriction intact.
 
 ## Usage
 

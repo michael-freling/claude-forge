@@ -27,6 +27,11 @@ type toolDef struct {
 	// buildRequest constructs the GitHub API method, path, and body from the
 	// tool arguments and the server's configured owner/repo.
 	buildRequest func(args map[string]any, owner, repo string) (method, path string, body io.Reader, err error)
+
+	// execute, when non-nil, fully handles the tool call instead of the generic
+	// buildRequest/policy/HTTP flow. It is used by tools that need GraphQL or
+	// multi-step logic. Such tools are responsible for their own policy checks.
+	execute func(ctx context.Context, args map[string]any, owner, repo string, policy *Policy, client *GitHubClient) (string, bool, error)
 }
 
 // jsonSchema is a helper for building JSON Schema objects.
@@ -47,21 +52,22 @@ var toolRegistry map[string]*toolDef
 
 func init() {
 	toolRegistry = map[string]*toolDef{
-		"github_pr_list":       prListTool(),
-		"github_pr_get":        prGetTool(),
-		"github_pr_create":     prCreateTool(),
-		"github_pr_update":     prUpdateTool(),
-		"github_pr_merge":      prMergeTool(),
-		"github_pr_comment":    prCommentTool(),
-		"github_pr_reviews":    prReviewsTool(),
-		"github_issue_list":    issueListTool(),
-		"github_issue_get":     issueGetTool(),
-		"github_issue_create":  issueCreateTool(),
-		"github_issue_comment": issueCommentTool(),
-		"github_repo_get":      repoGetTool(),
-		"github_release_list":  releaseListTool(),
-		"github_checks_list":   checksListTool(),
-		"github_api":           apiTool(),
+		"github_pr_list":           prListTool(),
+		"github_pr_get":            prGetTool(),
+		"github_pr_create":         prCreateTool(),
+		"github_pr_update":         prUpdateTool(),
+		"github_pr_merge":          prMergeTool(),
+		"github_pr_comment":        prCommentTool(),
+		"github_pr_reviews":        prReviewsTool(),
+		"github_pr_resolve_thread": prResolveThreadTool(),
+		"github_issue_list":        issueListTool(),
+		"github_issue_get":         issueGetTool(),
+		"github_issue_create":      issueCreateTool(),
+		"github_issue_comment":     issueCommentTool(),
+		"github_repo_get":          repoGetTool(),
+		"github_release_list":      releaseListTool(),
+		"github_checks_list":       checksListTool(),
+		"github_api":               apiTool(),
 	}
 }
 
@@ -79,6 +85,12 @@ func executeTool(ctx context.Context, name string, args map[string]any, owner, r
 	td, ok := toolRegistry[name]
 	if !ok {
 		return "", false, fmt.Errorf("unknown tool: %s", name)
+	}
+
+	// Tools with a custom executor (e.g. GraphQL-based) handle everything
+	// themselves, including their own policy enforcement.
+	if td.execute != nil {
+		return td.execute(ctx, args, owner, repo, policy, client)
 	}
 
 	method, path, body, err := td.buildRequest(args, owner, repo)
@@ -294,6 +306,64 @@ func prReviewsTool() *toolDef {
 			o, r := resolveOwnerRepo(args, owner, repo)
 			path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", o, r, num)
 			return http.MethodGet, path, nil, nil
+		},
+	}
+}
+
+// prResolveThreadTool resolves a PR review comment thread. Resolving a thread
+// is only possible via the GraphQL API, so this tool uses a custom executor.
+// To preserve the single-repo write limitation, it locates the thread within
+// the configured owner/repo (GraphQL thread node IDs are global and would
+// otherwise allow resolving threads in any repository).
+func prResolveThreadTool() *toolDef {
+	return &toolDef{
+		Definition: ToolDefinition{
+			Name: "github_pr_resolve_thread",
+			Description: "Resolve a pull request review comment thread (the thread that contains " +
+				"the given review comment). Restricted to the configured repository.",
+			InputSchema: jsonSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"number":     {Type: "number", Description: "Pull request number"},
+					"comment_id": {Type: "number", Description: "Database ID of a review comment in the thread to resolve"},
+				},
+				Required: []string{"number", "comment_id"},
+			},
+		},
+		IsWrite: true,
+		execute: func(ctx context.Context, args map[string]any, owner, repo string, policy *Policy, client *GitHubClient) (string, bool, error) {
+			number, ok := getNumber(args, "number")
+			if !ok {
+				return "", false, fmt.Errorf("missing required parameter: number")
+			}
+			commentID, ok := getNumber(args, "comment_id")
+			if !ok {
+				return "", false, fmt.Errorf("missing required parameter: comment_id")
+			}
+
+			// Enforce the single-repo write policy against the configured
+			// owner/repo. The thread is always looked up within that repo below,
+			// so resolution cannot reach another repository.
+			if err := policy.CheckTool("github_pr_resolve_thread", true, owner, repo); err != nil {
+				return "", false, err
+			}
+
+			thread, err := findReviewThreadByComment(ctx, client, owner, repo, number, commentID)
+			if err != nil {
+				return "", false, err
+			}
+			if thread == nil {
+				return fmt.Sprintf("no review thread found for comment %d on %s/%s#%d", commentID, owner, repo, number), true, nil
+			}
+			if thread.IsResolved {
+				return fmt.Sprintf(`{"threadId":%q,"isResolved":true,"alreadyResolved":true}`, thread.ID), false, nil
+			}
+
+			resolved, err := resolveReviewThreadByID(ctx, client, thread.ID)
+			if err != nil {
+				return "", false, err
+			}
+			return fmt.Sprintf(`{"threadId":%q,"isResolved":%t}`, thread.ID, resolved), false, nil
 		},
 	}
 }
