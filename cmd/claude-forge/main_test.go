@@ -26,7 +26,7 @@ func TestNewRootCmd(t *testing.T) {
 	assert.Equal(t, "claude-forge", cmd.Use)
 
 	expectedSubcommands := []string{
-		"init", "start", "resume", "stop", "status",
+		"init", "start", "resume", "list", "stop", "status",
 		"build", "auth", "plugins", "version", "gateway", "kube", "mcp",
 	}
 
@@ -53,7 +53,10 @@ func TestNewRootCmd(t *testing.T) {
 func TestNewStartCmd(t *testing.T) {
 	cmd := newStartCmd()
 
-	assert.Equal(t, "start", cmd.Use)
+	assert.Equal(t, "start <name>", cmd.Use)
+
+	// The session name is a required positional argument.
+	require.NotNil(t, cmd.Args)
 
 	worktreeFlag := cmd.Flags().Lookup("worktree")
 	require.NotNil(t, worktreeFlag)
@@ -67,19 +70,15 @@ func TestNewStartCmd(t *testing.T) {
 	require.NotNil(t, promptFlag)
 	assert.Equal(t, "", promptFlag.DefValue)
 	assert.Equal(t, "p", promptFlag.Shorthand)
-
-	nameFlag := cmd.Flags().Lookup("name")
-	require.NotNil(t, nameFlag)
-	assert.Equal(t, "n", nameFlag.Shorthand)
 }
 
-func TestStartCmd_RequiresName(t *testing.T) {
+func TestStartCmd_RequiresNameArg(t *testing.T) {
 	cmd := newStartCmd()
 	cmd.SetArgs([]string{})
 
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "name")
+	assert.Contains(t, err.Error(), "accepts 1 arg")
 }
 
 func TestResumeName(t *testing.T) {
@@ -93,9 +92,9 @@ func TestNewResumeCmd(t *testing.T) {
 
 	assert.Equal(t, "resume [session-id]", cmd.Use)
 
-	listFlag := cmd.Flags().Lookup("list")
-	require.NotNil(t, listFlag)
-	assert.Equal(t, "false", listFlag.DefValue)
+	nameFlag := cmd.Flags().Lookup("name")
+	require.NotNil(t, nameFlag)
+	assert.Equal(t, "n", nameFlag.Shorthand)
 
 	// Verify MaximumNArgs(1) is set by checking the Args validator.
 	require.NotNil(t, cmd.Args)
@@ -397,7 +396,7 @@ func TestGatewayCmd_MissingRepo(t *testing.T) {
 	assert.Contains(t, err.Error(), "--owner and --repo are required")
 }
 
-func TestResumeCmd_List_NoSessions(t *testing.T) {
+func TestListCmd_NoSessions(t *testing.T) {
 	setupTestOrchestrator(t, &stubContainerManager{})
 	repoDir := setupTestGitRepo(t)
 
@@ -406,8 +405,8 @@ func TestResumeCmd_List_NoSessions(t *testing.T) {
 	require.NoError(t, os.Chdir(repoDir))
 	t.Cleanup(func() { os.Chdir(origDir) })
 
-	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd := newListCmd()
+	cmd.SetArgs([]string{})
 
 	output := captureStdout(t, func() {
 		err = cmd.Execute()
@@ -416,7 +415,7 @@ func TestResumeCmd_List_NoSessions(t *testing.T) {
 	assert.Contains(t, output, "No sessions found.")
 }
 
-func TestResumeCmd_List_WithSessions(t *testing.T) {
+func TestListCmd_WithSessions(t *testing.T) {
 	setupTestOrchestrator(t, &stubContainerManager{})
 	repoDir := setupTestGitRepo(t)
 
@@ -443,8 +442,8 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "abc12345.json"),
 		[]byte(`{"name":"my-session"}`), 0o644))
 
-	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd := newListCmd()
+	cmd.SetArgs([]string{})
 
 	output := captureStdout(t, func() {
 		err = cmd.Execute()
@@ -458,7 +457,7 @@ func TestResumeCmd_List_WithSessions(t *testing.T) {
 	assert.Contains(t, output, "Hello Claude")
 }
 
-func TestResumeCmd_List_WithLongMessage(t *testing.T) {
+func TestListCmd_WithLongMessage(t *testing.T) {
 	setupTestOrchestrator(t, &stubContainerManager{})
 	repoDir := setupTestGitRepo(t)
 
@@ -481,8 +480,8 @@ func TestResumeCmd_List_WithLongMessage(t *testing.T) {
 	sessionFile := filepath.Join(sessionDir, "def67890.jsonl")
 	writeSessionFile(t, sessionFile, "2025-01-15T10:30:01Z", longMsg)
 
-	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd := newListCmd()
+	cmd.SetArgs([]string{})
 
 	output := captureStdout(t, func() {
 		err = cmd.Execute()
@@ -516,14 +515,14 @@ func TestResumeCmd_NotInGitRepo(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(origDir) })
 
 	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd.SetArgs([]string{})
 
 	err = cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to identify project")
 }
 
-func TestResumeCmd_List_ShowsWorktreeName(t *testing.T) {
+func TestListCmd_ShowsWorktreeName(t *testing.T) {
 	setupTestOrchestrator(t, &stubContainerManager{})
 	repoDir := setupTestGitRepo(t)
 
@@ -552,8 +551,8 @@ func TestResumeCmd_List_ShowsWorktreeName(t *testing.T) {
 	writeSessionFile(t, filepath.Join(wtDir, "wt-session.jsonl"),
 		"2025-01-15T11:00:00Z", "worktree work")
 
-	cmd := newResumeCmd()
-	cmd.SetArgs([]string{"--list"})
+	cmd := newListCmd()
+	cmd.SetArgs([]string{})
 
 	output := captureStdout(t, func() {
 		err = cmd.Execute()

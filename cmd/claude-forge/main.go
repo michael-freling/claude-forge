@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,7 @@ containers, Docker networks, and session state.`,
 		newInitCmd(),
 		newStartCmd(),
 		newResumeCmd(),
+		newListCmd(),
 		newStopCmd(),
 		newStatusCmd(),
 		newBuildCmd(),
@@ -260,18 +262,20 @@ func newStartCmd() *cobra.Command {
 		noSkipPermissions bool
 		prompt            string
 		mounts            []string
-		name              string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "start",
+		Use:   "start <name>",
 		Short: "Start a new Claude Code session in a Docker container",
 		Long: `Start launches a new Claude Code agent and gateway in Docker containers.
-By default, --dangerously-skip-permissions is enabled. Use --no-skip-permissions
-to disable it. A session --name is required and is passed to Claude Code.`,
+The required <name> argument is a human-readable session name; it is passed to
+Claude Code and shown in 'resume --list'. By default,
+--dangerously-skip-permissions is enabled; use --no-skip-permissions to disable
+it.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "", name)
+			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "", args[0])
 		},
 	}
 
@@ -279,16 +283,69 @@ to disable it. A session --name is required and is passed to Claude Code.`,
 	cmd.Flags().BoolVar(&noSkipPermissions, "no-skip-permissions", false, "Disable --dangerously-skip-permissions")
 	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Initial prompt to send to Claude Code")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
-	cmd.Flags().StringVarP(&name, "name", "n", "", "Human-readable name for this session (required)")
-	_ = cmd.MarkFlagRequired("name")
 
 	return cmd
+}
+
+// projectSessionDir resolves the host session directory for the project in the
+// current working directory.
+func projectSessionDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+	proj, err := project.Identify(cwd)
+	if err != nil {
+		return "", fmt.Errorf("failed to identify project: %w", err)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".claude-forge", proj.ID), nil
+}
+
+// listSessions writes the session table for sessionDir to w.
+func listSessions(w io.Writer, sessionDir string) error {
+	sessions, err := session.List(sessionDir)
+	if err != nil {
+		return fmt.Errorf("failed to list sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		fmt.Fprintln(w, "No sessions found.")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "SESSION ID\tNAME\tCREATED\tWORKTREE\tFIRST MESSAGE")
+	for _, s := range sessions {
+		firstMsg := s.FirstMsg
+		if len(firstMsg) > 60 {
+			firstMsg = firstMsg[:57] + "..."
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, s.CreatedAt.Format(time.RFC3339), s.WorktreeName(), firstMsg)
+	}
+	return tw.Flush()
+}
+
+// newListCmd creates the "list" subcommand.
+func newListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List past Claude Code sessions for the current project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sessionDir, err := projectSessionDir()
+			if err != nil {
+				return err
+			}
+			return listSessions(cmd.OutOrStdout(), sessionDir)
+		},
+	}
 }
 
 // newResumeCmd creates the "resume" subcommand.
 func newResumeCmd() *cobra.Command {
 	var (
-		list   bool
 		mounts []string
 		name   string
 	)
@@ -296,47 +353,14 @@ func newResumeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resume [session-id]",
 		Short: "Resume a past Claude Code session",
-		Long: `Resume a previous session by ID, or use --list to see available sessions.
-If no session ID is given and --list is not set, the most recent session
-is continued. The session name is reused unless overridden with --name.`,
+		Long: `Resume a previous session by ID. If no session ID is given, the most
+recent session is continued. Run 'claude-forge list' to see available
+sessions. The session name is reused unless overridden with --name.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cwd, err := os.Getwd()
+			sessionDir, err := projectSessionDir()
 			if err != nil {
-				return fmt.Errorf("failed to get working directory: %w", err)
-			}
-
-			proj, err := project.Identify(cwd)
-			if err != nil {
-				return fmt.Errorf("failed to identify project: %w", err)
-			}
-
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("failed to get home directory: %w", err)
-			}
-			sessionDir := filepath.Join(homeDir, ".claude-forge", proj.ID)
-
-			if list {
-				sessions, err := session.List(sessionDir)
-				if err != nil {
-					return fmt.Errorf("failed to list sessions: %w", err)
-				}
-				if len(sessions) == 0 {
-					fmt.Println("No sessions found.")
-					return nil
-				}
-
-				w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(w, "SESSION ID\tNAME\tCREATED\tWORKTREE\tFIRST MESSAGE")
-				for _, s := range sessions {
-					firstMsg := s.FirstMsg
-					if len(firstMsg) > 60 {
-						firstMsg = firstMsg[:57] + "..."
-					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, s.CreatedAt.Format(time.RFC3339), s.WorktreeName(), firstMsg)
-				}
-				return w.Flush()
+				return err
 			}
 
 			if len(args) == 1 {
@@ -360,7 +384,6 @@ is continued. The session name is reused unless overridden with --name.`,
 		},
 	}
 
-	cmd.Flags().BoolVar(&list, "list", false, "List available sessions")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Override the session name passed to Claude Code (defaults to the stored name)")
 
