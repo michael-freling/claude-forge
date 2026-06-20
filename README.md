@@ -2,10 +2,6 @@
 
 `claude-forge` launches Claude Code inside isolated Docker containers with a secure gateway proxy for GitHub access. The gateway allows read operations (clone, pull, fetch) to any repository but restricts push and write operations to only the current project's repository.
 
-> **Note:** This repository was previously named `claude-code-tools`. The
-> standalone `claude-hooks` and `update-ci-secrets` tools now live in
-> [`michael-freling/claude-code-tools`](https://github.com/michael-freling/claude-code-tools).
-
 ## Features
 
 - Runs Claude Code in Docker with `--dangerously-skip-permissions` by default
