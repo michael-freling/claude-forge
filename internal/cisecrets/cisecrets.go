@@ -58,7 +58,7 @@ func (u *Updater) Update(ctx context.Context, token string) (string, error) {
 func (u *Updater) UpdateFromCredentials(ctx context.Context, claudeDir string) (string, error) {
 	creds, err := auth.Resolve(claudeDir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w; pass --oauth-token to set a token directly", err)
 	}
 	if creds.AuthType != "oauth" {
 		return "", fmt.Errorf("resolved credential is %q, not an OAuth token; %s requires an OAuth login (run 'claude' to authenticate)", creds.AuthType, SecretName)

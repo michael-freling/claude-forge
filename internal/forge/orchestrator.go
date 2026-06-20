@@ -308,11 +308,14 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	} else if opts.Continue {
 		agentCmd = append(agentCmd, "--continue")
 	} else {
-		// --session-id and --name are Claude Code CLI flags; re-verify they
-		// still exist against `claude --help` when bumping the agent image.
+		// --session-id is a Claude Code CLI flag; re-verify it still exists
+		// against `claude --help` when bumping the agent image.
 		agentCmd = append(agentCmd, "--session-id", claudeSessionID)
 	}
 	if opts.Name != "" {
+		// --name is a Claude Code CLI flag (passed on fresh and resume/continue
+		// paths); re-verify it still exists against `claude --help` when bumping
+		// the agent image.
 		agentCmd = append(agentCmd, "--name", opts.Name)
 	}
 	if opts.Prompt != "" {

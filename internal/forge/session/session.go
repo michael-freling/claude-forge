@@ -80,15 +80,20 @@ func WriteMetadata(sessionDir, sessionID string, meta Metadata) error {
 	return nil
 }
 
-// readMetadata reads the sidecar metadata for a session. A missing or invalid
-// file yields a zero Metadata and no error.
+// readMetadata reads the sidecar metadata for a session. A missing, unreadable,
+// or corrupt sidecar is treated the same: it yields a zero Metadata and no
+// error, so the name simply renders blank in `resume --list` rather than
+// failing the listing. Sidecars are only ever written by WriteMetadata (valid
+// JSON), so corruption indicates external tampering.
 func readMetadata(sessionDir, sessionID string) Metadata {
 	data, err := os.ReadFile(metadataPath(sessionDir, sessionID))
 	if err != nil {
 		return Metadata{}
 	}
 	var meta Metadata
-	_ = json.Unmarshal(data, &meta)
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return Metadata{}
+	}
 	return meta
 }
 

@@ -100,7 +100,7 @@ func TestUpdateFromCredentials(t *testing.T) {
 	t.Run("resolve error", func(t *testing.T) {
 		u := &Updater{Repo: "owner/repo", setter: func(context.Context, string, string, string) error { return nil }}
 		_, err := u.UpdateFromCredentials(context.Background(), filepath.Join(t.TempDir(), "missing"))
-		assert.Error(t, err)
+		assert.ErrorContains(t, err, "--oauth-token")
 	})
 }
 
