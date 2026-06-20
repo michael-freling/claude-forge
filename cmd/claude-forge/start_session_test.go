@@ -48,7 +48,7 @@ func (fakeContainerManager) RemoveContainer(context.Context, string) error      
 func (fakeContainerManager) ListForgeContainers(context.Context) ([]container.ContainerInfo, error) {
 	return nil, nil
 }
-func (fakeContainerManager) PullImage(context.Context, string) error          { return nil }
+func (fakeContainerManager) PullImage(context.Context, string) error           { return nil }
 func (fakeContainerManager) ImageExists(context.Context, string) (bool, error) { return true, nil }
 func (fakeContainerManager) ContainerLogs(context.Context, string) (string, error) {
 	return "", nil
