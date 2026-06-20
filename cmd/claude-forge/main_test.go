@@ -115,13 +115,26 @@ func pruneSetup(t *testing.T) string {
 }
 
 func TestPruneCmd(t *testing.T) {
-	t.Run("requires a filter", func(t *testing.T) {
-		pruneSetup(t)
+	t.Run("defaults to older-than 30 days", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		writeSessionFile(t, filepath.Join(sessionDir, "-work", "old.jsonl"), "2020-01-01T00:00:00Z", "old")
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		writeSessionFile(t, filepath.Join(sessionDir, "-work", "new.jsonl"), recent, "new")
+
 		cmd := newPruneCmd()
-		cmd.SetArgs([]string{})
-		err := cmd.Execute()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "older-than")
+		cmd.SetArgs([]string{}) // no flags → default 30d window
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "Deleted 1 session")
+		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "old.jsonl"))
+		assert.FileExists(t, filepath.Join(sessionDir, "-work", "new.jsonl"))
+	})
+
+	t.Run("older-than default is 30d", func(t *testing.T) {
+		cmd := newPruneCmd()
+		f := cmd.Flags().Lookup("older-than")
+		require.NotNil(t, f)
+		assert.Equal(t, "30d", f.DefValue)
 	})
 
 	t.Run("invalid older-than", func(t *testing.T) {
