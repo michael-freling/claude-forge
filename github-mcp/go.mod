@@ -1,4 +1,4 @@
-module github.com/michael-freling/claude-code-tools/github-mcp
+module github.com/michael-freling/claude-forge/github-mcp
 
 go 1.26.0
 

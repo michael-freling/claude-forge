@@ -920,7 +920,7 @@ func TestStartGateway(t *testing.T) {
 				SSHDir:      "/home/user/.ssh",
 				GHConfigDir: "/home/user/.config/gh",
 				Owner:       "michael-freling",
-				Repo:        "claude-code-tools",
+				Repo:        "claude-forge",
 			},
 			setupMock: func(m *MockDockerAPI) {
 				m.EXPECT().
@@ -933,7 +933,7 @@ func TestStartGateway(t *testing.T) {
 					).
 					DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
 						assert.Equal(t, "gateway:latest", config.Image)
-						assert.Equal(t, []string{"gateway", "--owner=michael-freling", "--repo=claude-code-tools"}, []string(config.Cmd))
+						assert.Equal(t, []string{"gateway", "--owner=michael-freling", "--repo=claude-forge"}, []string(config.Cmd))
 						assert.Contains(t, netConfig.EndpointsConfig, "forge_net")
 
 						// Check SSH mount
@@ -1550,7 +1550,7 @@ func TestStartGitHubMCP(t *testing.T) {
 				Image:       "github-mcp:latest",
 				NetworkName: "forge_net",
 				Owner:       "michael-freling",
-				Repo:        "claude-code-tools",
+				Repo:        "claude-forge",
 				Env:         map[string]string{"GITHUB_TOKEN": "ghp_test123"},
 			},
 			setupMock: func(m *MockDockerAPI) {
@@ -1564,7 +1564,7 @@ func TestStartGitHubMCP(t *testing.T) {
 					).
 					DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
 						assert.Equal(t, "github-mcp:latest", config.Image)
-						assert.Equal(t, []string{"--owner=michael-freling", "--repo=claude-code-tools"}, []string(config.Cmd))
+						assert.Equal(t, []string{"--owner=michael-freling", "--repo=claude-forge"}, []string(config.Cmd))
 						assert.Contains(t, config.Env, "GITHUB_TOKEN=ghp_test123")
 						assert.Contains(t, netConfig.EndpointsConfig, "forge_net")
 						assert.Equal(t, []string{"github-mcp"}, netConfig.EndpointsConfig["forge_net"].Aliases)

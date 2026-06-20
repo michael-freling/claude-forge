@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/michael-freling/claude-code-tools/internal/forge"
-	"github.com/michael-freling/claude-code-tools/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge"
+	"github.com/michael-freling/claude-forge/internal/forge/container"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

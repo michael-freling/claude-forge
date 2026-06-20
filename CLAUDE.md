@@ -1,4 +1,4 @@
-# Claude Code Guidelines for claude-code-tools
+# Claude Code Guidelines for claude-forge
 
 ## Testing
 

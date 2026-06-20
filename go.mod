@@ -1,4 +1,4 @@
-module github.com/michael-freling/claude-code-tools
+module github.com/michael-freling/claude-forge
 
 go 1.25.0
 

@@ -13,14 +13,14 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/michael-freling/claude-code-tools/internal/forge"
-	"github.com/michael-freling/claude-code-tools/internal/forge/auth"
-	forgeconfig "github.com/michael-freling/claude-code-tools/internal/forge/config"
-	"github.com/michael-freling/claude-code-tools/internal/forge/container"
-	"github.com/michael-freling/claude-code-tools/internal/forge/kube"
-	"github.com/michael-freling/claude-code-tools/internal/forge/project"
-	"github.com/michael-freling/claude-code-tools/internal/forge/session"
-	"github.com/michael-freling/claude-code-tools/internal/gateway"
+	"github.com/michael-freling/claude-forge/internal/forge"
+	"github.com/michael-freling/claude-forge/internal/forge/auth"
+	forgeconfig "github.com/michael-freling/claude-forge/internal/forge/config"
+	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/kube"
+	"github.com/michael-freling/claude-forge/internal/forge/project"
+	"github.com/michael-freling/claude-forge/internal/forge/session"
+	"github.com/michael-freling/claude-forge/internal/gateway"
 	"github.com/spf13/cobra"
 )
 

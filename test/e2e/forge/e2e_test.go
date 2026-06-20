@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/michael-freling/claude-code-tools/internal/forge/container"
-	"github.com/michael-freling/claude-code-tools/internal/forge/kube"
+	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/kube"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -154,7 +154,7 @@ Reply with the raw command outputs only, no other text.`
 		"expected git fetch to succeed without fatal errors")
 
 	// go test should show passing output (non-verbose `go test` prints "ok  <pkg>").
-	assert.Contains(t, outputStr, "ok  \tgithub.com/michael-freling/claude-code-tools", "expected output to contain ok from go test")
+	assert.Contains(t, outputStr, "ok  \tgithub.com/michael-freling/claude-forge", "expected output to contain ok from go test")
 
 	// Step 7: Verify containers are cleaned up.
 	dockerClient, err := container.NewClient()

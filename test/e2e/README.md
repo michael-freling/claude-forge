@@ -98,7 +98,7 @@ package e2e
 import (
 	"testing"
 
-	"github.com/michael-freling/claude-code-tools/test/e2e/helpers"
+	"github.com/michael-freling/claude-forge/test/e2e/helpers"
 	"github.com/stretchr/testify/require"
 )
 
