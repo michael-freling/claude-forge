@@ -108,7 +108,8 @@ func TestToolsList(t *testing.T) {
 	expectedTools := []string{
 		"github_pr_list", "github_pr_get", "github_pr_create",
 		"github_pr_update", "github_pr_merge", "github_pr_comment",
-		"github_pr_reviews", "github_issue_list", "github_issue_get",
+		"github_pr_reviews", "github_pr_resolve_thread",
+		"github_issue_list", "github_issue_get",
 		"github_issue_create", "github_issue_comment", "github_repo_get",
 		"github_release_list", "github_checks_list", "github_api",
 	}
