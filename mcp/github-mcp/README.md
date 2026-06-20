@@ -50,6 +50,6 @@ docker run -e GITHUB_TOKEN=ghp_... github-mcp --owner myorg --repo myrepo
 ## Development
 
 ```
-cd github-mcp
+cd mcp/github-mcp
 go test -v -race ./...
 ```
