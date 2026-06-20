@@ -350,6 +350,32 @@ func TestFind(t *testing.T) {
 	})
 }
 
+func TestDelete(t *testing.T) {
+	tmp := t.TempDir()
+
+	t.Run("removes transcript and sidecar", func(t *testing.T) {
+		work := filepath.Join(tmp, "-work")
+		require.NoError(t, os.MkdirAll(work, 0o755))
+		jsonl := filepath.Join(work, "s1.jsonl")
+		require.NoError(t, os.WriteFile(jsonl, []byte("{}"), 0o644))
+		require.NoError(t, WriteMetadata(tmp, "s1", Metadata{Name: "n1"}))
+
+		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: "-work"}))
+		assert.NoFileExists(t, jsonl)
+		assert.NoFileExists(t, metadataPath(tmp, "s1"))
+
+		// Idempotent: deleting again is not an error.
+		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: "-work"}))
+	})
+
+	t.Run("removes legacy root transcript", func(t *testing.T) {
+		jsonl := filepath.Join(tmp, "s2.jsonl")
+		require.NoError(t, os.WriteFile(jsonl, []byte("{}"), 0o644))
+		require.NoError(t, Delete(tmp, Session{ID: "s2"}))
+		assert.NoFileExists(t, jsonl)
+	})
+}
+
 func TestFind_ByName(t *testing.T) {
 	tmpDir := t.TempDir()
 

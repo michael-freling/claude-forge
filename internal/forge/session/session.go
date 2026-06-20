@@ -257,6 +257,19 @@ func parseSessionFile(sessionID string, filePath string) (*Session, error) {
 	}, nil
 }
 
+// Delete removes a session's transcript (.jsonl) and its sidecar metadata
+// (.json), if present. Missing files are not an error.
+func Delete(sessionDir string, s Session) error {
+	jsonl := filepath.Join(sessionDir, s.Subdir, s.ID+".jsonl")
+	if err := os.Remove(jsonl); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove session transcript: %w", err)
+	}
+	if err := os.Remove(metadataPath(sessionDir, s.ID)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove session metadata: %w", err)
+	}
+	return nil
+}
+
 // Find locates a session by exact ID, or failing that by name, across all
 // subdirectories in sessionDir. An ID match always wins over a name match.
 // Because names are not unique, the most recently created session with a

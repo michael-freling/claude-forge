@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -55,6 +56,7 @@ containers, Docker networks, and session state.`,
 		newStartCmd(),
 		newResumeCmd(),
 		newListCmd(),
+		newPruneCmd(),
 		newStopCmd(),
 		newStatusCmd(),
 		newBuildCmd(),
@@ -341,6 +343,103 @@ func newListCmd() *cobra.Command {
 			return listSessions(cmd.OutOrStdout(), sessionDir)
 		},
 	}
+}
+
+// parseAge parses a session age. It accepts standard Go durations (e.g. "720h")
+// plus a "<N>d" day form (e.g. "30d").
+func parseAge(s string) (time.Duration, error) {
+	if rest, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.Atoi(rest)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q", s)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
+// newPruneCmd creates the "prune" subcommand.
+func newPruneCmd() *cobra.Command {
+	var (
+		olderThan string
+		keep      int
+		dryRun    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Delete old Claude Code sessions for the current project",
+		Long: `Prune removes session transcripts (and their name sidecars) for the
+current project. Select what to delete with --older-than and/or --keep:
+--keep protects the N most recent sessions, and --older-than only deletes
+sessions older than the given age. Use --dry-run to preview.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if olderThan == "" && keep < 0 {
+				return fmt.Errorf("specify --older-than and/or --keep")
+			}
+
+			var maxAge time.Duration
+			if olderThan != "" {
+				var err error
+				maxAge, err = parseAge(olderThan)
+				if err != nil {
+					return fmt.Errorf("invalid --older-than: %w", err)
+				}
+			}
+
+			sessionDir, err := projectSessionDir()
+			if err != nil {
+				return err
+			}
+			sessions, err := session.List(sessionDir)
+			if err != nil {
+				return fmt.Errorf("failed to list sessions: %w", err)
+			}
+
+			// sessions are sorted most-recent-first.
+			now := time.Now()
+			var toPrune []session.Session
+			for i, s := range sessions {
+				if keep >= 0 && i < keep {
+					continue // protected: among the N newest
+				}
+				if olderThan != "" && now.Sub(s.CreatedAt) < maxAge {
+					continue // not old enough
+				}
+				toPrune = append(toPrune, s)
+			}
+
+			w := cmd.OutOrStdout()
+			if len(toPrune) == 0 {
+				fmt.Fprintln(w, "No sessions to prune.")
+				return nil
+			}
+
+			for _, s := range toPrune {
+				if dryRun {
+					fmt.Fprintf(w, "would delete  %s  %s  %s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.Name)
+					continue
+				}
+				if err := session.Delete(sessionDir, s); err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "deleted  %s  %s  %s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.Name)
+			}
+
+			verb := "Deleted"
+			if dryRun {
+				verb = "Would delete"
+			}
+			fmt.Fprintf(w, "%s %d session(s).\n", verb, len(toPrune))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&olderThan, "older-than", "", "Delete sessions older than this age (e.g. 30d, 720h)")
+	cmd.Flags().IntVar(&keep, "keep", -1, "Keep the N most recent sessions, delete the rest")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be deleted without deleting")
+
+	return cmd
 }
 
 // newResumeCmd creates the "resume" subcommand.
