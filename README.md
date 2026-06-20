@@ -1,12 +1,12 @@
-# Claude Code Tools
-
-A collection of CLI tools for working with Claude Code.
-
-## claude-forge
+# claude-forge
 
 `claude-forge` launches Claude Code inside isolated Docker containers with a secure gateway proxy for GitHub access. The gateway allows read operations (clone, pull, fetch) to any repository but restricts push and write operations to only the current project's repository.
 
-### Features
+> **Note:** This repository was previously named `claude-code-tools`. The
+> standalone `claude-hooks` and `update-ci-secrets` tools now live in
+> [`michael-freling/claude-code-tools`](https://github.com/michael-freling/claude-code-tools).
+
+## Features
 
 - Runs Claude Code in Docker with `--dangerously-skip-permissions` by default
 - Gateway proxy mediates all GitHub traffic (git + API) with per-repo write restrictions
@@ -16,27 +16,27 @@ A collection of CLI tools for working with Claude Code.
 - Dependency caching for Go, npm, pnpm, and pip
 - Host git identity and Claude Code configuration carried into the container
 
-### Prerequisites
+## Prerequisites
 
 - Docker (daemon must be running)
 - Go 1.25+ (to build from source)
 - A Claude Code subscription or API key
 
-### Installation
+## Installation
 
 ```bash
-go install github.com/michael-freling/claude-code-tools/cmd/claude-forge@latest
+go install github.com/michael-freling/claude-forge/cmd/claude-forge@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/michael-freling/claude-code-tools.git
-cd claude-code-tools
+git clone https://github.com/michael-freling/claude-forge.git
+cd claude-forge
 go build -o claude-forge ./cmd/claude-forge/
 ```
 
-### Quick Start
+## Quick Start
 
 ```bash
 # Navigate to your project directory
@@ -51,9 +51,9 @@ claude-forge start -p "Add unit tests for the auth package"
 
 On first run, `claude-forge build` is called automatically to pull the agent and gateway Docker images.
 
-### Usage
+## Usage
 
-#### Start a Session
+### Start a Session
 
 ```bash
 # Interactive session (attaches to container TTY)
@@ -69,7 +69,7 @@ claude-forge start --worktree
 claude-forge start --no-skip-permissions
 ```
 
-#### Resume a Session
+### Resume a Session
 
 ```bash
 # Resume the most recent session
@@ -82,7 +82,7 @@ claude-forge resume --list
 claude-forge resume <session-id>
 ```
 
-#### Manage Containers
+### Manage Containers
 
 ```bash
 # Show running containers
@@ -92,7 +92,7 @@ claude-forge status
 claude-forge stop
 ```
 
-#### Other Commands
+### Other Commands
 
 ```bash
 # Pull/rebuild Docker images
@@ -105,7 +105,7 @@ claude-forge auth
 claude-forge version
 ```
 
-### Configuration
+## Configuration
 
 Configuration is stored in `~/.config/claude-forge/config.yaml`:
 
@@ -121,7 +121,7 @@ defaults:
   worktree: false
 ```
 
-### Authentication
+## Authentication
 
 `claude-forge` resolves credentials in this order:
 
@@ -131,7 +131,7 @@ defaults:
 
 Run `claude-forge auth` to verify your credentials are detected.
 
-### How It Works
+## How It Works
 
 When you run `claude-forge start`, it:
 

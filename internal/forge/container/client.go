@@ -17,7 +17,7 @@ import (
 	dockerclient "github.com/docker/docker/client"
 )
 
-//go:generate mockgen -destination=mock_docker_test.go -package=container github.com/michael-freling/claude-code-tools/internal/forge/container DockerAPI
+//go:generate mockgen -destination=mock_docker_test.go -package=container github.com/michael-freling/claude-forge/internal/forge/container DockerAPI
 
 // ContainerManager abstracts container operations for the orchestrator.
 type ContainerManager interface {

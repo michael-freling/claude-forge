@@ -310,11 +310,11 @@ At startup, claude-forge reads:
 
 ```bash
 git remote get-url origin
-# → git@github.com:michael-freling/claude-code-tools.git
-# or: https://github.com/michael-freling/claude-code-tools.git
+# → git@github.com:michael-freling/claude-forge.git
+# or: https://github.com/michael-freling/claude-forge.git
 ```
 
-Normalized to `owner=michael-freling`, `repo=claude-code-tools`. Passed to gateway at startup.
+Normalized to `owner=michael-freling`, `repo=claude-forge`. Passed to gateway at startup.
 
 ### Volumes
 

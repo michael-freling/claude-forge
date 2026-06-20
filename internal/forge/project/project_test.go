@@ -21,42 +21,42 @@ func TestIdentify(t *testing.T) {
 	}{
 		{
 			name:      "SSH URL with .git suffix",
-			remoteURL: "git@github.com:michael-freling/claude-code-tools.git",
+			remoteURL: "git@github.com:michael-freling/claude-forge.git",
 			want: &Project{
 				Owner: "michael-freling",
-				Repo:  "claude-code-tools",
+				Repo:  "claude-forge",
 			},
 		},
 		{
 			name:      "SSH URL without .git suffix",
-			remoteURL: "git@github.com:michael-freling/claude-code-tools",
+			remoteURL: "git@github.com:michael-freling/claude-forge",
 			want: &Project{
 				Owner: "michael-freling",
-				Repo:  "claude-code-tools",
+				Repo:  "claude-forge",
 			},
 		},
 		{
 			name:      "HTTPS URL with .git suffix",
-			remoteURL: "https://github.com/michael-freling/claude-code-tools.git",
+			remoteURL: "https://github.com/michael-freling/claude-forge.git",
 			want: &Project{
 				Owner: "michael-freling",
-				Repo:  "claude-code-tools",
+				Repo:  "claude-forge",
 			},
 		},
 		{
 			name:      "HTTPS URL without .git suffix",
-			remoteURL: "https://github.com/michael-freling/claude-code-tools",
+			remoteURL: "https://github.com/michael-freling/claude-forge",
 			want: &Project{
 				Owner: "michael-freling",
-				Repo:  "claude-code-tools",
+				Repo:  "claude-forge",
 			},
 		},
 		{
 			name:      "Gateway-proxied URL",
-			remoteURL: "http://gateway:8080/github.com/michael-freling/claude-code-tools.git",
+			remoteURL: "http://gateway:8080/github.com/michael-freling/claude-forge.git",
 			want: &Project{
 				Owner: "michael-freling",
-				Repo:  "claude-code-tools",
+				Repo:  "claude-forge",
 			},
 		},
 	}

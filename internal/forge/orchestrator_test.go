@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/michael-freling/claude-code-tools/internal/forge/config"
-	"github.com/michael-freling/claude-code-tools/internal/forge/container"
-	"github.com/michael-freling/claude-code-tools/internal/forge/session"
+	"github.com/michael-freling/claude-forge/internal/forge/config"
+	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
