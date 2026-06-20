@@ -257,16 +257,24 @@ func parseSessionFile(sessionID string, filePath string) (*Session, error) {
 	}, nil
 }
 
-// Find locates a session by ID across all subdirectories in sessionDir.
-func Find(sessionDir, sessionID string) (*Session, error) {
+// Find locates a session by exact ID, or failing that by name, across all
+// subdirectories in sessionDir. An ID match always wins over a name match.
+// Because names are not unique, the most recently created session with a
+// matching name is returned (List is sorted most-recent-first).
+func Find(sessionDir, ref string) (*Session, error) {
 	sessions, err := List(sessionDir)
 	if err != nil {
 		return nil, err
 	}
 	for i := range sessions {
-		if sessions[i].ID == sessionID {
+		if sessions[i].ID == ref {
 			return &sessions[i], nil
 		}
 	}
-	return nil, fmt.Errorf("session %s not found", sessionID)
+	for i := range sessions {
+		if sessions[i].Name != "" && sessions[i].Name == ref {
+			return &sessions[i], nil
+		}
+	}
+	return nil, fmt.Errorf("session %q not found (by id or name)", ref)
 }

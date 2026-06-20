@@ -90,7 +90,7 @@ func TestResumeName(t *testing.T) {
 func TestNewResumeCmd(t *testing.T) {
 	cmd := newResumeCmd()
 
-	assert.Equal(t, "resume [session-id]", cmd.Use)
+	assert.Equal(t, "resume [session-id|name]", cmd.Use)
 
 	nameFlag := cmd.Flags().Lookup("name")
 	require.NotNil(t, nameFlag)

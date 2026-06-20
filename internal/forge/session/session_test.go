@@ -350,6 +350,45 @@ func TestFind(t *testing.T) {
 	})
 }
 
+func TestFind_ByName(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	workDir := filepath.Join(tmpDir, "-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+
+	// Two sessions named "hello"; the more recent one should win.
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "old.jsonl"),
+		[]byte(`{"type":"user","message":{"role":"user","content":"a"},"timestamp":"2026-05-08T10:00:00Z"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "new.jsonl"),
+		[]byte(`{"type":"user","message":{"role":"user","content":"b"},"timestamp":"2026-05-09T10:00:00Z"}`+"\n"), 0o644))
+	require.NoError(t, WriteMetadata(tmpDir, "old", Metadata{Name: "hello"}))
+	require.NoError(t, WriteMetadata(tmpDir, "new", Metadata{Name: "hello"}))
+
+	// A third session whose ID equals another session's name, to prove ID wins.
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "hello.jsonl"),
+		[]byte(`{"type":"user","message":{"role":"user","content":"c"},"timestamp":"2026-05-07T10:00:00Z"}`+"\n"), 0o644))
+
+	t.Run("resolves by name to most recent match", func(t *testing.T) {
+		// "hello" matches the session whose ID is literally "hello" first (ID wins).
+		sess, err := Find(tmpDir, "hello")
+		require.NoError(t, err)
+		assert.Equal(t, "hello", sess.ID)
+	})
+
+	t.Run("name-only ref resolves to most recent named session", func(t *testing.T) {
+		sess, err := Find(tmpDir, "world-does-not-exist")
+		require.Error(t, err)
+		assert.Nil(t, sess)
+	})
+
+	t.Run("name match when no ID collision", func(t *testing.T) {
+		require.NoError(t, WriteMetadata(tmpDir, "new", Metadata{Name: "greeting"}))
+		sess, err := Find(tmpDir, "greeting")
+		require.NoError(t, err)
+		assert.Equal(t, "new", sess.ID)
+	})
+}
+
 func TestFind_ReadError(t *testing.T) {
 	// Use a path that exists but can't be read (not a directory)
 	tmpFile := filepath.Join(t.TempDir(), "not-a-dir")

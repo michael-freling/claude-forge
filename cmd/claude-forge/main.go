@@ -351,11 +351,12 @@ func newResumeCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "resume [session-id]",
+		Use:   "resume [session-id|name]",
 		Short: "Resume a past Claude Code session",
-		Long: `Resume a previous session by ID. If no session ID is given, the most
-recent session is continued. Run 'claude-forge list' to see available
-sessions. The session name is reused unless overridden with --name.`,
+		Long: `Resume a previous session by ID or by name (the most recent session
+with that name). If no argument is given, the most recent session is
+continued. Run 'claude-forge list' to see available sessions. The session
+name is reused unless overridden with --name.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionDir, err := projectSessionDir()
@@ -368,7 +369,8 @@ sessions. The session name is reused unless overridden with --name.`,
 				if err != nil {
 					return err
 				}
-				return startSession(true, sess.IsWorktree(), "", args[0], sess.Subdir, false, mounts, sess.WorktreeName(), resumeName(name, sess.Name))
+				// Use the resolved session ID (args[0] may be a name).
+				return startSession(true, sess.IsWorktree(), "", sess.ID, sess.Subdir, false, mounts, sess.WorktreeName(), resumeName(name, sess.Name))
 			}
 
 			// Continue most recent session, detecting worktree if needed
