@@ -7,7 +7,7 @@ on:
       - 'docker/**'
       - 'cmd/claude-forge/**'
       - 'internal/**'
-      - 'github-mcp/**'
+      - 'mcp/github-mcp/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/docker.yml'
@@ -140,8 +140,8 @@ jobs:
       - name: Build and push github-mcp image
         uses: docker/build-push-action@v6
         with:
-          context: github-mcp
-          file: github-mcp/Dockerfile
+          context: mcp/github-mcp
+          file: mcp/github-mcp/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

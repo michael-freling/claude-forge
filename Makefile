@@ -26,7 +26,7 @@ help: ## Show this help
 
 test: ## Run all Go tests (root module + github-mcp module)
 	go test ./...
-	cd github-mcp && go test ./...
+	cd mcp/github-mcp && go test ./...
 
 images: agent-image gateway-image github-mcp-image kube-mcp-image ## Build/pull all container images
 
@@ -45,7 +45,7 @@ gateway-image: ## Build the gateway image (git proxy)
 	docker build $(DOCKER_BUILD_FLAGS) -t $(GATEWAY_IMAGE) -f docker/gateway/Dockerfile .
 
 github-mcp-image: ## Build the per-session GitHub MCP image
-	docker build $(DOCKER_BUILD_FLAGS) -t $(GITHUB_MCP_IMAGE) github-mcp/
+	docker build $(DOCKER_BUILD_FLAGS) -t $(GITHUB_MCP_IMAGE) mcp/github-mcp/
 
 kube-mcp-image: ## Pull the shared Kubernetes MCP image (built upstream)
 	docker pull $(KUBE_MCP_IMAGE)
