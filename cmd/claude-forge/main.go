@@ -94,6 +94,13 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 	}
 	defer cleanup()
 
+	// Sync the host's locally installed Claude Code plugins into forge's plugin
+	// directory so they are available in the session without a manual sync.
+	// Best-effort: a failure here should not block starting the session.
+	if err := syncHostPlugins(orch.HomeDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: plugin sync failed: %v\n", err)
+	}
+
 	ctx := context.Background()
 	hostUID := os.Getuid()
 	hostGID := os.Getgid()
@@ -679,7 +686,14 @@ var pluginsSyncRun = func(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
+	return syncHostPlugins(homeDir)
+}
 
+// syncHostPlugins reinstalls the host's locally installed Claude Code plugins
+// into forge's persistent plugins directory (~/.claude-forge/plugins) by running
+// "claude plugins install" inside a temporary container. It is a no-op when the
+// host has no plugins. Used by "plugins sync" and automatically at session start.
+var syncHostPlugins = func(homeDir string) error {
 	plugins, err := readHostPlugins(homeDir)
 	if err != nil {
 		return err
