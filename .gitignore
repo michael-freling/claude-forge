@@ -8,6 +8,7 @@ docker/agent/claude-forge
 # Coverage files
 coverage*.txt
 
-# Claude Code state
-.claude/
+# Claude Code state (local settings) — but track shared project skills
+.claude/*
+!.claude/skills/
 github-mcp/github-mcp
