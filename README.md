@@ -129,6 +129,7 @@ claude-forge build
 claude-forge auth
 
 # Sync host Claude Code plugins into forge's plugin directory
+# (this also runs automatically at the start of every session)
 claude-forge plugins sync
 
 # Restart the shared MCP server containers (e.g. Kubernetes MCP)
