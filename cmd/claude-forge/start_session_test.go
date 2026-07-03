@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -88,6 +89,48 @@ func TestStartSession_NonInteractive(t *testing.T) {
 	// Non-interactive (prompt set) so we don't try to attach to a TTY.
 	err = startSession(true, false, "do a task", "", "", false, nil, "", "")
 	require.NoError(t, err)
+}
+
+// TestStartSession_PluginSyncFailureNonFatal verifies that a failure while
+// syncing host plugins at session start is logged but does not abort the
+// session — plugin sync is best-effort.
+func TestStartSession_PluginSyncFailureNonFatal(t *testing.T) {
+	homeDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(homeDir+"/.claude", 0o755))
+	require.NoError(t, os.MkdirAll(homeDir+"/.config/claude-forge", 0o755))
+
+	projectDir := t.TempDir()
+	runGitIn(t, projectDir, "init")
+	runGitIn(t, projectDir, "remote", "add", "origin", "git@github.com:test-owner/test-repo.git")
+
+	origWD, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(projectDir))
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	originalOrch := createOrchestrator
+	createOrchestrator = func() (*forge.Orchestrator, func(), error) {
+		orch := forge.NewOrchestrator(fakeContainerManager{}, homeDir)
+		orch.Log = func(string, ...any) {}
+		return orch, func() {}, nil
+	}
+	t.Cleanup(func() { createOrchestrator = originalOrch })
+
+	originalSync := syncHostPlugins
+	var syncedHomeDir string
+	syncHostPlugins = func(h string) error {
+		syncedHomeDir = h
+		return errors.New("boom")
+	}
+	t.Cleanup(func() { syncHostPlugins = originalSync })
+
+	err = startSession(true, false, "do a task", "", "", false, nil, "", "")
+	require.NoError(t, err)
+	// Sync was invoked with the orchestrator's home dir, and its failure was
+	// tolerated.
+	require.Equal(t, homeDir, syncedHomeDir)
 }
 
 func runGitIn(t *testing.T, dir string, args ...string) {
