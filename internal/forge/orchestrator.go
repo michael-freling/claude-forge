@@ -269,6 +269,14 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:" + kube.MCPServerPort + "/mcp"}
 	}
 
+	// Merge user-configured custom MCP servers (e.g. a hosted Vercel MCP).
+	// ${VAR} references in URLs, headers, commands, args, and env are expanded
+	// against the host environment now so secrets stay out of config.yaml.
+	for _, s := range cfg.MCPServers {
+		mcpServers[s.Name] = customMCPServer(s)
+		o.Log("Custom MCP: %s", s.Name)
+	}
+
 	if err := claudecode.UpdateMCPServers(o.ConfigDir, mcpServers); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to update MCP settings: %w", err)
@@ -278,6 +286,13 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to register MCP servers in .claude.json: %w", err)
 	}
+
+	// Preflight OAuth-based MCP servers: the interactive OAuth flow cannot run
+	// inside the headless container, so warn (non-fatally) when a required token
+	// is missing or expired rather than letting the server silently fail to
+	// connect mid-session. Tokens are looked up in the same credentials file
+	// that is mounted into the container.
+	o.warnUnauthenticatedMCP(cfg)
 
 	// For fresh sessions, pin the Claude session ID so the resulting JSONL and
 	// the sidecar metadata file share a known identifier.
@@ -523,6 +538,76 @@ func readGHToken(ghConfigDir string) string {
 		return gh.OAuthToken
 	}
 	return ""
+}
+
+// customMCPServer converts a user-configured MCP server into the settings
+// shape written for Claude Code, expanding ${VAR} references in every string
+// field against the host environment.
+func customMCPServer(s config.MCPServerConfig) claudecode.MCPServerConfig {
+	out := claudecode.MCPServerConfig{Type: s.Type}
+	if s.IsStdio() {
+		out.Type = "stdio"
+		out.Command = os.ExpandEnv(s.Command)
+		for _, a := range s.Args {
+			out.Args = append(out.Args, os.ExpandEnv(a))
+		}
+		out.Env = expandEnvMap(s.Env)
+		return out
+	}
+
+	if out.Type == "" {
+		out.Type = "http"
+	}
+	out.URL = os.ExpandEnv(s.URL)
+	out.Headers = expandEnvMap(s.Headers)
+	return out
+}
+
+// expandEnvMap returns a copy of m with ${VAR} references in each value
+// expanded against the host environment. Returns nil for an empty map so the
+// omitempty JSON tags drop the field entirely.
+func expandEnvMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = os.ExpandEnv(v)
+	}
+	return out
+}
+
+// warnUnauthenticatedMCP checks each OAuth-based custom MCP server for a valid
+// stored token and logs a warning for any that is missing or expired. It never
+// fails the session — an unauthenticated server simply won't connect until the
+// user authenticates on the host.
+func (o *Orchestrator) warnUnauthenticatedMCP(cfg *config.Config) {
+	nowMs := time.Now().UnixMilli()
+	for _, s := range cfg.MCPServers {
+		if !s.OAuth {
+			continue
+		}
+		typ := s.Type
+		if typ == "" {
+			typ = "http"
+		}
+		url := os.ExpandEnv(s.URL)
+		// OAuth servers carry no static headers, so the lookup uses an empty set.
+		status, err := claudecode.CheckMCPOAuth(o.ClaudeDir, s.Name, typ, url, nil, nowMs)
+		if err != nil {
+			o.Log("Warning: could not check OAuth token for MCP %q: %v", s.Name, err)
+			continue
+		}
+		switch status {
+		case claudecode.MCPOAuthMissing:
+			o.Log("Warning: MCP server %q needs OAuth but no token was found; it will be unavailable this session.", s.Name)
+			o.Log("         Authenticate once on the host, then restart the session:")
+			o.Log("           claude mcp add --transport %s %s %s", typ, s.Name, url)
+			o.Log("           claude   # then run: /mcp -> %s -> Authenticate", s.Name)
+		case claudecode.MCPOAuthExpired:
+			o.Log("Warning: MCP server %q OAuth token is expired and not refreshable; re-authenticate on the host via 'claude' -> /mcp.", s.Name)
+		}
+	}
 }
 
 // startKubernetesMCP ensures the shared Kubernetes MCP service is running.

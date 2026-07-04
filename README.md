@@ -8,6 +8,7 @@
 - Gateway proxy mediates all GitHub traffic (git + API) with per-repo write restrictions
 - Per-session **GitHub MCP** sidecar scoped to the current repository
 - Optional shared **Kubernetes MCP** server for cluster access, gated by generated RBAC
+- Custom **MCP servers** (remote http/sse or stdio) configurable per install
 - Multiple instances can run in parallel across different projects
 - Named sessions with persistence — resume previous sessions by ID or name
 - Automatic auth detection from `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `~/.claude/.credentials.json`
@@ -156,6 +157,27 @@ defaults:
   skip_permissions: true
   worktree: false
 
+# Custom MCP servers (in addition to the built-in github/kubernetes servers)
+mcp_servers:
+  # Remote server (http/sse) with a static token
+  - name: example
+    type: http                       # http (default) | sse | stdio
+    url: https://mcp.example.com
+    headers:
+      Authorization: "Bearer ${EXAMPLE_TOKEN}"
+  # Remote server that authenticates via OAuth (e.g. hosted Vercel MCP)
+  - name: vercel
+    type: http
+    url: https://mcp.vercel.com
+    oauth: true
+  # Stdio server — a command run inside the agent container
+  - name: my-tool
+    type: stdio
+    command: my-mcp-server
+    args: ["--flag"]
+    env:
+      API_KEY: "${MY_TOOL_API_KEY}"
+
 # Optional Kubernetes MCP integration
 kubernetes:
   enabled: false
@@ -166,6 +188,76 @@ kubernetes:
       service_account_name: claude-forge-agent
       service_account_namespace: default
 ```
+
+## Custom MCP Servers
+
+Beyond the built-in `github` (and optional `kubernetes`) servers, you can expose
+any number of additional MCP servers to the agent via the `mcp_servers` list in
+`config.yaml`. Each entry is one of two kinds:
+
+- **Remote** (`type: http` or `type: sse`) — an HTTP/SSE endpoint reached over
+  the network. Set `url`, and optionally `headers` for authentication. This is
+  the right choice for hosted third-party servers such as the Vercel MCP server.
+- **Stdio** (`type: stdio`) — a command launched inside the agent container. Set
+  `command`, and optionally `args` and `env`. The command must be available in
+  the agent image.
+
+`${VAR}` references in `url`, `headers`, `command`, `args`, and `env` are
+expanded from your host environment when a session starts, so API tokens can be
+supplied without being written into `config.yaml`:
+
+```yaml
+mcp_servers:
+  - name: example
+    type: http
+    url: https://mcp.example.com
+    headers:
+      Authorization: "Bearer ${EXAMPLE_TOKEN}"
+```
+
+```bash
+export EXAMPLE_TOKEN=...
+claude-forge start "work session"
+```
+
+Server names must be unique and may not shadow the built-in `github` or
+`kubernetes` servers.
+
+### OAuth MCP servers (e.g. Vercel)
+
+Some hosted MCP servers authenticate via an interactive OAuth flow instead of a
+static token. That flow (browser + localhost callback) **cannot complete inside
+the headless container**, so authenticate once on the host — Claude Code stores
+the resulting token in `~/.claude/.credentials.json`, which claude-forge mounts
+into the container, so every session reuses it.
+
+Mark such servers with `oauth: true`:
+
+```yaml
+mcp_servers:
+  - name: vercel
+    type: http
+    url: https://mcp.vercel.com
+    oauth: true
+```
+
+Authenticate once on the host (use the **same name and URL** so the container
+finds the token):
+
+```bash
+claude mcp add --transport http vercel https://mcp.vercel.com
+claude            # then run: /mcp  →  vercel  →  Authenticate
+```
+
+At session start, claude-forge preflights every `oauth: true` server and prints
+a warning (without blocking the session) if its token is missing or expired, so
+you learn up front that the server won't connect rather than discovering it
+mid-session.
+
+> Note: OAuth token reuse relies on host and container sharing the file-based
+> credential store, which is the case on Linux/WSL. On macOS the token is kept
+> in the system Keychain (not the mounted file), so this carry-over does not
+> apply there.
 
 ## Authentication
 

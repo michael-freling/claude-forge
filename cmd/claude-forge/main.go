@@ -221,6 +221,37 @@ defaults:
   skip_permissions: false
   worktree: false
 
+# Custom MCP servers exposed to the agent, in addition to the built-in
+# github (and optional kubernetes) servers.
+#
+# Each entry is either a remote server (http/sse, reached over the network)
+# or a stdio server (a command run inside the agent container). ${VAR}
+# references are expanded from the host environment at session start, so
+# tokens stay out of this file.
+#
+# mcp_servers:
+#   # Remote example with a static token in a header.
+#   - name: example
+#     type: http                       # http (default) | sse | stdio
+#     url: https://mcp.example.com
+#     headers:
+#       Authorization: "Bearer ${EXAMPLE_TOKEN}"
+#   # OAuth example: a hosted Vercel MCP server. OAuth can't complete inside the
+#   # headless container, so authenticate once on the host (its token lands in
+#   # ~/.claude/.credentials.json, which is mounted in). With oauth: true,
+#   # claude-forge warns at session start if the token is missing or expired.
+#   - name: vercel
+#     type: http
+#     url: https://mcp.vercel.com
+#     oauth: true
+#   # Stdio example: a command launched inside the agent container.
+#   - name: my-tool
+#     type: stdio
+#     command: my-mcp-server
+#     args: ["--flag"]
+#     env:
+#       API_KEY: "${MY_TOOL_API_KEY}"
+
 # Kubernetes MCP server integration.
 # When enabled, a shared MCP server container gives agents read-only
 # access to your clusters via short-lived ServiceAccount tokens.

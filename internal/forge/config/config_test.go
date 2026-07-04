@@ -188,3 +188,90 @@ func TestLoad_PartialGatewayOnly(t *testing.T) {
 	assert.Equal(t, DefaultAgentImage, got.Images.Agent)
 	assert.Equal(t, "my-gateway:latest", got.Images.Gateway)
 }
+
+func TestLoad_MCPServers(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	configYAML := `mcp_servers:
+  - name: vercel
+    type: http
+    url: https://mcp.vercel.com
+    headers:
+      Authorization: "Bearer ${VERCEL_TOKEN}"
+  - name: local
+    type: stdio
+    command: my-mcp
+    args: ["--flag"]
+    env:
+      API_KEY: "${MY_KEY}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configYAML), 0o644))
+
+	got, err := Load(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, got.MCPServers, 2)
+
+	assert.Equal(t, "vercel", got.MCPServers[0].Name)
+	assert.Equal(t, "https://mcp.vercel.com", got.MCPServers[0].URL)
+	assert.Equal(t, "Bearer ${VERCEL_TOKEN}", got.MCPServers[0].Headers["Authorization"])
+	assert.False(t, got.MCPServers[0].IsStdio())
+
+	assert.Equal(t, "local", got.MCPServers[1].Name)
+	assert.True(t, got.MCPServers[1].IsStdio())
+	assert.Equal(t, []string{"--flag"}, got.MCPServers[1].Args)
+}
+
+func TestLoad_MCPServers_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		configYAML  string
+		errContains string
+	}{
+		{
+			name:        "missing name",
+			configYAML:  "mcp_servers:\n  - url: https://example.com\n",
+			errContains: "name is required",
+		},
+		{
+			name:        "reserved name",
+			configYAML:  "mcp_servers:\n  - name: github\n    url: https://example.com\n",
+			errContains: "reserved",
+		},
+		{
+			name:        "duplicate name",
+			configYAML:  "mcp_servers:\n  - name: a\n    url: https://a.com\n  - name: a\n    url: https://b.com\n",
+			errContains: "duplicate name",
+		},
+		{
+			name:        "remote without url",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: http\n",
+			errContains: "url is required",
+		},
+		{
+			name:        "stdio without command",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: stdio\n",
+			errContains: "command is required",
+		},
+		{
+			name:        "invalid type",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: grpc\n    url: https://a.com\n",
+			errContains: "type must be",
+		},
+		{
+			name:        "oauth on stdio server",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: stdio\n    command: x\n    oauth: true\n",
+			errContains: "oauth is only valid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(tt.configYAML), 0o644))
+
+			_, err := Load(tmpDir)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+		})
+	}
+}

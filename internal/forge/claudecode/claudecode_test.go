@@ -1229,3 +1229,91 @@ func TestUpdateMCPServers(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to parse settings.json")
 	})
 }
+
+func TestMCPServerConfig_settingsMap(t *testing.T) {
+	t.Run("remote server with default type and headers", func(t *testing.T) {
+		cfg := MCPServerConfig{
+			URL:     "https://mcp.vercel.com",
+			Headers: map[string]string{"Authorization": "Bearer tok"},
+		}
+		m := cfg.settingsMap()
+		assert.Equal(t, "http", m["type"])
+		assert.Equal(t, "https://mcp.vercel.com", m["url"])
+		assert.Equal(t, map[string]string{"Authorization": "Bearer tok"}, m["headers"])
+		_, hasCmd := m["command"]
+		assert.False(t, hasCmd)
+	})
+
+	t.Run("legacy url type is preserved in settings", func(t *testing.T) {
+		cfg := MCPServerConfig{Type: "url", URL: "http://github-mcp:8083/mcp"}
+		m := cfg.settingsMap()
+		assert.Equal(t, "url", m["type"])
+		_, hasHeaders := m["headers"]
+		assert.False(t, hasHeaders)
+	})
+
+	t.Run("sse type is preserved", func(t *testing.T) {
+		cfg := MCPServerConfig{Type: "sse", URL: "http://localhost:8080/sse"}
+		m := cfg.settingsMap()
+		assert.Equal(t, "sse", m["type"])
+	})
+
+	t.Run("stdio server emits command args env", func(t *testing.T) {
+		cfg := MCPServerConfig{
+			Command: "my-mcp",
+			Args:    []string{"--flag"},
+			Env:     map[string]string{"API_KEY": "secret"},
+		}
+		m := cfg.settingsMap()
+		assert.Equal(t, "stdio", m["type"])
+		assert.Equal(t, "my-mcp", m["command"])
+		assert.Equal(t, []string{"--flag"}, m["args"])
+		assert.Equal(t, map[string]string{"API_KEY": "secret"}, m["env"])
+		_, hasURL := m["url"]
+		assert.False(t, hasURL)
+	})
+}
+
+func TestMCPServerConfig_projectMap(t *testing.T) {
+	t.Run("legacy url type normalized to http", func(t *testing.T) {
+		cfg := MCPServerConfig{Type: "url", URL: "http://github-mcp:8083/mcp"}
+		m := cfg.projectMap()
+		assert.Equal(t, "http", m["type"])
+	})
+
+	t.Run("stdio unchanged", func(t *testing.T) {
+		cfg := MCPServerConfig{Command: "my-mcp"}
+		m := cfg.projectMap()
+		assert.Equal(t, "stdio", m["type"])
+		assert.Equal(t, "my-mcp", m["command"])
+	})
+}
+
+func TestUpdateMCPServers_CustomShapes(t *testing.T) {
+	configDir := t.TempDir()
+
+	servers := map[string]MCPServerConfig{
+		"vercel": {Type: "http", URL: "https://mcp.vercel.com", Headers: map[string]string{"Authorization": "Bearer tok"}},
+		"local":  {Type: "stdio", Command: "my-mcp", Args: []string{"--flag"}, Env: map[string]string{"K": "v"}},
+	}
+
+	require.NoError(t, UpdateMCPServers(configDir, servers))
+
+	data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+	require.NoError(t, err)
+
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	mcpServers := settings["mcpServers"].(map[string]any)
+
+	vercel := mcpServers["vercel"].(map[string]any)
+	assert.Equal(t, "http", vercel["type"])
+	assert.Equal(t, "https://mcp.vercel.com", vercel["url"])
+	assert.Equal(t, map[string]any{"Authorization": "Bearer tok"}, vercel["headers"])
+
+	local := mcpServers["local"].(map[string]any)
+	assert.Equal(t, "stdio", local["type"])
+	assert.Equal(t, "my-mcp", local["command"])
+	assert.Equal(t, []any{"--flag"}, local["args"])
+	assert.Equal(t, map[string]any{"K": "v"}, local["env"])
+}

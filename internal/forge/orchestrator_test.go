@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
 	"github.com/michael-freling/claude-forge/internal/forge/session"
@@ -1528,4 +1529,129 @@ func TestReadGHToken(t *testing.T) {
 		token := readGHToken(dir)
 		assert.Empty(t, token)
 	})
+}
+
+func TestCustomMCPServer(t *testing.T) {
+	t.Run("remote server expands url and header vars", func(t *testing.T) {
+		t.Setenv("VERCEL_TOKEN", "secret-token")
+		out := customMCPServer(config.MCPServerConfig{
+			Name:    "vercel",
+			Type:    "http",
+			URL:     "https://mcp.vercel.com/${VERCEL_TOKEN}",
+			Headers: map[string]string{"Authorization": "Bearer ${VERCEL_TOKEN}"},
+		})
+		assert.Equal(t, "http", out.Type)
+		assert.Equal(t, "https://mcp.vercel.com/secret-token", out.URL)
+		assert.Equal(t, "Bearer secret-token", out.Headers["Authorization"])
+		assert.Empty(t, out.Command)
+	})
+
+	t.Run("remote server defaults type to http", func(t *testing.T) {
+		out := customMCPServer(config.MCPServerConfig{Name: "x", URL: "https://x.com"})
+		assert.Equal(t, "http", out.Type)
+	})
+
+	t.Run("stdio server expands command args env", func(t *testing.T) {
+		t.Setenv("MY_KEY", "k123")
+		out := customMCPServer(config.MCPServerConfig{
+			Name:    "local",
+			Type:    "stdio",
+			Command: "my-mcp",
+			Args:    []string{"--token", "${MY_KEY}"},
+			Env:     map[string]string{"API_KEY": "${MY_KEY}"},
+		})
+		assert.Equal(t, "stdio", out.Type)
+		assert.Equal(t, "my-mcp", out.Command)
+		assert.Equal(t, []string{"--token", "k123"}, out.Args)
+		assert.Equal(t, "k123", out.Env["API_KEY"])
+		assert.Empty(t, out.URL)
+	})
+
+	t.Run("empty maps become nil", func(t *testing.T) {
+		out := customMCPServer(config.MCPServerConfig{Name: "x", URL: "https://x.com"})
+		assert.Nil(t, out.Headers)
+	})
+}
+
+func TestWarnUnauthenticatedMCP(t *testing.T) {
+	newOrch := func(t *testing.T) (*Orchestrator, *[]string) {
+		t.Helper()
+		claudeDir := t.TempDir()
+		var logs []string
+		o := &Orchestrator{
+			ClaudeDir: claudeDir,
+			Log:       func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+		}
+		return o, &logs
+	}
+
+	writeCreds := func(t *testing.T, dir, body string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(body), 0o600))
+	}
+
+	joined := func(logs []string) string { return strings.Join(logs, "\n") }
+
+	t.Run("non-oauth servers are never checked", func(t *testing.T) {
+		o, logs := newOrch(t)
+		o.warnUnauthenticatedMCP(&config.Config{MCPServers: []config.MCPServerConfig{
+			{Name: "public", Type: "http", URL: "https://x.com"},
+			{Name: "tool", Type: "stdio", Command: "x"},
+		}})
+		assert.Empty(t, *logs)
+	})
+
+	t.Run("warns when oauth token missing", func(t *testing.T) {
+		o, logs := newOrch(t)
+		o.warnUnauthenticatedMCP(&config.Config{MCPServers: []config.MCPServerConfig{
+			{Name: "vercel", Type: "http", URL: "https://mcp.vercel.com", OAuth: true},
+		}})
+		assert.Contains(t, joined(*logs), `MCP server "vercel" needs OAuth`)
+		assert.Contains(t, joined(*logs), "claude mcp add --transport http vercel https://mcp.vercel.com")
+	})
+
+	t.Run("silent when a valid token is present", func(t *testing.T) {
+		o, logs := newOrch(t)
+		key := claudecode.MCPOAuthKey("vercel", "http", "https://mcp.vercel.com", nil)
+		writeCreds(t, o.ClaudeDir, fmt.Sprintf(`{"mcpOAuth":{%q:{"accessToken":"a","refreshToken":"r"}}}`, key))
+		o.warnUnauthenticatedMCP(&config.Config{MCPServers: []config.MCPServerConfig{
+			{Name: "vercel", Type: "http", URL: "https://mcp.vercel.com", OAuth: true},
+		}})
+		assert.Empty(t, *logs)
+	})
+
+	t.Run("warns when token expired", func(t *testing.T) {
+		o, logs := newOrch(t)
+		key := claudecode.MCPOAuthKey("vercel", "http", "https://mcp.vercel.com", nil)
+		writeCreds(t, o.ClaudeDir, fmt.Sprintf(`{"mcpOAuth":{%q:{"accessToken":"a","expiresAt":1}}}`, key))
+		o.warnUnauthenticatedMCP(&config.Config{MCPServers: []config.MCPServerConfig{
+			{Name: "vercel", Type: "http", URL: "https://mcp.vercel.com", OAuth: true},
+		}})
+		assert.Contains(t, joined(*logs), "expired")
+	})
+
+	t.Run("expands env vars in url", func(t *testing.T) {
+		o, logs := newOrch(t)
+		t.Setenv("MCP_HOST", "mcp.vercel.com")
+		o.warnUnauthenticatedMCP(&config.Config{MCPServers: []config.MCPServerConfig{
+			{Name: "vercel", Type: "http", URL: "https://${MCP_HOST}", OAuth: true},
+		}})
+		assert.Contains(t, joined(*logs), "https://mcp.vercel.com")
+	})
+}
+
+func TestWarnUnauthenticatedMCP_ReadError(t *testing.T) {
+	claudeDir := t.TempDir()
+	// Make .credentials.json a directory so ReadFile fails (not IsNotExist).
+	require.NoError(t, os.MkdirAll(filepath.Join(claudeDir, ".credentials.json"), 0o755))
+
+	var logs []string
+	o := &Orchestrator{
+		ClaudeDir: claudeDir,
+		Log:       func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+	}
+	o.warnUnauthenticatedMCP(&config.Config{MCPServers: []config.MCPServerConfig{
+		{Name: "vercel", Type: "http", URL: "https://mcp.vercel.com", OAuth: true},
+	}})
+	assert.Contains(t, strings.Join(logs, "\n"), "could not check OAuth token")
 }

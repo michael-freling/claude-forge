@@ -24,9 +24,96 @@ const (
 
 // Config holds the claude-forge configuration.
 type Config struct {
-	Images     ImagesConfig     `yaml:"images"`
-	Defaults   DefaultsConfig   `yaml:"defaults"`
-	Kubernetes KubernetesConfig `yaml:"kubernetes"`
+	Images     ImagesConfig      `yaml:"images"`
+	Defaults   DefaultsConfig    `yaml:"defaults"`
+	Kubernetes KubernetesConfig  `yaml:"kubernetes"`
+	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
+}
+
+// MCPServerConfig configures a custom MCP server exposed to the agent.
+//
+// It is intentionally general: a server is either "remote" (an HTTP/SSE
+// endpoint reached over the network, e.g. a hosted Vercel MCP server) or
+// "stdio" (a command launched inside the agent container). Remote servers set
+// URL (and optionally Headers); stdio servers set Command (and optionally Args
+// and Env).
+//
+// String values in URL, Headers, Command, Args, and Env support ${VAR}
+// expansion against the host environment at session start, so secrets such as
+// API tokens can be referenced without being committed to config.yaml.
+type MCPServerConfig struct {
+	// Name is the identifier Claude Code uses for the server (must be unique).
+	Name string `yaml:"name"`
+	// Type is the MCP transport: "http" (default) or "sse" for remote servers,
+	// "stdio" for command-based servers. It is inferred when omitted: "stdio"
+	// if Command is set, otherwise "http".
+	Type string `yaml:"type"`
+
+	// Remote (http/sse) fields.
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
+
+	// OAuth marks a remote server that authenticates via an interactive OAuth
+	// flow (rather than a static token in Headers). OAuth cannot complete inside
+	// the headless container, so the token must be obtained once on the host
+	// (its tokens live in ~/.claude/.credentials.json, which is mounted into the
+	// container). When set, claude-forge preflights the token at session start
+	// and warns if it is missing or expired.
+	OAuth bool `yaml:"oauth"`
+
+	// Stdio fields.
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args"`
+	Env     map[string]string `yaml:"env"`
+}
+
+// reservedMCPNames are server names owned by claude-forge's built-in
+// integrations; a custom server may not shadow them.
+var reservedMCPNames = map[string]bool{
+	"github":     true,
+	"kubernetes": true,
+}
+
+// IsStdio reports whether the server is launched as a command (stdio transport)
+// rather than reached as a remote endpoint.
+func (m MCPServerConfig) IsStdio() bool {
+	return m.Type == "stdio" || (m.Type == "" && m.Command != "")
+}
+
+// validateMCPServers checks that every configured custom MCP server is
+// well-formed: named, uniquely named, not shadowing a built-in, and carrying
+// the fields its transport requires.
+func validateMCPServers(servers []MCPServerConfig) error {
+	seen := make(map[string]bool, len(servers))
+	for i, s := range servers {
+		if s.Name == "" {
+			return fmt.Errorf("mcp_servers[%d]: name is required", i)
+		}
+		if reservedMCPNames[s.Name] {
+			return fmt.Errorf("mcp_servers[%d]: name %q is reserved for a built-in server", i, s.Name)
+		}
+		if seen[s.Name] {
+			return fmt.Errorf("mcp_servers[%d]: duplicate name %q", i, s.Name)
+		}
+		seen[s.Name] = true
+
+		if s.IsStdio() {
+			if s.Command == "" {
+				return fmt.Errorf("mcp_servers[%q]: command is required for a stdio server", s.Name)
+			}
+			if s.OAuth {
+				return fmt.Errorf("mcp_servers[%q]: oauth is only valid for http/sse servers", s.Name)
+			}
+		} else {
+			if s.URL == "" {
+				return fmt.Errorf("mcp_servers[%q]: url is required for an http/sse server", s.Name)
+			}
+			if s.Type != "" && s.Type != "http" && s.Type != "sse" {
+				return fmt.Errorf("mcp_servers[%q]: type must be \"http\", \"sse\", or \"stdio\", got %q", s.Name, s.Type)
+			}
+		}
+	}
+	return nil
 }
 
 // ImagesConfig holds Docker image configuration.
@@ -102,6 +189,10 @@ func Load(configDir string) (*Config, error) {
 	}
 	if cfg.Kubernetes.Image == "" {
 		cfg.Kubernetes.Image = DefaultKubernetesMCPImage
+	}
+
+	if err := validateMCPServers(cfg.MCPServers); err != nil {
+		return nil, err
 	}
 
 	return cfg, nil
