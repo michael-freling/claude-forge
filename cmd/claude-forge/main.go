@@ -221,6 +221,58 @@ defaults:
   skip_permissions: false
   worktree: false
 
+# Custom MCP servers exposed to the agent, in addition to the built-in
+# github (and optional kubernetes) servers. ${VAR} references in string
+# fields are expanded from the host environment at session start, so tokens
+# stay out of this file.
+#
+# Each entry is one of:
+#   type: http|sse   remote server reached over the network (url [+ headers])
+#   type: stdio      a command run inside the agent container
+#   type: container  a server claude-forge runs as a per-session sidecar,
+#                    reached at http://<name>:<port><path>
+#
+# mcp_servers:
+#   # Remote example with a static token in a header.
+#   - name: example
+#     type: http
+#     url: https://mcp.example.com
+#     headers:
+#       Authorization: "Bearer ${EXAMPLE_TOKEN}"
+#   # OAuth example: a hosted Vercel MCP server. OAuth can't complete inside the
+#   # headless container, so authenticate once on the host (its token lands in
+#   # ~/.claude/.credentials.json, which is mounted in). With oauth: true,
+#   # claude-forge warns at session start if the token is missing or expired.
+#   - name: vercel
+#     type: http
+#     url: https://mcp.vercel.com
+#     oauth: true
+#   # Stdio example: a command launched inside the agent container.
+#   - name: my-tool
+#     type: stdio
+#     command: my-mcp-server
+#     args: ["--flag"]
+#     env:
+#       API_KEY: "${MY_TOOL_API_KEY}"
+#   # Container example: an image that serves MCP over HTTP, run as a sidecar.
+#   # scope defaults to global (one shared instance reused across all sessions);
+#   # use scope: session for a per-session instance that needs isolation.
+#   - name: gcloud
+#     type: container
+#     command: npx                     # wrapped stdio; omit + set image/port for a native HTTP image
+#     args: ["-y", "@google-cloud/gcloud-mcp"]
+#     env:
+#       CLOUDSDK_CORE_PROJECT: "${GCP_PROJECT}"
+#     mounts:                          # host:container[:ro]
+#       - "~/.config/gcloud:/root/.config/gcloud:ro"
+#   # Per-session (isolated) example: a native image serving MCP over HTTP.
+#   - name: my-sidecar
+#     type: container
+#     scope: session                   # global (default) | session
+#     image: ghcr.io/example/some-mcp:latest
+#     port: 8080
+#     path: /mcp
+
 # Kubernetes MCP server integration.
 # When enabled, a shared MCP server container gives agents read-only
 # access to your clusters via short-lived ServiceAccount tokens.

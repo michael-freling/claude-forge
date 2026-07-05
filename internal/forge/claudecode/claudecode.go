@@ -411,10 +411,58 @@ func DetectCacheDirs(homeDir string) []CacheDir {
 	return result
 }
 
-// MCPServerConfig represents an MCP server entry in settings.json.
+// MCPServerConfig represents an MCP server entry in settings.json and
+// .claude.json. It covers both remote (http/sse) servers reached over the
+// network and stdio servers launched as a command inside the agent container.
 type MCPServerConfig struct {
 	Type string `json:"type"`
-	URL  string `json:"url"`
+
+	// Remote (http/sse) fields.
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Stdio fields.
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
+// settingsMap renders the server as the JSON object Claude Code expects in the
+// mcpServers map. Stdio servers emit command/args/env; remote servers emit
+// url/headers with the transport type.
+func (c MCPServerConfig) settingsMap() map[string]any {
+	if c.Command != "" {
+		m := map[string]any{"type": "stdio", "command": c.Command}
+		if len(c.Args) > 0 {
+			m["args"] = c.Args
+		}
+		if len(c.Env) > 0 {
+			m["env"] = c.Env
+		}
+		return m
+	}
+
+	typ := c.Type
+	if typ == "" {
+		typ = "http"
+	}
+	m := map[string]any{"type": typ, "url": c.URL}
+	if len(c.Headers) > 0 {
+		m["headers"] = c.Headers
+	}
+	return m
+}
+
+// projectMap renders the server for the .claude.json project registration.
+// Remote entries are normalized to the "http" transport (Claude Code's
+// project-level registration expects "http"/"sse"), preserving prior behavior
+// where the legacy "url" type was written as "http".
+func (c MCPServerConfig) projectMap() map[string]any {
+	m := c.settingsMap()
+	if typ, _ := m["type"].(string); typ == "url" {
+		m["type"] = "http"
+	}
+	return m
 }
 
 // UpdateMCPServers reads settings.json from configDir, replaces the
@@ -442,10 +490,7 @@ func UpdateMCPServers(configDir string, servers map[string]MCPServerConfig) erro
 
 	mcpServers := make(map[string]any, len(servers))
 	for name, cfg := range servers {
-		mcpServers[name] = map[string]any{
-			"type": cfg.Type,
-			"url":  cfg.URL,
-		}
+		mcpServers[name] = cfg.settingsMap()
 	}
 	settings["mcpServers"] = mcpServers
 
@@ -491,10 +536,7 @@ func RegisterProjectMCPServers(configDir string, servers map[string]MCPServerCon
 	} else {
 		mcpServers := make(map[string]any, len(servers))
 		for name, cfg := range servers {
-			mcpServers[name] = map[string]any{
-				"type": "http",
-				"url":  cfg.URL,
-			}
+			mcpServers[name] = cfg.projectMap()
 		}
 		workProject["mcpServers"] = mcpServers
 	}

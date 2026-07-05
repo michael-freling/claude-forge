@@ -1247,6 +1247,7 @@ func TestListForgeContainers_Filters(t *testing.T) {
 			expectedFilters.Add("name", "forge-gateway-")
 			expectedFilters.Add("name", "forge-github-mcp-")
 			expectedFilters.Add("name", "forge-k8s-mcp")
+			expectedFilters.Add("name", "forge-mcp-")
 			assert.Equal(t, expectedFilters, opts.Filters)
 
 			return []container.Summary{}, nil
