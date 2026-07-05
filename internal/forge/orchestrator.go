@@ -263,9 +263,9 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		}
 	}
 
-	// Start custom "container" MCP servers as per-session sidecars before
+	// Start custom "container" MCP servers (per-session or global) before
 	// writing settings, so we only advertise the ones that actually came up.
-	sidecarRegs := o.startCustomSidecars(ctx, cfg, sess)
+	sidecarRegs, usedSharedMCP := o.startCustomSidecars(ctx, cfg, sess)
 
 	// Write MCP server config to settings.json for the agent
 	mcpServers := map[string]claudecode.MCPServerConfig{
@@ -407,9 +407,11 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		})
 	}
 
-	// Build extra networks for the agent (connect before start so DNS is ready)
+	// Build extra networks for the agent (connect before start so DNS is ready).
+	// The agent joins forge-shared when any shared service is running there:
+	// the Kubernetes MCP and/or global custom MCP sidecars.
 	var extraNetworks []container.NetworkAttachment
-	if k8sRunning {
+	if k8sRunning || usedSharedMCP {
 		extraNetworks = append(extraNetworks, container.NetworkAttachment{
 			NetworkName: "forge-shared",
 		})
@@ -598,80 +600,171 @@ func expandEnvMap(m map[string]string) map[string]string {
 // sidecar on the session network and returns the HTTP registrations for the
 // ones that came up. Failures are logged and skipped so a single bad server
 // doesn't abort the session (matching the Kubernetes MCP behavior).
-func (o *Orchestrator) startCustomSidecars(ctx context.Context, cfg *config.Config, sess *Session) map[string]claudecode.MCPServerConfig {
+func (o *Orchestrator) startCustomSidecars(ctx context.Context, cfg *config.Config, sess *Session) (map[string]claudecode.MCPServerConfig, bool) {
 	regs := map[string]claudecode.MCPServerConfig{}
+	usedShared := false
 	for _, s := range cfg.MCPServers {
 		if !s.IsContainer() {
 			continue
 		}
-
-		port := s.Port
-		if port == 0 {
-			port = config.DefaultMCPPort
-		}
-		path := s.Path
-		if path == "" {
-			path = config.DefaultMCPPath
-		}
-
-		image := s.Image
-		var cmd []string
-		if s.IsWrappedStdio() {
-			if image == "" {
-				image = config.DefaultMCPWrapperImage
+		var reg claudecode.MCPServerConfig
+		var ok bool
+		if s.IsGlobal() {
+			reg, ok = o.ensureGlobalSidecar(ctx, s)
+			if ok {
+				usedShared = true
 			}
-			cmd = supergatewayCmd(s, port, path)
 		} else {
-			// Native image that serves MCP over HTTP itself; pass through any args.
-			for _, a := range s.Args {
-				cmd = append(cmd, os.ExpandEnv(a))
-			}
+			reg, ok = o.startSessionSidecar(ctx, s, sess)
 		}
-
-		mounts, err := o.parseSidecarMounts(s.Mounts)
-		if err != nil {
-			o.Log("Warning: MCP sidecar %q: %v; skipping", s.Name, err)
-			continue
-		}
-
-		if exists, err := o.Containers.ImageExists(ctx, image); err == nil && !exists {
-			o.Log("Pulling image: %s", image)
-			if err := o.Containers.PullImage(ctx, image); err != nil {
-				o.Log("Warning: MCP sidecar %q: failed to pull image %s: %v; skipping", s.Name, image, err)
-				continue
-			}
-		}
-
-		containerName := fmt.Sprintf("forge-mcp-%s-%s-%s", s.Name, sess.ProjectID, sess.SessionID)
-		o.Log("Starting MCP sidecar: %s", s.Name)
-		id, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
-			Name:        containerName,
-			Image:       image,
-			NetworkName: sess.NetworkName,
-			Alias:       s.Name,
-			Env:         expandEnvMap(s.Env),
-			Mounts:      mounts,
-			Cmd:         cmd,
-		})
-		if err != nil {
-			o.Log("Warning: MCP sidecar %q failed to start: %v; skipping", s.Name, err)
-			continue
-		}
-		// Record for cleanup as soon as it exists, even if readiness fails.
-		sess.SidecarNames = append(sess.SidecarNames, containerName)
-
-		if err := o.Containers.WaitForReady(ctx, id, 60*time.Second); err != nil {
-			logs, _ := o.Containers.ContainerLogs(ctx, id)
-			o.Log("Warning: MCP sidecar %q not ready: %v; skipping\n%s", s.Name, err, logs)
-			continue
-		}
-
-		regs[s.Name] = claudecode.MCPServerConfig{
-			Type: "http",
-			URL:  fmt.Sprintf("http://%s:%d%s", s.Name, port, path),
+		if ok {
+			regs[s.Name] = reg
 		}
 	}
-	return regs
+	return regs, usedShared
+}
+
+// sidecarRuntime resolves the image, container command, port, path, and mounts
+// for a container MCP server, applying defaults and ${VAR} expansion.
+func (o *Orchestrator) sidecarRuntime(s config.MCPServerConfig) (image string, cmd []string, port int, path string, mounts []mount.Mount, err error) {
+	port = s.Port
+	if port == 0 {
+		port = config.DefaultMCPPort
+	}
+	path = s.Path
+	if path == "" {
+		path = config.DefaultMCPPath
+	}
+	image = s.Image
+	if s.IsWrappedStdio() {
+		if image == "" {
+			image = config.DefaultMCPWrapperImage
+		}
+		cmd = supergatewayCmd(s, port, path)
+	} else {
+		// Native image that serves MCP over HTTP itself; pass through any args.
+		for _, a := range s.Args {
+			cmd = append(cmd, os.ExpandEnv(a))
+		}
+	}
+	mounts, err = o.parseSidecarMounts(s.Mounts)
+	return
+}
+
+// ensureImage pulls image if it isn't present locally. Returns false (with a
+// warning) only when a needed pull fails.
+func (o *Orchestrator) ensureImage(ctx context.Context, name, image string) bool {
+	if exists, err := o.Containers.ImageExists(ctx, image); err == nil && !exists {
+		o.Log("Pulling image: %s", image)
+		if err := o.Containers.PullImage(ctx, image); err != nil {
+			o.Log("Warning: MCP sidecar %q: failed to pull image %s: %v; skipping", name, image, err)
+			return false
+		}
+	}
+	return true
+}
+
+// sidecarReg builds the HTTP registration for a sidecar reached at its alias.
+func sidecarReg(name string, port int, path string) claudecode.MCPServerConfig {
+	return claudecode.MCPServerConfig{
+		Type: "http",
+		URL:  fmt.Sprintf("http://%s:%d%s", name, port, path),
+	}
+}
+
+// startSessionSidecar starts a per-session container MCP server on the session
+// network and records it for cleanup. Returns the registration and whether it
+// came up.
+func (o *Orchestrator) startSessionSidecar(ctx context.Context, s config.MCPServerConfig, sess *Session) (claudecode.MCPServerConfig, bool) {
+	image, cmd, port, path, mounts, err := o.sidecarRuntime(s)
+	if err != nil {
+		o.Log("Warning: MCP sidecar %q: %v; skipping", s.Name, err)
+		return claudecode.MCPServerConfig{}, false
+	}
+	if !o.ensureImage(ctx, s.Name, image) {
+		return claudecode.MCPServerConfig{}, false
+	}
+
+	containerName := fmt.Sprintf("forge-mcp-%s-%s-%s", s.Name, sess.ProjectID, sess.SessionID)
+	o.Log("Starting MCP sidecar: %s", s.Name)
+	id, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
+		Name:        containerName,
+		Image:       image,
+		NetworkName: sess.NetworkName,
+		Alias:       s.Name,
+		Env:         expandEnvMap(s.Env),
+		Mounts:      mounts,
+		Cmd:         cmd,
+	})
+	if err != nil {
+		o.Log("Warning: MCP sidecar %q failed to start: %v; skipping", s.Name, err)
+		return claudecode.MCPServerConfig{}, false
+	}
+	// Record for cleanup as soon as it exists, even if readiness fails.
+	sess.SidecarNames = append(sess.SidecarNames, containerName)
+
+	if err := o.Containers.WaitForReady(ctx, id, 60*time.Second); err != nil {
+		logs, _ := o.Containers.ContainerLogs(ctx, id)
+		o.Log("Warning: MCP sidecar %q not ready: %v; skipping\n%s", s.Name, err, logs)
+		return claudecode.MCPServerConfig{}, false
+	}
+	return sidecarReg(s.Name, port, path), true
+}
+
+// globalSidecarName is the stable container name for a global (shared) MCP
+// server, independent of any session.
+func globalSidecarName(serverName string) string {
+	return "forge-mcp-global-" + serverName
+}
+
+// ensureGlobalSidecar starts a global container MCP server as a shared singleton
+// on the forge-shared network, reusing it if already running. Global servers are
+// not tracked for per-session cleanup; they persist across sessions and are
+// managed via RestartSharedMCP.
+func (o *Orchestrator) ensureGlobalSidecar(ctx context.Context, s config.MCPServerConfig) (claudecode.MCPServerConfig, bool) {
+	image, cmd, port, path, mounts, err := o.sidecarRuntime(s)
+	if err != nil {
+		o.Log("Warning: MCP sidecar %q: %v; skipping", s.Name, err)
+		return claudecode.MCPServerConfig{}, false
+	}
+
+	if _, err := o.Containers.EnsureSharedNetwork(ctx, "forge-shared"); err != nil {
+		o.Log("Warning: MCP sidecar %q: failed to ensure shared network: %v; skipping", s.Name, err)
+		return claudecode.MCPServerConfig{}, false
+	}
+
+	name := globalSidecarName(s.Name)
+	if running, err := o.Containers.IsContainerRunning(ctx, name); err == nil && running {
+		o.Log("Global MCP already running: %s", s.Name)
+		return sidecarReg(s.Name, port, path), true
+	}
+	// Remove a stale (crashed/exited) instance so we can recreate it.
+	_ = o.Containers.RemoveContainer(ctx, name)
+
+	if !o.ensureImage(ctx, s.Name, image) {
+		return claudecode.MCPServerConfig{}, false
+	}
+
+	o.Log("Starting global MCP: %s", s.Name)
+	id, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
+		Name:        name,
+		Image:       image,
+		NetworkName: "forge-shared",
+		Alias:       s.Name,
+		Env:         expandEnvMap(s.Env),
+		Mounts:      mounts,
+		Cmd:         cmd,
+	})
+	if err != nil {
+		o.Log("Warning: global MCP %q failed to start: %v; skipping", s.Name, err)
+		return claudecode.MCPServerConfig{}, false
+	}
+	if err := o.Containers.WaitForReady(ctx, id, 60*time.Second); err != nil {
+		logs, _ := o.Containers.ContainerLogs(ctx, id)
+		o.Log("Warning: global MCP %q not ready: %v; skipping\n%s", s.Name, err, logs)
+		return claudecode.MCPServerConfig{}, false
+	}
+	return sidecarReg(s.Name, port, path), true
 }
 
 // supergatewayCmd builds the container command that wraps a stdio MCP server in
@@ -841,24 +934,46 @@ func (o *Orchestrator) RestartSharedMCP(ctx context.Context) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if !cfg.Kubernetes.Enabled {
+	var globals []config.MCPServerConfig
+	for _, s := range cfg.MCPServers {
+		if s.IsGlobal() {
+			globals = append(globals, s)
+		}
+	}
+
+	if !cfg.Kubernetes.Enabled && len(globals) == 0 {
 		o.Log("No shared MCP servers configured.")
 		return nil
 	}
 
-	k8sMCPName := "forge-k8s-mcp"
-	running, err := o.Containers.IsContainerRunning(ctx, k8sMCPName)
-	if err != nil {
-		return fmt.Errorf("failed to check k8s-mcp status: %w", err)
-	}
-	if running {
-		o.Log("Stopping: %s", k8sMCPName)
-		_ = o.Containers.StopContainer(ctx, k8sMCPName)
-		_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
+	if cfg.Kubernetes.Enabled {
+		k8sMCPName := "forge-k8s-mcp"
+		running, err := o.Containers.IsContainerRunning(ctx, k8sMCPName)
+		if err != nil {
+			return fmt.Errorf("failed to check k8s-mcp status: %w", err)
+		}
+		if running {
+			o.Log("Stopping: %s", k8sMCPName)
+			_ = o.Containers.StopContainer(ctx, k8sMCPName)
+			_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
+		}
+		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
+			return fmt.Errorf("failed to restart Kubernetes MCP: %w", err)
+		}
 	}
 
-	if err := o.startKubernetesMCP(ctx, cfg); err != nil {
-		return fmt.Errorf("failed to restart Kubernetes MCP: %w", err)
+	// Restart global custom MCP sidecars: stop the existing instance so
+	// ensureGlobalSidecar recreates it fresh.
+	for _, s := range globals {
+		name := globalSidecarName(s.Name)
+		if running, _ := o.Containers.IsContainerRunning(ctx, name); running {
+			o.Log("Stopping: %s", name)
+			_ = o.Containers.StopContainer(ctx, name)
+		}
+		_ = o.Containers.RemoveContainer(ctx, name)
+		if _, ok := o.ensureGlobalSidecar(ctx, s); !ok {
+			o.Log("Warning: failed to restart global MCP %q", s.Name)
+		}
 	}
 
 	return nil

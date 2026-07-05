@@ -96,6 +96,15 @@ type MCPServerConfig struct {
 	Port   int      `yaml:"port"`   // container port serving MCP over HTTP
 	Path   string   `yaml:"path"`   // HTTP path; defaults to /mcp
 	Mounts []string `yaml:"mounts"` // host:container[:ro] bind mounts for the sidecar
+
+	// Scope controls how a container server's instance is reused:
+	//   "session" (default) — one sidecar per session, torn down with it.
+	//   "global"            — a single shared instance reused across all
+	//                         sessions (like the Kubernetes MCP). Use this for
+	//                         session-independent servers so N sessions don't
+	//                         spawn N copies. Global servers outlive individual
+	//                         sessions and are managed via `mcp restart`.
+	Scope string `yaml:"scope"`
 }
 
 // reservedMCPNames are server names owned by claude-forge's built-in
@@ -123,6 +132,12 @@ func (m MCPServerConfig) IsWrappedStdio() bool {
 	return m.IsContainer() && m.Command != ""
 }
 
+// IsGlobal reports whether a container server runs as a single shared instance
+// reused across sessions rather than a per-session sidecar.
+func (m MCPServerConfig) IsGlobal() bool {
+	return m.IsContainer() && m.Scope == "global"
+}
+
 // validateMCPServers checks that every configured custom MCP server is
 // well-formed: named, uniquely named, not shadowing a built-in, and carrying
 // the fields its transport requires.
@@ -140,10 +155,17 @@ func validateMCPServers(servers []MCPServerConfig) error {
 		}
 		seen[s.Name] = true
 
+		if s.Scope != "" && !s.IsContainer() {
+			return fmt.Errorf("mcp_servers[%q]: scope is only valid for container servers", s.Name)
+		}
+
 		switch {
 		case s.IsContainer():
 			if s.OAuth {
 				return fmt.Errorf("mcp_servers[%q]: oauth is only valid for http/sse servers", s.Name)
+			}
+			if s.Scope != "" && s.Scope != "session" && s.Scope != "global" {
+				return fmt.Errorf("mcp_servers[%q]: scope must be \"session\" or \"global\", got %q", s.Name, s.Scope)
 			}
 			// The name becomes the sidecar's DNS alias and URL host.
 			if err := validateDNSLabel(s.Name); err != nil {

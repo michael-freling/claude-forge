@@ -255,8 +255,11 @@ defaults:
 #     env:
 #       API_KEY: "${MY_TOOL_API_KEY}"
 #   # Container example: an image that serves MCP over HTTP, run as a sidecar.
+#   # scope: session (default) runs one per session; scope: global runs a single
+#   # shared instance reused across all sessions (for session-independent servers).
 #   - name: my-sidecar
 #     type: container
+#     scope: session                   # session (default) | global
 #     image: ghcr.io/example/some-mcp:latest
 #     port: 8080
 #     path: /mcp
@@ -265,6 +268,7 @@ defaults:
 #   # image: for other runtimes/CLIs). Mounts are host:container[:ro].
 #   - name: gcloud
 #     type: container
+#     scope: global
 #     command: npx
 #     args: ["-y", "@google-cloud/gcloud-mcp"]
 #     env:

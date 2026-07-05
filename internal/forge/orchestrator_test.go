@@ -1727,7 +1727,7 @@ func TestStartCustomSidecars(t *testing.T) {
 
 		o := newOrch(t, mockCM)
 		s := sess()
-		regs := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
 			{Name: "gcp", Type: "container", Image: "ghcr.io/x/mcp:1", Port: 9000, Path: "/mcp"},
 		}}, s)
 
@@ -1749,7 +1749,7 @@ func TestStartCustomSidecars(t *testing.T) {
 
 		o := newOrch(t, mockCM)
 		s := sess()
-		regs := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
 			{Name: "tool", Type: "container", Command: "my-mcp", Args: []string{"--flag"}},
 		}}, s)
 
@@ -1769,7 +1769,7 @@ func TestStartCustomSidecars(t *testing.T) {
 
 		o := newOrch(t, mockCM)
 		s := sess()
-		regs := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
 			{Name: "svc", Type: "container", Image: "img:1", Port: 8080},
 		}}, s)
 		assert.Contains(t, regs, "svc")
@@ -1783,7 +1783,7 @@ func TestStartCustomSidecars(t *testing.T) {
 
 		o := newOrch(t, mockCM)
 		s := sess()
-		regs := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
 			{Name: "bad", Type: "container", Image: "img:1", Port: 8080},
 		}}, s)
 		assert.Empty(t, regs)
@@ -1800,7 +1800,7 @@ func TestStartCustomSidecars(t *testing.T) {
 
 		o := newOrch(t, mockCM)
 		s := sess()
-		regs := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
 			{Name: "slow", Type: "container", Image: "img:1", Port: 8080},
 		}}, s)
 		assert.Empty(t, regs)
@@ -1812,7 +1812,7 @@ func TestStartCustomSidecars(t *testing.T) {
 		mockCM := NewMockContainerManager(ctrl)
 		o := newOrch(t, mockCM)
 		s := sess()
-		regs := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
 			{Name: "remote", Type: "http", URL: "https://x.com"},
 			{Name: "local", Type: "stdio", Command: "x"},
 		}}, s)
@@ -1828,7 +1828,7 @@ func TestStartCustomSidecars_EdgeBranches(t *testing.T) {
 		// No Start/ImageExists expected — bails at mount parsing.
 		o := &Orchestrator{Containers: mockCM, HomeDir: t.TempDir(), Log: func(string, ...any) {}}
 		s := &Session{NetworkName: "net", ProjectID: "p", SessionID: "s"}
-		regs := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
 			{Name: "svc", Type: "container", Image: "img:1", Port: 8080, Mounts: []string{"bad"}},
 		}}, s)
 		assert.Empty(t, regs)
@@ -1843,9 +1843,135 @@ func TestStartCustomSidecars_EdgeBranches(t *testing.T) {
 		mockCM.EXPECT().WaitForReady(gomock.Any(), "id", gomock.Any()).Return(nil)
 		o := &Orchestrator{Containers: mockCM, HomeDir: t.TempDir(), Log: func(string, ...any) {}}
 		s := &Session{NetworkName: "net", ProjectID: "p", SessionID: "s"}
-		regs := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
 			{Name: "svc", Type: "container", Image: "img:1", Port: 8080},
 		}}, s)
 		assert.Contains(t, regs, "svc")
+	})
+}
+
+func TestStartCustomSidecars_GlobalScope(t *testing.T) {
+	t.Run("global sidecar runs as shared singleton and signals shared network", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		var got container.SharedServiceOptions
+		mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net", nil)
+		mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-global-gcloud").Return(false, nil)
+		mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-mcp-global-gcloud").Return(nil)
+		mockCM.EXPECT().ImageExists(gomock.Any(), config.DefaultMCPWrapperImage).Return(true, nil)
+		mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ any, opts container.SharedServiceOptions) (string, error) { got = opts; return "gid", nil })
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "gid", gomock.Any()).Return(nil)
+
+		o := &Orchestrator{Containers: mockCM, HomeDir: t.TempDir(), Log: func(string, ...any) {}}
+		s := &Session{NetworkName: "net", ProjectID: "p", SessionID: "s"}
+		regs, shared := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+			{Name: "gcloud", Type: "container", Scope: "global", Command: "npx"},
+		}}, s)
+
+		assert.True(t, shared, "global sidecar should signal shared-network use")
+		assert.Equal(t, "http://gcloud:8080/mcp", regs["gcloud"].URL)
+		assert.Equal(t, "forge-shared", got.NetworkName)
+		assert.Equal(t, "forge-mcp-global-gcloud", got.Name)
+		// Global sidecars are not tracked for per-session cleanup.
+		assert.Empty(t, s.SidecarNames)
+	})
+
+	t.Run("global sidecar reused when already running", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net", nil)
+		mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-global-svc").Return(true, nil)
+		// No RemoveContainer/StartSharedService/WaitForReady — it's reused.
+
+		o := &Orchestrator{Containers: mockCM, HomeDir: t.TempDir(), Log: func(string, ...any) {}}
+		s := &Session{NetworkName: "net", ProjectID: "p", SessionID: "s"}
+		regs, shared := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+			{Name: "svc", Type: "container", Scope: "global", Image: "img:1", Port: 9000},
+		}}, s)
+
+		assert.True(t, shared)
+		assert.Equal(t, "http://svc:9000/mcp", regs["svc"].URL)
+	})
+}
+
+func TestRestartSharedMCP_GlobalSidecar(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `mcp_servers:
+  - name: gcloud
+    type: container
+    scope: global
+    command: npx
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	name := "forge-mcp-global-gcloud"
+	gomock.InOrder(
+		mockCM.EXPECT().IsContainerRunning(gomock.Any(), name).Return(true, nil),  // RestartSharedMCP
+		mockCM.EXPECT().IsContainerRunning(gomock.Any(), name).Return(false, nil), // ensureGlobalSidecar
+	)
+	mockCM.EXPECT().StopContainer(gomock.Any(), name).Return(nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), name).Return(nil).Times(2)
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net", nil)
+	mockCM.EXPECT().ImageExists(gomock.Any(), config.DefaultMCPWrapperImage).Return(true, nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("gid", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gid", gomock.Any()).Return(nil)
+
+	require.NoError(t, orch.RestartSharedMCP(context.Background()))
+}
+
+func TestEnsureGlobalSidecar_Failures(t *testing.T) {
+	newOrch := func(mockCM *MockContainerManager) *Orchestrator {
+		return &Orchestrator{Containers: mockCM, HomeDir: t.TempDir(), Log: func(string, ...any) {}}
+	}
+
+	t.Run("mount error skips before touching containers", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		// No container calls expected.
+		_, ok := newOrch(mockCM).ensureGlobalSidecar(context.Background(),
+			config.MCPServerConfig{Name: "g", Type: "container", Scope: "global", Image: "i:1", Port: 8080, Mounts: []string{"bad"}})
+		assert.False(t, ok)
+	})
+
+	t.Run("shared network error", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("", assert.AnError)
+		_, ok := newOrch(mockCM).ensureGlobalSidecar(context.Background(),
+			config.MCPServerConfig{Name: "g", Type: "container", Scope: "global", Image: "i:1", Port: 8080})
+		assert.False(t, ok)
+	})
+
+	t.Run("start failure", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net", nil)
+		mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-global-g").Return(false, nil)
+		mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-mcp-global-g").Return(nil)
+		mockCM.EXPECT().ImageExists(gomock.Any(), "i:1").Return(true, nil)
+		mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("", assert.AnError)
+		_, ok := newOrch(mockCM).ensureGlobalSidecar(context.Background(),
+			config.MCPServerConfig{Name: "g", Type: "container", Scope: "global", Image: "i:1", Port: 8080})
+		assert.False(t, ok)
+	})
+
+	t.Run("not ready", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net", nil)
+		mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-global-g").Return(false, nil)
+		mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-mcp-global-g").Return(nil)
+		mockCM.EXPECT().ImageExists(gomock.Any(), "i:1").Return(true, nil)
+		mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "id", gomock.Any()).Return(assert.AnError)
+		mockCM.EXPECT().ContainerLogs(gomock.Any(), "id").Return("boom", nil)
+		_, ok := newOrch(mockCM).ensureGlobalSidecar(context.Background(),
+			config.MCPServerConfig{Name: "g", Type: "container", Scope: "global", Image: "i:1", Port: 8080})
+		assert.False(t, ok)
 	})
 }

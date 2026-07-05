@@ -288,6 +288,16 @@ func TestLoad_MCPServers_ValidationErrors(t *testing.T) {
 			errContains: "1-63 characters",
 		},
 		{
+			name:        "scope on non-container server",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: http\n    url: https://a.com\n    scope: global\n",
+			errContains: "scope is only valid for container servers",
+		},
+		{
+			name:        "invalid scope value",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: container\n    image: img:1\n    port: 8080\n    scope: cluster\n",
+			errContains: "scope must be",
+		},
+		{
 			name:        "oauth on container server",
 			configYAML:  "mcp_servers:\n  - name: a\n    type: container\n    image: img:1\n    port: 8080\n    oauth: true\n",
 			errContains: "oauth is only valid",
@@ -333,4 +343,24 @@ func TestLoad_MCPServers_Container(t *testing.T) {
 
 	assert.True(t, got.MCPServers[1].IsWrappedStdio())
 	assert.Equal(t, []string{"~/.config/gcloud:/creds:ro"}, got.MCPServers[1].Mounts)
+
+	// Scope: session by default, opt-in global.
+	assert.False(t, got.MCPServers[0].IsGlobal())
+}
+
+func TestLoad_MCPServers_GlobalScope(t *testing.T) {
+	tmpDir := t.TempDir()
+	configYAML := `mcp_servers:
+  - name: gcloud
+    type: container
+    scope: global
+    command: npx
+    args: ["-y", "@google-cloud/gcloud-mcp"]
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configYAML), 0o644))
+	got, err := Load(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, got.MCPServers, 1)
+	assert.True(t, got.MCPServers[0].IsGlobal())
+	assert.True(t, got.MCPServers[0].IsWrappedStdio())
 }

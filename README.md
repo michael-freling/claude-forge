@@ -183,9 +183,11 @@ mcp_servers:
     image: ghcr.io/example/some-mcp:latest
     port: 8080
     path: /mcp
-  # Wrapped stdio — run a stdio command in a sidecar, bridged to HTTP
+  # Wrapped stdio — run a stdio command in a sidecar, bridged to HTTP.
+  # scope: global runs one shared instance reused across all sessions.
   - name: gcloud
     type: container
+    scope: global
     command: npx
     args: ["-y", "@google-cloud/gcloud-mcp"]
     mounts:
@@ -230,9 +232,18 @@ any number of additional MCP servers to the agent via the `mcp_servers` list in
     paths via `mounts` (`host:container[:ro]`).
 
   The sidecar's `name` is used as its network hostname, so it must be a valid
-  DNS label. Sidecars are torn down automatically when the session ends, and a
-  server that fails to start is skipped with a warning rather than aborting the
-  session.
+  DNS label. A server that fails to start is skipped with a warning rather than
+  aborting the session.
+
+  **Scope** (`scope:`, container only) controls how the instance is reused:
+  - `session` (default) — one sidecar per session, on the session network, torn
+    down when the session ends. Right for servers scoped to a session/repo.
+  - `global` — a single shared instance on the `forge-shared` network, reused
+    across all sessions (the same model as the Kubernetes MCP). Use it for
+    session-independent servers so N sessions don't spawn N copies. A global
+    server outlives individual sessions and is managed with
+    `claude-forge mcp restart` rather than per-session cleanup — so it must not
+    depend on any one session's or project's secrets.
 
 > Note: a `type: stdio` server runs in the *agent* container and needs its
 > command baked into the agent image; a `type: container` **wrapped stdio**
