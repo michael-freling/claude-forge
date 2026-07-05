@@ -356,6 +356,11 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		"GIT_TERMINAL_PROMPT": "0",
 		"FORGE_PROJECT_OWNER": proj.Owner,
 		"FORGE_PROJECT_REPO":  proj.Repo,
+		// The image pins the Claude Code version and the npm prefix is not
+		// writable by the container user; without this the auto-updater runs
+		// anyway (the legacy autoUpdaterStatus settings key is ignored by
+		// newer versions) and reports "no write permission to npm prefix".
+		"DISABLE_AUTOUPDATER": "1",
 	}
 	switch creds.AuthType {
 	case "api_key":

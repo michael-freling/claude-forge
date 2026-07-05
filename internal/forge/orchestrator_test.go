@@ -73,6 +73,7 @@ func TestStart_Success(t *testing.T) {
 			assert.Equal(t, projectDir, opts.ProjectDir)
 			assert.Contains(t, opts.Env, "ANTHROPIC_API_KEY")
 			assert.Equal(t, "sk-ant-test-key-123", opts.Env["ANTHROPIC_API_KEY"])
+			assert.Equal(t, "1", opts.Env["DISABLE_AUTOUPDATER"])
 			assert.Contains(t, opts.Cmd, "--dangerously-skip-permissions")
 			return "agent-id", nil
 		})

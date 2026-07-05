@@ -817,7 +817,7 @@ var syncHostPlugins = func(homeDir string, force bool) error {
 			if err := enablePluginsInSettings(configDir, syncPlugins); err != nil {
 				return fmt.Errorf("failed to update settings: %w", err)
 			}
-			fmt.Printf("All %d plugins already installed.\n", len(syncPlugins))
+			fmt.Printf("All %d plugins already installed (run \"claude-forge plugins sync\" to update them).\n", len(syncPlugins))
 			return nil
 		}
 	}
