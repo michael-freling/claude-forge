@@ -321,6 +321,7 @@ func TestLoad_MCPServers_Container(t *testing.T) {
 	configYAML := `mcp_servers:
   - name: native
     type: container
+    scope: session
     image: ghcr.io/x/mcp:1
     port: 9000
     path: /mcp
@@ -344,8 +345,10 @@ func TestLoad_MCPServers_Container(t *testing.T) {
 	assert.True(t, got.MCPServers[1].IsWrappedStdio())
 	assert.Equal(t, []string{"~/.config/gcloud:/creds:ro"}, got.MCPServers[1].Mounts)
 
-	// Scope: session by default, opt-in global.
+	// Explicit scope: session opts out of the default global scope.
 	assert.False(t, got.MCPServers[0].IsGlobal())
+	// No scope defaults to global.
+	assert.True(t, got.MCPServers[1].IsGlobal())
 }
 
 func TestLoad_MCPServers_GlobalScope(t *testing.T) {

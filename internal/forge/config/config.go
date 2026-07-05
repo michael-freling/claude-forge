@@ -98,12 +98,15 @@ type MCPServerConfig struct {
 	Mounts []string `yaml:"mounts"` // host:container[:ro] bind mounts for the sidecar
 
 	// Scope controls how a container server's instance is reused:
-	//   "session" (default) — one sidecar per session, torn down with it.
-	//   "global"            — a single shared instance reused across all
-	//                         sessions (like the Kubernetes MCP). Use this for
-	//                         session-independent servers so N sessions don't
-	//                         spawn N copies. Global servers outlive individual
-	//                         sessions and are managed via `mcp restart`.
+	//   "global" (default) — a single shared instance reused across all sessions
+	//                         (like the Kubernetes MCP), so N sessions don't
+	//                         spawn N copies. Global servers are shared across
+	//                         projects, outlive individual sessions, and are
+	//                         managed via `mcp restart` rather than per-session
+	//                         cleanup — so they must not depend on any one
+	//                         session's or project's secrets.
+	//   "session"          — one sidecar per session, torn down with it. Use for
+	//                         servers that need per-session/per-project isolation.
 	Scope string `yaml:"scope"`
 }
 
@@ -133,9 +136,10 @@ func (m MCPServerConfig) IsWrappedStdio() bool {
 }
 
 // IsGlobal reports whether a container server runs as a single shared instance
-// reused across sessions rather than a per-session sidecar.
+// reused across sessions rather than a per-session sidecar. Global is the
+// default scope for container servers; only an explicit "session" opts out.
 func (m MCPServerConfig) IsGlobal() bool {
-	return m.IsContainer() && m.Scope == "global"
+	return m.IsContainer() && m.Scope != "session"
 }
 
 // validateMCPServers checks that every configured custom MCP server is

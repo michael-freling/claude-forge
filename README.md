@@ -177,21 +177,21 @@ mcp_servers:
     args: ["--flag"]
     env:
       API_KEY: "${MY_TOOL_API_KEY}"
-  # Container server — claude-forge runs an image as a per-session sidecar
-  - name: my-sidecar
-    type: container
-    image: ghcr.io/example/some-mcp:latest
-    port: 8080
-    path: /mcp
-  # Wrapped stdio — run a stdio command in a sidecar, bridged to HTTP.
-  # scope: global runs one shared instance reused across all sessions.
+  # Container server — claude-forge runs it as a sidecar. scope defaults to
+  # global (one shared instance reused across all sessions).
   - name: gcloud
     type: container
-    scope: global
-    command: npx
+    command: npx           # wrapped stdio (bridged to HTTP)
     args: ["-y", "@google-cloud/gcloud-mcp"]
     mounts:
       - "~/.config/gcloud:/root/.config/gcloud:ro"
+  # Per-session (isolated) native HTTP image
+  - name: my-sidecar
+    type: container
+    scope: session
+    image: ghcr.io/example/some-mcp:latest
+    port: 8080
+    path: /mcp
 
 # Optional Kubernetes MCP integration
 kubernetes:
@@ -216,11 +216,11 @@ any number of additional MCP servers to the agent via the `mcp_servers` list in
 - **Stdio** (`type: stdio`) — a command launched by Claude Code inside the agent
   container. Set `command`, and optionally `args` and `env`. The command must be
   available in the agent image.
-- **Container** (`type: container`) — a server claude-forge runs as a
-  **per-session sidecar** on the session network, reached at
-  `http://<name>:<port><path>` (default path `/mcp`). Use this for any MCP
-  server packaged as a container, or to run a locally-installed one that the
-  agent image doesn't have. Two forms:
+- **Container** (`type: container`) — a server claude-forge runs as a **sidecar**
+  container, reached at `http://<name>:<port><path>` (default path `/mcp`). Use
+  this for any MCP server packaged as a container, or to run a locally-installed
+  one that the agent image doesn't have. By default it runs once and is shared
+  across sessions (see **Scope** below). Two forms:
   - **Native HTTP image** — set `image` + `port` (+ optional `args`). The image
     serves MCP over HTTP itself.
   - **Wrapped stdio** — set `command` (+ optional `args`). claude-forge runs the
@@ -236,14 +236,15 @@ any number of additional MCP servers to the agent via the `mcp_servers` list in
   aborting the session.
 
   **Scope** (`scope:`, container only) controls how the instance is reused:
-  - `session` (default) — one sidecar per session, on the session network, torn
-    down when the session ends. Right for servers scoped to a session/repo.
-  - `global` — a single shared instance on the `forge-shared` network, reused
-    across all sessions (the same model as the Kubernetes MCP). Use it for
-    session-independent servers so N sessions don't spawn N copies. A global
-    server outlives individual sessions and is managed with
+  - `global` (default) — a single shared instance on the `forge-shared` network,
+    reused across all sessions (the same model as the Kubernetes MCP), so N
+    sessions don't spawn N copies. A global server is **shared across projects**,
+    **outlives individual sessions**, and is managed with
     `claude-forge mcp restart` rather than per-session cleanup — so it must not
     depend on any one session's or project's secrets.
+  - `session` — one sidecar per session, on the session network, torn down when
+    the session ends. Use it for servers that need per-session/per-project
+    isolation.
 
 > Note: a `type: stdio` server runs in the *agent* container and needs its
 > command baked into the agent image; a `type: container` **wrapped stdio**

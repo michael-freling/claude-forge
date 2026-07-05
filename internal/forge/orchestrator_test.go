@@ -1703,9 +1703,9 @@ func TestParseSidecarMounts(t *testing.T) {
 func TestCustomSidecarImages(t *testing.T) {
 	cfg := &config.Config{MCPServers: []config.MCPServerConfig{
 		{Name: "remote", Type: "http", URL: "https://x.com"},
-		{Name: "native", Type: "container", Image: "ghcr.io/x/mcp:1", Port: 8080},
-		{Name: "wrapped", Type: "container", Command: "npx"}, // default wrapper image
-		{Name: "wrapped2", Type: "container", Image: "custom:1", Command: "x"},
+		{Name: "native", Type: "container", Scope: "session", Image: "ghcr.io/x/mcp:1", Port: 8080},
+		{Name: "wrapped", Type: "container", Scope: "session", Command: "npx"}, // default wrapper image
+		{Name: "wrapped2", Type: "container", Scope: "session", Image: "custom:1", Command: "x"},
 	}}
 	assert.Equal(t, []string{"ghcr.io/x/mcp:1", config.DefaultMCPWrapperImage, "custom:1"}, customSidecarImages(cfg))
 }
@@ -1728,7 +1728,7 @@ func TestStartCustomSidecars(t *testing.T) {
 		o := newOrch(t, mockCM)
 		s := sess()
 		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
-			{Name: "gcp", Type: "container", Image: "ghcr.io/x/mcp:1", Port: 9000, Path: "/mcp"},
+			{Name: "gcp", Type: "container", Scope: "session", Image: "ghcr.io/x/mcp:1", Port: 9000, Path: "/mcp"},
 		}}, s)
 
 		assert.Equal(t, "http://gcp:9000/mcp", regs["gcp"].URL)
@@ -1750,7 +1750,7 @@ func TestStartCustomSidecars(t *testing.T) {
 		o := newOrch(t, mockCM)
 		s := sess()
 		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
-			{Name: "tool", Type: "container", Command: "my-mcp", Args: []string{"--flag"}},
+			{Name: "tool", Type: "container", Scope: "session", Command: "my-mcp", Args: []string{"--flag"}},
 		}}, s)
 
 		assert.Equal(t, "http://tool:8080/mcp", regs["tool"].URL)
@@ -1770,7 +1770,7 @@ func TestStartCustomSidecars(t *testing.T) {
 		o := newOrch(t, mockCM)
 		s := sess()
 		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
-			{Name: "svc", Type: "container", Image: "img:1", Port: 8080},
+			{Name: "svc", Type: "container", Scope: "session", Image: "img:1", Port: 8080},
 		}}, s)
 		assert.Contains(t, regs, "svc")
 	})
@@ -1784,7 +1784,7 @@ func TestStartCustomSidecars(t *testing.T) {
 		o := newOrch(t, mockCM)
 		s := sess()
 		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
-			{Name: "bad", Type: "container", Image: "img:1", Port: 8080},
+			{Name: "bad", Type: "container", Scope: "session", Image: "img:1", Port: 8080},
 		}}, s)
 		assert.Empty(t, regs)
 		assert.Empty(t, s.SidecarNames)
@@ -1801,7 +1801,7 @@ func TestStartCustomSidecars(t *testing.T) {
 		o := newOrch(t, mockCM)
 		s := sess()
 		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
-			{Name: "slow", Type: "container", Image: "img:1", Port: 8080},
+			{Name: "slow", Type: "container", Scope: "session", Image: "img:1", Port: 8080},
 		}}, s)
 		assert.Empty(t, regs)
 		assert.Equal(t, []string{"forge-mcp-slow-proj-sess"}, s.SidecarNames)
@@ -1829,7 +1829,7 @@ func TestStartCustomSidecars_EdgeBranches(t *testing.T) {
 		o := &Orchestrator{Containers: mockCM, HomeDir: t.TempDir(), Log: func(string, ...any) {}}
 		s := &Session{NetworkName: "net", ProjectID: "p", SessionID: "s"}
 		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
-			{Name: "svc", Type: "container", Image: "img:1", Port: 8080, Mounts: []string{"bad"}},
+			{Name: "svc", Type: "container", Scope: "session", Image: "img:1", Port: 8080, Mounts: []string{"bad"}},
 		}}, s)
 		assert.Empty(t, regs)
 		assert.Empty(t, s.SidecarNames)
@@ -1844,7 +1844,7 @@ func TestStartCustomSidecars_EdgeBranches(t *testing.T) {
 		o := &Orchestrator{Containers: mockCM, HomeDir: t.TempDir(), Log: func(string, ...any) {}}
 		s := &Session{NetworkName: "net", ProjectID: "p", SessionID: "s"}
 		regs, _ := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
-			{Name: "svc", Type: "container", Image: "img:1", Port: 8080},
+			{Name: "svc", Type: "container", Scope: "session", Image: "img:1", Port: 8080},
 		}}, s)
 		assert.Contains(t, regs, "svc")
 	})
@@ -1875,6 +1875,27 @@ func TestStartCustomSidecars_GlobalScope(t *testing.T) {
 		assert.Equal(t, "forge-mcp-global-gcloud", got.Name)
 		// Global sidecars are not tracked for per-session cleanup.
 		assert.Empty(t, s.SidecarNames)
+	})
+
+	t.Run("no scope defaults to global", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net", nil)
+		mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-mcp-global-svc").Return(false, nil)
+		mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-mcp-global-svc").Return(nil)
+		mockCM.EXPECT().ImageExists(gomock.Any(), "img:1").Return(true, nil)
+		mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "id", gomock.Any()).Return(nil)
+
+		o := &Orchestrator{Containers: mockCM, HomeDir: t.TempDir(), Log: func(string, ...any) {}}
+		s := &Session{NetworkName: "net", ProjectID: "p", SessionID: "s"}
+		regs, shared := o.startCustomSidecars(context.Background(), &config.Config{MCPServers: []config.MCPServerConfig{
+			{Name: "svc", Type: "container", Image: "img:1", Port: 8080}, // no scope
+		}}, s)
+
+		assert.True(t, shared)
+		assert.Contains(t, regs, "svc")
+		assert.Empty(t, s.SidecarNames, "global sidecars are not tracked for per-session cleanup")
 	})
 
 	t.Run("global sidecar reused when already running", func(t *testing.T) {

@@ -255,26 +255,23 @@ defaults:
 #     env:
 #       API_KEY: "${MY_TOOL_API_KEY}"
 #   # Container example: an image that serves MCP over HTTP, run as a sidecar.
-#   # scope: session (default) runs one per session; scope: global runs a single
-#   # shared instance reused across all sessions (for session-independent servers).
-#   - name: my-sidecar
-#     type: container
-#     scope: session                   # session (default) | global
-#     image: ghcr.io/example/some-mcp:latest
-#     port: 8080
-#     path: /mcp
-#   # Wrapped-stdio example: claude-forge runs the command in a sidecar and
-#   # bridges its stdio to HTTP (default image node:22-slim; override with
-#   # image: for other runtimes/CLIs). Mounts are host:container[:ro].
+#   # scope defaults to global (one shared instance reused across all sessions);
+#   # use scope: session for a per-session instance that needs isolation.
 #   - name: gcloud
 #     type: container
-#     scope: global
-#     command: npx
+#     command: npx                     # wrapped stdio; omit + set image/port for a native HTTP image
 #     args: ["-y", "@google-cloud/gcloud-mcp"]
 #     env:
 #       CLOUDSDK_CORE_PROJECT: "${GCP_PROJECT}"
-#     mounts:
+#     mounts:                          # host:container[:ro]
 #       - "~/.config/gcloud:/root/.config/gcloud:ro"
+#   # Per-session (isolated) example: a native image serving MCP over HTTP.
+#   - name: my-sidecar
+#     type: container
+#     scope: session                   # global (default) | session
+#     image: ghcr.io/example/some-mcp:latest
+#     port: 8080
+#     path: /mcp
 
 # Kubernetes MCP server integration.
 # When enabled, a shared MCP server container gives agents read-only
