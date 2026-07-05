@@ -97,7 +97,7 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 	// Sync the host's locally installed Claude Code plugins into forge's plugin
 	// directory so they are available in the session without a manual sync.
 	// Best-effort: a failure here should not block starting the session.
-	if err := syncHostPlugins(orch.HomeDir); err != nil {
+	if err := syncHostPlugins(orch.HomeDir, false); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: plugin sync failed: %v\n", err)
 	}
 
@@ -728,7 +728,10 @@ func newPluginsSyncCmd() *cobra.Command {
 		Short: "Sync host plugins into forge's plugin directory",
 		Long: `Reads ~/.claude/plugins/installed_plugins.json from the host, starts a
 temporary container, and runs "claude plugins install" for each plugin.
-Plugins persist in ~/.claude-forge/plugins/ across sessions.`,
+Plugins persist in ~/.claude-forge/plugins/ across sessions.
+
+Reinstalls all plugins, even ones already present, so it also picks up
+updates. Session start only installs plugins missing from the cache.`,
 		RunE: pluginsSyncRun,
 	}
 }
@@ -738,14 +741,17 @@ var pluginsSyncRun = func(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
-	return syncHostPlugins(homeDir)
+	return syncHostPlugins(homeDir, true)
 }
 
-// syncHostPlugins reinstalls the host's locally installed Claude Code plugins
+// syncHostPlugins installs the host's locally installed Claude Code plugins
 // into forge's persistent plugins directory (~/.claude-forge/plugins) by running
 // "claude plugins install" inside a temporary container. It is a no-op when the
 // host has no plugins. Used by "plugins sync" and automatically at session start.
-var syncHostPlugins = func(homeDir string) error {
+// When force is false, plugins already present in the persistent directory are
+// skipped so repeated session starts don't reinstall everything; force reinstalls
+// all plugins to pick up updates.
+var syncHostPlugins = func(homeDir string, force bool) error {
 	plugins, err := readHostPlugins(homeDir)
 	if err != nil {
 		return err
@@ -796,8 +802,28 @@ var syncHostPlugins = func(homeDir string) error {
 		return nil
 	}
 
+	// Skip plugins already installed in the persistent plugins directory so
+	// session start doesn't reinstall everything on every run.
+	installPlugins := syncPlugins
+	if !force {
+		installed := readForgeInstalledPlugins(pluginsDir)
+		installPlugins = nil
+		for _, plugin := range syncPlugins {
+			if !installed[plugin] {
+				installPlugins = append(installPlugins, plugin)
+			}
+		}
+		if len(installPlugins) == 0 {
+			if err := enablePluginsInSettings(configDir, syncPlugins); err != nil {
+				return fmt.Errorf("failed to update settings: %w", err)
+			}
+			fmt.Printf("All %d plugins already installed.\n", len(syncPlugins))
+			return nil
+		}
+	}
+
 	containerName := "forge-plugins-sync"
-	fmt.Printf("Syncing %d plugins...\n", len(syncPlugins))
+	fmt.Printf("Syncing %d of %d plugins...\n", len(installPlugins), len(syncPlugins))
 
 	// Start a temporary container with the plugins dir mounted
 	uid := os.Getuid()
@@ -806,6 +832,7 @@ var syncHostPlugins = func(homeDir string) error {
 		"run", "--rm", "--name", containerName,
 		"-e", fmt.Sprintf("FORGE_UID=%d", uid),
 		"-e", fmt.Sprintf("FORGE_GID=%d", gid),
+		"-e", "DISABLE_AUTOUPDATER=1",
 		"-v", pluginsDir + ":/home/user/.claude/plugins",
 	}
 
@@ -815,7 +842,7 @@ var syncHostPlugins = func(homeDir string) error {
 		installCmds = append(installCmds, fmt.Sprintf("claude plugins marketplace add %s || true", src))
 	}
 	installCmds = append(installCmds, "claude plugins marketplace update")
-	for _, plugin := range syncPlugins {
+	for _, plugin := range installPlugins {
 		installCmds = append(installCmds, fmt.Sprintf("claude plugins install %s || true", plugin))
 	}
 	shellCmd := strings.Join(installCmds, " && ")
@@ -863,6 +890,29 @@ func readHostPlugins(homeDir string) ([]string, error) {
 		plugins = append(plugins, key)
 	}
 	return plugins, nil
+}
+
+// readForgeInstalledPlugins reads installed_plugins.json from forge's
+// persistent plugins directory and returns the set of installed plugin keys.
+// Returns an empty set on any error so sync falls back to reinstalling.
+func readForgeInstalledPlugins(pluginsDir string) map[string]bool {
+	installed := make(map[string]bool)
+	data, err := os.ReadFile(filepath.Join(pluginsDir, "installed_plugins.json"))
+	if err != nil {
+		return installed
+	}
+
+	var file struct {
+		Plugins map[string]any `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return installed
+	}
+
+	for key := range file.Plugins {
+		installed[key] = true
+	}
+	return installed
 }
 
 // enablePluginsInSettings reads settings.json from configDir, adds an

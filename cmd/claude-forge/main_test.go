@@ -1037,6 +1037,39 @@ func TestPluginsSyncCmd_WithPlugins(t *testing.T) {
 	assert.Equal(t, []string{"gopls-lsp@claude-plugins-official"}, capturedPlugins)
 }
 
+func TestSyncHostPlugins_SkipsWhenAllInstalled(t *testing.T) {
+	homeDir := t.TempDir()
+
+	hostPluginsDir := filepath.Join(homeDir, ".claude", "plugins")
+	require.NoError(t, os.MkdirAll(hostPluginsDir, 0o755))
+	pluginsJSON := `{"version": 2, "plugins": {"gopls-lsp@claude-plugins-official": [{}]}}`
+	require.NoError(t, os.WriteFile(filepath.Join(hostPluginsDir, "installed_plugins.json"), []byte(pluginsJSON), 0o644))
+	marketplaces := `{"claude-plugins-official": {"source": {"source": "github", "repo": "anthropics/claude-code"}}}`
+	require.NoError(t, os.WriteFile(filepath.Join(hostPluginsDir, "known_marketplaces.json"), []byte(marketplaces), 0o644))
+
+	// The persistent forge plugins dir already contains the plugin, so sync
+	// must return before starting any container.
+	forgePluginsDir := filepath.Join(homeDir, ".claude-forge", "plugins")
+	require.NoError(t, os.MkdirAll(forgePluginsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(forgePluginsDir, "installed_plugins.json"), []byte(pluginsJSON), 0o644))
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "settings.json"), []byte("{}"), 0o644))
+
+	err := syncHostPlugins(homeDir, false)
+	require.NoError(t, err)
+
+	// enabledPlugins is still written so settings stay in sync.
+	data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+	require.NoError(t, err)
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	enabled, ok := settings["enabledPlugins"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, enabled["gopls-lsp@claude-plugins-official"])
+}
+
 func TestReadHostMarketplaces(t *testing.T) {
 	t.Run("reads github sources and names", func(t *testing.T) {
 		dir := t.TempDir()
@@ -1088,6 +1121,38 @@ func TestReadHostMarketplaces(t *testing.T) {
 		info := readHostMarketplaces(t.TempDir())
 		assert.Empty(t, info.Sources)
 		assert.Empty(t, info.Names)
+	})
+}
+
+func TestReadForgeInstalledPlugins(t *testing.T) {
+	t.Run("returns installed plugin keys", func(t *testing.T) {
+		pluginsDir := t.TempDir()
+		content := `{
+			"version": 2,
+			"plugins": {
+				"gopls-lsp@claude-plugins-official": [{"version": "1.0.0"}],
+				"my-plugin@my-marketplace": [{"version": "0.1.0"}]
+			}
+		}`
+		require.NoError(t, os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), []byte(content), 0o644))
+
+		installed := readForgeInstalledPlugins(pluginsDir)
+		assert.Len(t, installed, 2)
+		assert.True(t, installed["gopls-lsp@claude-plugins-official"])
+		assert.True(t, installed["my-plugin@my-marketplace"])
+	})
+
+	t.Run("returns empty set when file missing", func(t *testing.T) {
+		installed := readForgeInstalledPlugins(t.TempDir())
+		assert.Empty(t, installed)
+	})
+
+	t.Run("returns empty set for invalid json", func(t *testing.T) {
+		pluginsDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(pluginsDir, "installed_plugins.json"), []byte("not json"), 0o644))
+
+		installed := readForgeInstalledPlugins(pluginsDir)
+		assert.Empty(t, installed)
 	})
 }
 

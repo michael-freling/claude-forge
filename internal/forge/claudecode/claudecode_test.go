@@ -51,6 +51,7 @@ func TestBuildContainerConfig_FullOptions(t *testing.T) {
 	// Env vars
 	assert.Equal(t, "/home/user", cfg.Env["HOME"])
 	assert.Equal(t, "0", cfg.Env["GIT_TERMINAL_PROMPT"])
+	assert.Equal(t, "1", cfg.Env["DISABLE_AUTOUPDATER"])
 	assert.Equal(t, "sk-ant-test", cfg.Env["ANTHROPIC_API_KEY"])
 	assert.Empty(t, cfg.Env["CLAUDE_CODE_OAUTH_TOKEN"])
 

@@ -97,6 +97,11 @@ func buildEnv(opts Options) map[string]string {
 	env := map[string]string{
 		"HOME":                "/home/user",
 		"GIT_TERMINAL_PROMPT": "0",
+		// The image pins the Claude Code version and the npm prefix is not
+		// writable by the container user; without this the auto-updater runs
+		// anyway (the legacy autoUpdaterStatus settings key is ignored by
+		// newer versions) and reports "no write permission to npm prefix".
+		"DISABLE_AUTOUPDATER": "1",
 	}
 	if opts.AuthType == "api_key" {
 		env["ANTHROPIC_API_KEY"] = opts.AuthToken
