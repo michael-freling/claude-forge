@@ -177,6 +177,19 @@ mcp_servers:
     args: ["--flag"]
     env:
       API_KEY: "${MY_TOOL_API_KEY}"
+  # Container server — claude-forge runs an image as a per-session sidecar
+  - name: my-sidecar
+    type: container
+    image: ghcr.io/example/some-mcp:latest
+    port: 8080
+    path: /mcp
+  # Wrapped stdio — run a stdio command in a sidecar, bridged to HTTP
+  - name: gcloud
+    type: container
+    command: npx
+    args: ["-y", "@google-cloud/gcloud-mcp"]
+    mounts:
+      - "~/.config/gcloud:/root/.config/gcloud:ro"
 
 # Optional Kubernetes MCP integration
 kubernetes:
@@ -193,14 +206,40 @@ kubernetes:
 
 Beyond the built-in `github` (and optional `kubernetes`) servers, you can expose
 any number of additional MCP servers to the agent via the `mcp_servers` list in
-`config.yaml`. Each entry is one of two kinds:
+`config.yaml`. Each entry is one of these kinds:
 
 - **Remote** (`type: http` or `type: sse`) — an HTTP/SSE endpoint reached over
   the network. Set `url`, and optionally `headers` for authentication. This is
   the right choice for hosted third-party servers such as the Vercel MCP server.
-- **Stdio** (`type: stdio`) — a command launched inside the agent container. Set
-  `command`, and optionally `args` and `env`. The command must be available in
-  the agent image.
+- **Stdio** (`type: stdio`) — a command launched by Claude Code inside the agent
+  container. Set `command`, and optionally `args` and `env`. The command must be
+  available in the agent image.
+- **Container** (`type: container`) — a server claude-forge runs as a
+  **per-session sidecar** on the session network, reached at
+  `http://<name>:<port><path>` (default path `/mcp`). Use this for any MCP
+  server packaged as a container, or to run a locally-installed one that the
+  agent image doesn't have. Two forms:
+  - **Native HTTP image** — set `image` + `port` (+ optional `args`). The image
+    serves MCP over HTTP itself.
+  - **Wrapped stdio** — set `command` (+ optional `args`). claude-forge runs the
+    command inside a sidecar and bridges its stdio to HTTP with
+    [supergateway](https://github.com/supercorp-ai/supergateway). The base
+    `image` defaults to `node:22-slim` (so `npx`-based servers work); override
+    it when the command needs a different runtime or extra CLIs. Pass secrets
+    via `env` (the wrapped process inherits the sidecar's environment) and host
+    paths via `mounts` (`host:container[:ro]`).
+
+  The sidecar's `name` is used as its network hostname, so it must be a valid
+  DNS label. Sidecars are torn down automatically when the session ends, and a
+  server that fails to start is skipped with a warning rather than aborting the
+  session.
+
+> Note: a `type: stdio` server runs in the *agent* container and needs its
+> command baked into the agent image; a `type: container` **wrapped stdio**
+> server runs in its own sidecar, so you can bring arbitrary runtimes without
+> modifying the agent image. Remote HTTP servers are reachable because the agent
+> container has normal outbound internet — the git gateway only proxies git
+> traffic.
 
 `${VAR}` references in `url`, `headers`, `command`, `args`, and `env` are
 expanded from your host environment when a session starts, so API tokens can be

@@ -262,6 +262,36 @@ func TestLoad_MCPServers_ValidationErrors(t *testing.T) {
 			configYAML:  "mcp_servers:\n  - name: a\n    type: stdio\n    command: x\n    oauth: true\n",
 			errContains: "oauth is only valid",
 		},
+		{
+			name:        "container missing image and command",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: container\n    port: 8080\n",
+			errContains: "image is required for a container server",
+		},
+		{
+			name:        "container native missing port",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: container\n    image: img:1\n",
+			errContains: "port is required",
+		},
+		{
+			name:        "container name not a dns label",
+			configYAML:  "mcp_servers:\n  - name: My_Server\n    type: container\n    image: img:1\n    port: 8080\n",
+			errContains: "DNS label",
+		},
+		{
+			name:        "container name trailing hyphen",
+			configYAML:  "mcp_servers:\n  - name: srv-\n    type: container\n    image: img:1\n    port: 8080\n",
+			errContains: "start or end with a hyphen",
+		},
+		{
+			name:        "container name too long",
+			configYAML:  "mcp_servers:\n  - name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    type: container\n    image: img:1\n    port: 8080\n",
+			errContains: "1-63 characters",
+		},
+		{
+			name:        "oauth on container server",
+			configYAML:  "mcp_servers:\n  - name: a\n    type: container\n    image: img:1\n    port: 8080\n    oauth: true\n",
+			errContains: "oauth is only valid",
+		},
 	}
 
 	for _, tt := range tests {
@@ -274,4 +304,33 @@ func TestLoad_MCPServers_ValidationErrors(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.errContains)
 		})
 	}
+}
+
+func TestLoad_MCPServers_Container(t *testing.T) {
+	tmpDir := t.TempDir()
+	configYAML := `mcp_servers:
+  - name: native
+    type: container
+    image: ghcr.io/x/mcp:1
+    port: 9000
+    path: /mcp
+  - name: wrapped
+    type: container
+    command: my-mcp
+    args: ["--flag"]
+    mounts:
+      - "~/.config/gcloud:/creds:ro"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configYAML), 0o644))
+
+	got, err := Load(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, got.MCPServers, 2)
+
+	assert.True(t, got.MCPServers[0].IsContainer())
+	assert.False(t, got.MCPServers[0].IsWrappedStdio())
+	assert.Equal(t, 9000, got.MCPServers[0].Port)
+
+	assert.True(t, got.MCPServers[1].IsWrappedStdio())
+	assert.Equal(t, []string{"~/.config/gcloud:/creds:ro"}, got.MCPServers[1].Mounts)
 }

@@ -222,17 +222,20 @@ defaults:
   worktree: false
 
 # Custom MCP servers exposed to the agent, in addition to the built-in
-# github (and optional kubernetes) servers.
+# github (and optional kubernetes) servers. ${VAR} references in string
+# fields are expanded from the host environment at session start, so tokens
+# stay out of this file.
 #
-# Each entry is either a remote server (http/sse, reached over the network)
-# or a stdio server (a command run inside the agent container). ${VAR}
-# references are expanded from the host environment at session start, so
-# tokens stay out of this file.
+# Each entry is one of:
+#   type: http|sse   remote server reached over the network (url [+ headers])
+#   type: stdio      a command run inside the agent container
+#   type: container  a server claude-forge runs as a per-session sidecar,
+#                    reached at http://<name>:<port><path>
 #
 # mcp_servers:
 #   # Remote example with a static token in a header.
 #   - name: example
-#     type: http                       # http (default) | sse | stdio
+#     type: http
 #     url: https://mcp.example.com
 #     headers:
 #       Authorization: "Bearer ${EXAMPLE_TOKEN}"
@@ -251,6 +254,23 @@ defaults:
 #     args: ["--flag"]
 #     env:
 #       API_KEY: "${MY_TOOL_API_KEY}"
+#   # Container example: an image that serves MCP over HTTP, run as a sidecar.
+#   - name: my-sidecar
+#     type: container
+#     image: ghcr.io/example/some-mcp:latest
+#     port: 8080
+#     path: /mcp
+#   # Wrapped-stdio example: claude-forge runs the command in a sidecar and
+#   # bridges its stdio to HTTP (default image node:22-slim; override with
+#   # image: for other runtimes/CLIs). Mounts are host:container[:ro].
+#   - name: gcloud
+#     type: container
+#     command: npx
+#     args: ["-y", "@google-cloud/gcloud-mcp"]
+#     env:
+#       CLOUDSDK_CORE_PROJECT: "${GCP_PROJECT}"
+#     mounts:
+#       - "~/.config/gcloud:/root/.config/gcloud:ro"
 
 # Kubernetes MCP server integration.
 # When enabled, a shared MCP server container gives agents read-only

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +67,7 @@ type Session struct {
 	NetworkName   string
 	SessionID     string
 	ProjectID     string
+	SidecarNames  []string // custom MCP sidecar container names, for cleanup
 }
 
 // Start creates a new claude-forge session: loads config, identifies the project,
@@ -261,6 +263,10 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		}
 	}
 
+	// Start custom "container" MCP servers as per-session sidecars before
+	// writing settings, so we only advertise the ones that actually came up.
+	sidecarRegs := o.startCustomSidecars(ctx, cfg, sess)
+
 	// Write MCP server config to settings.json for the agent
 	mcpServers := map[string]claudecode.MCPServerConfig{
 		"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
@@ -272,9 +278,16 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	// Merge user-configured custom MCP servers (e.g. a hosted Vercel MCP).
 	// ${VAR} references in URLs, headers, commands, args, and env are expanded
 	// against the host environment now so secrets stay out of config.yaml.
+	// Container servers are handled as sidecars above.
 	for _, s := range cfg.MCPServers {
+		if s.IsContainer() {
+			continue
+		}
 		mcpServers[s.Name] = customMCPServer(s)
 		o.Log("Custom MCP: %s", s.Name)
+	}
+	for name, reg := range sidecarRegs {
+		mcpServers[name] = reg
 	}
 
 	if err := claudecode.UpdateMCPServers(o.ConfigDir, mcpServers); err != nil {
@@ -448,6 +461,10 @@ func (o *Orchestrator) Cleanup(ctx context.Context, sess *Session) {
 	_ = o.Containers.RemoveContainer(ctx, sess.AgentName)
 	_ = o.Containers.StopContainer(ctx, sess.GitHubMCPName)
 	_ = o.Containers.RemoveContainer(ctx, sess.GitHubMCPName)
+	for _, name := range sess.SidecarNames {
+		_ = o.Containers.StopContainer(ctx, name)
+		_ = o.Containers.RemoveContainer(ctx, name)
+	}
 	_ = o.Containers.StopContainer(ctx, sess.GatewayName)
 	_ = o.Containers.RemoveContainer(ctx, sess.GatewayName)
 	_ = o.Containers.RemoveNetwork(ctx, sess.NetworkName)
@@ -575,6 +592,133 @@ func expandEnvMap(m map[string]string) map[string]string {
 		out[k] = os.ExpandEnv(v)
 	}
 	return out
+}
+
+// startCustomSidecars starts each type:"container" MCP server as a per-session
+// sidecar on the session network and returns the HTTP registrations for the
+// ones that came up. Failures are logged and skipped so a single bad server
+// doesn't abort the session (matching the Kubernetes MCP behavior).
+func (o *Orchestrator) startCustomSidecars(ctx context.Context, cfg *config.Config, sess *Session) map[string]claudecode.MCPServerConfig {
+	regs := map[string]claudecode.MCPServerConfig{}
+	for _, s := range cfg.MCPServers {
+		if !s.IsContainer() {
+			continue
+		}
+
+		port := s.Port
+		if port == 0 {
+			port = config.DefaultMCPPort
+		}
+		path := s.Path
+		if path == "" {
+			path = config.DefaultMCPPath
+		}
+
+		image := s.Image
+		var cmd []string
+		if s.IsWrappedStdio() {
+			if image == "" {
+				image = config.DefaultMCPWrapperImage
+			}
+			cmd = supergatewayCmd(s, port, path)
+		} else {
+			// Native image that serves MCP over HTTP itself; pass through any args.
+			for _, a := range s.Args {
+				cmd = append(cmd, os.ExpandEnv(a))
+			}
+		}
+
+		mounts, err := o.parseSidecarMounts(s.Mounts)
+		if err != nil {
+			o.Log("Warning: MCP sidecar %q: %v; skipping", s.Name, err)
+			continue
+		}
+
+		if exists, err := o.Containers.ImageExists(ctx, image); err == nil && !exists {
+			o.Log("Pulling image: %s", image)
+			if err := o.Containers.PullImage(ctx, image); err != nil {
+				o.Log("Warning: MCP sidecar %q: failed to pull image %s: %v; skipping", s.Name, image, err)
+				continue
+			}
+		}
+
+		containerName := fmt.Sprintf("forge-mcp-%s-%s-%s", s.Name, sess.ProjectID, sess.SessionID)
+		o.Log("Starting MCP sidecar: %s", s.Name)
+		id, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
+			Name:        containerName,
+			Image:       image,
+			NetworkName: sess.NetworkName,
+			Alias:       s.Name,
+			Env:         expandEnvMap(s.Env),
+			Mounts:      mounts,
+			Cmd:         cmd,
+		})
+		if err != nil {
+			o.Log("Warning: MCP sidecar %q failed to start: %v; skipping", s.Name, err)
+			continue
+		}
+		// Record for cleanup as soon as it exists, even if readiness fails.
+		sess.SidecarNames = append(sess.SidecarNames, containerName)
+
+		if err := o.Containers.WaitForReady(ctx, id, 60*time.Second); err != nil {
+			logs, _ := o.Containers.ContainerLogs(ctx, id)
+			o.Log("Warning: MCP sidecar %q not ready: %v; skipping\n%s", s.Name, err, logs)
+			continue
+		}
+
+		regs[s.Name] = claudecode.MCPServerConfig{
+			Type: "http",
+			URL:  fmt.Sprintf("http://%s:%d%s", s.Name, port, path),
+		}
+	}
+	return regs
+}
+
+// supergatewayCmd builds the container command that wraps a stdio MCP server in
+// supergateway's stdio→streamable-HTTP bridge. The child command inherits the
+// sidecar's environment, so secrets are passed via Env rather than a flag.
+func supergatewayCmd(s config.MCPServerConfig, port int, path string) []string {
+	child := os.ExpandEnv(s.Command)
+	for _, a := range s.Args {
+		child += " " + os.ExpandEnv(a)
+	}
+	return []string{
+		"npx", "-y", "supergateway",
+		"--stdio", child,
+		"--outputTransport", "streamableHttp",
+		"--port", strconv.Itoa(port),
+		"--streamableHttpPath", path,
+		"--healthEndpoint", "/healthz",
+	}
+}
+
+// parseSidecarMounts converts "host:container[:ro]" specs into bind mounts,
+// expanding ${VAR} and a leading ~/ against the host environment.
+func (o *Orchestrator) parseSidecarMounts(specs []string) ([]mount.Mount, error) {
+	var out []mount.Mount
+	for _, spec := range specs {
+		expanded := os.ExpandEnv(spec)
+		parts := strings.Split(expanded, ":")
+		if len(parts) < 2 || len(parts) > 3 {
+			return nil, fmt.Errorf("invalid mount %q: expected host:container[:ro]", spec)
+		}
+		src := parts[0]
+		if strings.HasPrefix(src, "~/") {
+			src = filepath.Join(o.HomeDir, src[2:])
+		}
+		src, err := filepath.Abs(src)
+		if err != nil {
+			return nil, fmt.Errorf("invalid mount source %q: %w", parts[0], err)
+		}
+		readOnly := len(parts) == 3 && parts[2] == "ro"
+		out = append(out, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   src,
+			Target:   parts[1],
+			ReadOnly: readOnly,
+		})
+	}
+	return out, nil
 }
 
 // warnUnauthenticatedMCP checks each OAuth-based custom MCP server for a valid
@@ -731,7 +875,13 @@ func (o *Orchestrator) Build(ctx context.Context) error {
 	if cfg.Kubernetes.Enabled {
 		images = append(images, cfg.Kubernetes.Image)
 	}
+	images = append(images, customSidecarImages(cfg)...)
+	seen := make(map[string]bool, len(images))
 	for _, img := range images {
+		if seen[img] {
+			continue
+		}
+		seen[img] = true
 		o.Log("Pulling image: %s", img)
 		if err := o.Containers.PullImage(ctx, img); err != nil {
 			return fmt.Errorf("failed to pull image %s: %w", img, err)
@@ -739,4 +889,24 @@ func (o *Orchestrator) Build(ctx context.Context) error {
 	}
 	o.Log("All images up to date.")
 	return nil
+}
+
+// customSidecarImages returns the images needed by type:"container" MCP servers,
+// substituting the default wrapper image for wrapped stdio servers without an
+// explicit image.
+func customSidecarImages(cfg *config.Config) []string {
+	var images []string
+	for _, s := range cfg.MCPServers {
+		if !s.IsContainer() {
+			continue
+		}
+		img := s.Image
+		if img == "" && s.IsWrappedStdio() {
+			img = config.DefaultMCPWrapperImage
+		}
+		if img != "" {
+			images = append(images, img)
+		}
+	}
+	return images
 }
