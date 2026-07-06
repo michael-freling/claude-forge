@@ -384,6 +384,16 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		agentEnv["ANTHROPIC_MODEL"] = model
 	}
 
+	// Docker-in-Docker: the entrypoint starts a dedicated dockerd inside the
+	// agent container (requires --privileged). The host Docker socket is never
+	// mounted, so the agent's containers are invisible to the host daemon and
+	// vice versa — the agent cannot see or control claude-forge's own
+	// containers or those of other sessions.
+	if cfg.Docker.Enabled {
+		agentEnv["FORGE_ENABLE_DOCKER"] = "1"
+		o.Log("Docker: enabled (isolated dockerd inside the agent, container runs privileged)")
+	}
+
 	// Convert cache dirs
 	var containerCacheDirs []container.CacheDir
 	for _, cd := range cacheDirs {
@@ -436,6 +446,8 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		HomeDir:            o.HomeDir,
 		PluginsDir:         pluginsDir,
 		Env:                agentEnv,
+		Privileged:         cfg.Docker.Enabled,
+		EnableDocker:       cfg.Docker.Enabled,
 		Interactive:        opts.Interactive,
 		Cmd:                agentCmd,
 		UID:                opts.UID,

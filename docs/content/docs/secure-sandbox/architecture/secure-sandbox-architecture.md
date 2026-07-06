@@ -46,7 +46,7 @@ For the threat model and technology survey, see the [Secure Sandbox Environments
 │  │  │  (no proxy)           internet│  │ forge-gh API (:8083)      │  │  │
 │  │  │                               │  │ + schema discovery        │  │  │
 │  │  │ No MCP servers                │  │                           │  │  │
-│  │  │ --privileged (for DinD)       │  │                           │  │  │
+│  │  │ --privileged (opt-in DinD)    │  │                           │  │  │
 │  │  │ non-root user                 │  │                           │  │  │
 │  │  └───────────────────────────────┘  └────────────┬──────────────┘  │  │
 │  │                                                   │                │  │
@@ -181,7 +181,7 @@ The `~/.claude/.credentials.json` file is bind-mounted (read-write) into the con
 | Attribute | Value |
 |---|---|
 | **Image** | `ghcr.io/michael-freling/claude-forge-agent:latest` |
-| **Security** | `--privileged` (required for DinD), non-root user |
+| **Security** | non-root user; `--privileged` only when `docker.enabled` is set (required for DinD) |
 | **Network** | `forge_net_<id>` — has direct internet access for package downloads. GitHub traffic (github.com, api.github.com) routes through gateway via git proxy config. |
 | **Name** | `forge-agent-<project-id>-<session-id>` (unique per instance) |
 
@@ -497,7 +497,7 @@ ENTRYPOINT ["claude"]
 
 Includes: Node.js LTS, Python 3, Go 1.26, Docker (daemon + CLI), and common CLIs (ripgrep, git, jq, curl, make, tar, unzip, ssh-client, bash). `gh` is symlinked to `forge-gh` so Claude Code's natural `gh` commands work transparently through the gateway.
 
-Docker daemon (`dockerd`) runs inside the agent container for `docker build` and similar operations. The host Docker socket is NOT mounted.
+When `docker.enabled` is set in config.yaml, a Docker daemon (`dockerd`) runs inside the agent container for `docker build` and similar operations. The host Docker socket is NOT mounted in any configuration. See the [Docker container support proposal]({{< relref "/docs/secure-sandbox/proposals/docker-container-support" >}}).
 
 ### Gateway Image (Multi-Stage)
 
@@ -576,7 +576,7 @@ Claude Code's permission system protects the host machine. Inside the container:
 - Git writes are gateway-scoped to one repo.
 - No SSH keys, git credentials, or cloud config accessible.
 - No MCP servers to abuse.
-- `--privileged` is required for DinD but the container has no host socket mounts — the Docker daemon inside is isolated from the host.
+- `--privileged` (used only when `docker.enabled` is set, for DinD) never comes with host socket mounts — the Docker daemon inside is isolated from the host.
 
 The container IS the permission boundary.
 
@@ -594,4 +594,4 @@ Resolved questions from earlier iterations:
 
 4. **Agent image management.** Auto-rebuild when remote digest changes (b) + explicit `claude-forge build` command (c).
 
-5. **Docker daemon.** Runs `dockerd` inside the agent container (DinD). Requires relaxed security: the agent container runs with `--privileged` (or equivalent capabilities) to support the Docker daemon. The host Docker socket is still NOT mounted — isolation is maintained because the in-container daemon has no access to host containers or images.
+5. **Docker daemon.** Runs `dockerd` inside the agent container (DinD), opt-in via `docker.enabled` in config.yaml. Requires relaxed security: when enabled, the agent container runs with `--privileged` to support the Docker daemon. The host Docker socket is still NOT mounted — isolation is maintained because the in-container daemon has no access to host containers or images.

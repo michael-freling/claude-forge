@@ -404,6 +404,88 @@ current-context: dummy
 	waitForRunning(t, ctx, containerName, 15*time.Second)
 }
 
+// TestAgentDockerInDocker verifies the agent image's Docker-in-Docker support:
+// with FORGE_ENABLE_DOCKER=1 and --privileged (what the orchestrator sets when
+// docker.enabled is true), the entrypoint starts an in-container dockerd that
+// the non-root user can use — and that daemon is isolated from the host: it
+// must not see containers running on the host daemon.
+func TestAgentDockerInDocker(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	projectRoot := findProjectRoot(t)
+
+	// Build the agent binary and image (the image COPYs the binary).
+	agentBinaryPath := filepath.Join(projectRoot, "docker", "agent", "claude-forge")
+	buildAgentBinary := exec.Command("go", "build", "-o", agentBinaryPath, "./cmd/claude-forge/")
+	buildAgentBinary.Dir = projectRoot
+	buildAgentBinary.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
+	out, err := buildAgentBinary.CombinedOutput()
+	require.NoError(t, err, "failed to build agent binary: %s", out)
+	t.Cleanup(func() { os.Remove(agentBinaryPath) })
+
+	agentImageName := "forge-e2e-agent-dind"
+	buildAgent := exec.CommandContext(ctx, "docker", "build", "-t", agentImageName, "docker/agent/")
+	buildAgent.Dir = projectRoot
+	out, err = buildAgent.CombinedOutput()
+	require.NoError(t, err, "failed to build agent image: %s", out)
+
+	// Start a marker container on the HOST daemon. The inner daemon must not
+	// be able to see it.
+	markerName := "forge-e2e-dind-host-marker"
+	_ = exec.Command("docker", "rm", "-f", markerName).Run()
+	out, err = exec.CommandContext(ctx, "docker", "run", "-d", "--name", markerName, "alpine:latest", "sleep", "300").CombinedOutput()
+	require.NoError(t, err, "failed to start marker container: %s", out)
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", markerName).Run()
+	})
+
+	// Run the agent container the way the orchestrator does when docker.enabled
+	// is true, but with a script instead of claude: wait for the inner dockerd,
+	// list containers (isolation check), then run one (functionality check).
+	script := `set -e
+for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+docker info >/dev/null 2>&1 || { echo "inner dockerd never came up"; exit 1; }
+echo "INNER_PS_START"
+docker ps -a
+echo "INNER_PS_END"
+docker run --rm hello-world
+`
+	containerName := "forge-e2e-dind-agent"
+	_ = exec.Command("docker", "rm", "-f", "-v", containerName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", "-v", containerName).Run()
+	})
+
+	// -v /var/lib/docker mirrors the orchestrator's anonymous volume: the inner
+	// dockerd cannot layer overlayfs on the agent's own overlayfs root.
+	runCmd := exec.CommandContext(ctx, "docker", "run",
+		"--name", containerName,
+		"--privileged",
+		"-v", "/var/lib/docker",
+		"-e", "FORGE_ENABLE_DOCKER=1",
+		agentImageName,
+		"bash", "-c", script,
+	)
+	out, err = runCmd.CombinedOutput()
+	logs := string(out)
+	require.NoError(t, err, "agent DinD script failed:\n%s", logs)
+
+	// Functionality: the inner daemon ran a container.
+	assert.Contains(t, logs, "Hello from Docker!", "expected hello-world to run on the inner daemon:\n%s", logs)
+
+	// Isolation: the inner daemon sees none of the host daemon's containers.
+	assert.NotContains(t, logs, markerName, "inner daemon must not see host containers:\n%s", logs)
+	assert.NotContains(t, logs, "alpine", "inner daemon must not see host containers:\n%s", logs)
+}
+
 // TestKubernetesMCPServer_AgentConnectivity verifies that a container connected
 // to the shared network (simulating the agent) can reach the k8s MCP server via
 // its DNS alias. This reproduces the full networking path: k8s-mcp on a shared

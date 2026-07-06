@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -142,14 +143,15 @@ func TestStartAgent(t *testing.T) {
 		{
 			name: "creates and starts agent container",
 			opts: AgentOptions{
-				Name:        "forge-agent-test-project-session1",
-				Image:       "agent:latest",
-				NetworkName: "forge_net",
-				ProjectDir:  "/home/user/my-project",
-				Env:         map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
-				Privileged:  true,
-				Interactive: true,
-				Cmd:         []string{"--dangerously-skip-permissions"},
+				Name:         "forge-agent-test-project-session1",
+				Image:        "agent:latest",
+				NetworkName:  "forge_net",
+				ProjectDir:   "/home/user/my-project",
+				Env:          map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
+				Privileged:   true,
+				EnableDocker: true,
+				Interactive:  true,
+				Cmd:          []string{"--dangerously-skip-permissions"},
 			},
 			setupMock: func(m *MockDockerAPI) {
 				m.EXPECT().
@@ -173,12 +175,17 @@ func TestStartAgent(t *testing.T) {
 
 						// Check project dir mount
 						foundProjectMount := false
+						foundDockerVolume := false
 						for _, m := range hostConfig.Mounts {
 							if m.Target == "/work" && m.Source == "/home/user/my-project" {
 								foundProjectMount = true
 							}
+							if m.Target == "/var/lib/docker" && m.Type == mount.TypeVolume {
+								foundDockerVolume = true
+							}
 						}
 						assert.True(t, foundProjectMount, "project dir mount not found")
+						assert.True(t, foundDockerVolume, "DinD /var/lib/docker volume mount not found")
 
 						return container.CreateResponse{ID: "container-123"}, nil
 					})
@@ -1089,7 +1096,7 @@ func TestRemoveContainer(t *testing.T) {
 			containerID: "forge-agent-test",
 			setupMock: func(m *MockDockerAPI) {
 				m.EXPECT().
-					ContainerRemove(gomock.Any(), "forge-agent-test", container.RemoveOptions{Force: true}).
+					ContainerRemove(gomock.Any(), "forge-agent-test", container.RemoveOptions{Force: true, RemoveVolumes: true}).
 					Return(nil)
 			},
 		},
@@ -1098,7 +1105,7 @@ func TestRemoveContainer(t *testing.T) {
 			containerID: "forge-agent-test",
 			setupMock: func(m *MockDockerAPI) {
 				m.EXPECT().
-					ContainerRemove(gomock.Any(), "forge-agent-test", container.RemoveOptions{Force: true}).
+					ContainerRemove(gomock.Any(), "forge-agent-test", container.RemoveOptions{Force: true, RemoveVolumes: true}).
 					Return(fmt.Errorf("container not found"))
 			},
 			wantErr:     true,
