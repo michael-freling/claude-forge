@@ -1178,6 +1178,7 @@ func TestStart_WithDockerEnabled(t *testing.T) {
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.True(t, opts.Privileged)
+			assert.True(t, opts.EnableDocker)
 			assert.Equal(t, "1", opts.Env["FORGE_ENABLE_DOCKER"])
 			return "agent-id", nil
 		})
@@ -1208,6 +1209,7 @@ func TestStart_DockerDisabledByDefault(t *testing.T) {
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.False(t, opts.Privileged)
+			assert.False(t, opts.EnableDocker)
 			assert.NotContains(t, opts.Env, "FORGE_ENABLE_DOCKER")
 			return "agent-id", nil
 		})

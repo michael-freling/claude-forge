@@ -129,7 +129,11 @@ Flow when enabled:
 
 1. `Orchestrator.Start` sets `FORGE_ENABLE_DOCKER=1` in the agent environment
    and starts the agent container with `Privileged: true`
-   (`internal/forge/orchestrator.go`).
+   (`internal/forge/orchestrator.go`). It also backs `/var/lib/docker` with an
+   anonymous volume — the inner daemon cannot layer overlayfs on top of the
+   agent's own overlayfs root (the same reason the official `docker:dind`
+   image declares `VOLUME /var/lib/docker`). The volume is removed together
+   with the agent container at session cleanup.
 2. The agent entrypoint (`docker/agent/entrypoint.sh`), still running as root
    before dropping to the non-root user, launches `dockerd` in the background,
    waits up to 15s for `/var/run/docker.sock`, and adds `user` to the `docker`

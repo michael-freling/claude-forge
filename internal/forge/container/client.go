@@ -195,6 +195,7 @@ type AgentOptions struct {
 	HomeDir            string            // host home dir for CLAUDE.md paths
 	Env                map[string]string // environment variables
 	Privileged         bool
+	EnableDocker       bool                // back /var/lib/docker with a volume for the in-container dockerd (DinD)
 	Interactive        bool                // allocate TTY and stdin (for docker attach)
 	Cmd                []string            // claude args: --dangerously-skip-permissions, --worktree, etc.
 	UID                int                 // host user UID (for file ownership mapping)
@@ -326,6 +327,17 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 			Type:   mount.TypeBind,
 			Source: m.Source,
 			Target: m.Target,
+		})
+	}
+
+	// DinD storage: the in-container dockerd cannot layer overlayfs on top of
+	// the agent's own overlayfs root, so back /var/lib/docker with an anonymous
+	// volume (as the official docker:dind image does). The volume is removed
+	// with the container (RemoveContainer passes RemoveVolumes).
+	if opts.EnableDocker {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeVolume,
+			Target: "/var/lib/docker",
 		})
 	}
 
@@ -684,9 +696,11 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	return nil
 }
 
-// RemoveContainer removes a container by name.
+// RemoveContainer removes a container by name. Anonymous volumes (e.g. the
+// agent's DinD /var/lib/docker volume) are removed with it; named volumes and
+// bind mounts are unaffected.
 func (c *Client) RemoveContainer(ctx context.Context, name string) error {
-	if err := c.docker.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}); err != nil {
+	if err := c.docker.ContainerRemove(ctx, name, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
 		return fmt.Errorf("failed to remove container %s: %w", name, err)
 	}
 	return nil

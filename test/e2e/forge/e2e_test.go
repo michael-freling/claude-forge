@@ -459,14 +459,17 @@ echo "INNER_PS_END"
 docker run --rm hello-world
 `
 	containerName := "forge-e2e-dind-agent"
-	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	_ = exec.Command("docker", "rm", "-f", "-v", containerName).Run()
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+		_ = exec.Command("docker", "rm", "-f", "-v", containerName).Run()
 	})
 
+	// -v /var/lib/docker mirrors the orchestrator's anonymous volume: the inner
+	// dockerd cannot layer overlayfs on the agent's own overlayfs root.
 	runCmd := exec.CommandContext(ctx, "docker", "run",
 		"--name", containerName,
 		"--privileged",
+		"-v", "/var/lib/docker",
 		"-e", "FORGE_ENABLE_DOCKER=1",
 		agentImageName,
 		"bash", "-c", script,
