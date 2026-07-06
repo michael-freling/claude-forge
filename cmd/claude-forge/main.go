@@ -813,48 +813,45 @@ var syncHostPlugins = func(homeDir string, force bool) error {
 				installPlugins = append(installPlugins, plugin)
 			}
 		}
-		if len(installPlugins) == 0 {
-			if err := enablePluginsInSettings(configDir, syncPlugins); err != nil {
-				return fmt.Errorf("failed to update settings: %w", err)
-			}
-			fmt.Printf("All %d plugins already installed (run \"claude-forge plugins sync\" to update them).\n", len(syncPlugins))
-			return nil
+	}
+
+	if len(installPlugins) == 0 {
+		fmt.Printf("All %d plugins already installed (run \"claude-forge plugins sync\" to update them).\n", len(syncPlugins))
+	} else {
+		containerName := "forge-plugins-sync"
+		fmt.Printf("Syncing %d of %d plugins...\n", len(installPlugins), len(syncPlugins))
+
+		// Start a temporary container with the plugins dir mounted
+		uid := os.Getuid()
+		gid := os.Getgid()
+		runArgs := []string{
+			"run", "--rm", "--name", containerName,
+			"-e", fmt.Sprintf("FORGE_UID=%d", uid),
+			"-e", fmt.Sprintf("FORGE_GID=%d", gid),
+			"-e", "DISABLE_AUTOUPDATER=1",
+			"-v", pluginsDir + ":/home/user/.claude/plugins",
 		}
-	}
 
-	containerName := "forge-plugins-sync"
-	fmt.Printf("Syncing %d of %d plugins...\n", len(installPlugins), len(syncPlugins))
+		// Build commands: add marketplaces, update, then install each plugin
+		var installCmds []string
+		for _, src := range mpInfo.Sources {
+			installCmds = append(installCmds, fmt.Sprintf("claude plugins marketplace add %s || true", src))
+		}
+		installCmds = append(installCmds, "claude plugins marketplace update")
+		for _, plugin := range installPlugins {
+			installCmds = append(installCmds, fmt.Sprintf("claude plugins install %s || true", plugin))
+		}
+		shellCmd := strings.Join(installCmds, " && ")
 
-	// Start a temporary container with the plugins dir mounted
-	uid := os.Getuid()
-	gid := os.Getgid()
-	runArgs := []string{
-		"run", "--rm", "--name", containerName,
-		"-e", fmt.Sprintf("FORGE_UID=%d", uid),
-		"-e", fmt.Sprintf("FORGE_GID=%d", gid),
-		"-e", "DISABLE_AUTOUPDATER=1",
-		"-v", pluginsDir + ":/home/user/.claude/plugins",
-	}
+		runArgs = append(runArgs, cfg.Images.Agent, "bash", "-c", shellCmd)
 
-	// Build commands: add marketplaces, update, then install each plugin
-	var installCmds []string
-	for _, src := range mpInfo.Sources {
-		installCmds = append(installCmds, fmt.Sprintf("claude plugins marketplace add %s || true", src))
-	}
-	installCmds = append(installCmds, "claude plugins marketplace update")
-	for _, plugin := range installPlugins {
-		installCmds = append(installCmds, fmt.Sprintf("claude plugins install %s || true", plugin))
-	}
-	shellCmd := strings.Join(installCmds, " && ")
+		dockerCmd := exec.Command("docker", runArgs...)
+		dockerCmd.Stdout = os.Stdout
+		dockerCmd.Stderr = os.Stderr
 
-	runArgs = append(runArgs, cfg.Images.Agent, "bash", "-c", shellCmd)
-
-	dockerCmd := exec.Command("docker", runArgs...)
-	dockerCmd.Stdout = os.Stdout
-	dockerCmd.Stderr = os.Stderr
-
-	if err := dockerCmd.Run(); err != nil {
-		return fmt.Errorf("plugin sync failed: %w", err)
+		if err := dockerCmd.Run(); err != nil {
+			return fmt.Errorf("plugin sync failed: %w", err)
+		}
 	}
 
 	// Write enabledPlugins to settings.json so the agent container picks them up
@@ -862,22 +859,15 @@ var syncHostPlugins = func(homeDir string, force bool) error {
 		return fmt.Errorf("failed to update settings: %w", err)
 	}
 
-	fmt.Println("Plugin sync complete.")
+	if len(installPlugins) > 0 {
+		fmt.Println("Plugin sync complete.")
+	}
 	return nil
 }
 
-// readHostPlugins reads the host's installed_plugins.json and returns plugin
-// identifiers in "name@marketplace" format.
-func readHostPlugins(homeDir string) ([]string, error) {
-	pluginsPath := filepath.Join(homeDir, ".claude", "plugins", "installed_plugins.json")
-	data, err := os.ReadFile(pluginsPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read installed_plugins.json: %w", err)
-	}
-
+// parseInstalledPlugins parses installed_plugins.json content and returns the
+// plugin keys in "name@marketplace" format.
+func parseInstalledPlugins(data []byte) ([]string, error) {
 	var file struct {
 		Plugins map[string]any `json:"plugins"`
 	}
@@ -892,6 +882,20 @@ func readHostPlugins(homeDir string) ([]string, error) {
 	return plugins, nil
 }
 
+// readHostPlugins reads the host's installed_plugins.json and returns plugin
+// identifiers in "name@marketplace" format.
+func readHostPlugins(homeDir string) ([]string, error) {
+	pluginsPath := filepath.Join(homeDir, ".claude", "plugins", "installed_plugins.json")
+	data, err := os.ReadFile(pluginsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read installed_plugins.json: %w", err)
+	}
+	return parseInstalledPlugins(data)
+}
+
 // readForgeInstalledPlugins reads installed_plugins.json from forge's
 // persistent plugins directory and returns the set of installed plugin keys.
 // Returns an empty set on any error so sync falls back to reinstalling.
@@ -902,14 +906,11 @@ func readForgeInstalledPlugins(pluginsDir string) map[string]bool {
 		return installed
 	}
 
-	var file struct {
-		Plugins map[string]any `json:"plugins"`
-	}
-	if err := json.Unmarshal(data, &file); err != nil {
+	plugins, err := parseInstalledPlugins(data)
+	if err != nil {
 		return installed
 	}
-
-	for key := range file.Plugins {
+	for _, key := range plugins {
 		installed[key] = true
 	}
 	return installed

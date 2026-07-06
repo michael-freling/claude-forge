@@ -485,6 +485,7 @@ USER user
 RUN HOME=/home/user bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 USER root
 ENV PATH="/home/user/.local/bin:${PATH}"
+RUN ln -sf /home/user/.local/bin/claude /usr/local/bin/claude
 
 # forge-gh (aliased as gh)
 COPY forge-gh /usr/local/bin/forge-gh

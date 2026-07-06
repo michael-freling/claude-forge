@@ -45,7 +45,8 @@ RUN useradd -m -s /bin/bash user
 # "Auto-update failed: no write permission to npm prefix" at startup even with
 # auto-updates disabled. The native install under /home/user is writable by
 # the user (the entrypoint chowns /home/user), so the warning never fires;
-# DISABLE_AUTOUPDATER=1 set by the orchestrator keeps the pinned version.
+# DISABLE_AUTOUPDATER=1 set by the orchestrator keeps the version installed
+# at image build time (nothing pins a specific version here).
 USER user
 RUN HOME=/home/user bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 USER root
