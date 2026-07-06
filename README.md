@@ -9,6 +9,7 @@
 - Per-session **GitHub MCP** sidecar scoped to the current repository
 - Optional shared **Kubernetes MCP** server for cluster access, gated by generated RBAC
 - Custom **MCP servers** (remote http/sse or stdio) configurable per install
+- Optional **Docker-in-Docker**: sessions get their own isolated Docker daemon, unable to see or touch host or other sessions' containers
 - Multiple instances can run in parallel across different projects
 - Named sessions with persistence — resume previous sessions by ID or name
 - Automatic auth detection from `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `~/.claude/.credentials.json`
@@ -156,6 +157,14 @@ images:
 defaults:
   skip_permissions: true
   worktree: false
+
+# Optional Docker-in-Docker: give sessions their own isolated Docker daemon.
+# The agent can build/run/stop its own containers, but cannot see or control
+# the host's containers, claude-forge's containers, or other sessions'
+# containers (the host Docker socket is never mounted). Requires running the
+# agent container with --privileged, so it is disabled by default.
+docker:
+  enabled: false
 
 # Custom MCP servers (in addition to the built-in github/kubernetes servers)
 mcp_servers:

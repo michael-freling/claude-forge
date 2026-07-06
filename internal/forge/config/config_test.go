@@ -16,6 +16,20 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, DefaultGatewayImage, cfg.Images.Gateway)
 	assert.False(t, cfg.Defaults.SkipPermissions)
 	assert.False(t, cfg.Defaults.Worktree)
+	assert.False(t, cfg.Docker.Enabled)
+}
+
+func TestLoad_DockerEnabled(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `docker:
+  enabled: true
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
+
+	cfg, err := Load(dir)
+
+	require.NoError(t, err)
+	assert.True(t, cfg.Docker.Enabled)
 }
 
 func TestLoad(t *testing.T) {

@@ -20,6 +20,8 @@ Key tests:
 - `TestForgeStart` — full start-to-finish session with Claude Code
 - `TestKubernetesMCPServer_Starts` — verifies the k8s MCP image starts with
   our flags (shared via `kube.MCPServerArgs()` — no manual sync needed)
+- `TestAgentDockerInDocker` — verifies the agent's opt-in DinD (`docker.enabled`):
+  the in-container dockerd works and cannot see host containers
 
 ### Coverage threshold
 
@@ -52,3 +54,5 @@ changed its CLI interface across versions.
 - Kubernetes MCP runs without `--read-only` or `--disable-destructive` (RBAC is the safety layer)
 - MCP servers are only written to `settings.json` when actually running
 - `UpdateMCPServers` replaces the map entirely (no stale entries from prior sessions)
+- The host Docker socket is never mounted into the agent; the agent runs
+  unprivileged unless `docker.enabled` is set (DinD needs `--privileged`)

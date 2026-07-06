@@ -221,6 +221,15 @@ defaults:
   skip_permissions: false
   worktree: false
 
+# Docker-in-Docker: when enabled, a dedicated dockerd runs inside the agent
+# container so the agent can build and run its own containers. The host Docker
+# socket is never mounted — the agent cannot see or control the host's
+# containers, claude-forge's own containers, or other sessions' containers.
+# Requires running the agent container with --privileged, which weakens the
+# container-to-host boundary; leave disabled unless sessions need Docker.
+docker:
+  enabled: false
+
 # Custom MCP servers exposed to the agent, in addition to the built-in
 # github (and optional kubernetes) servers. ${VAR} references in string
 # fields are expanded from the host environment at session start, so tokens

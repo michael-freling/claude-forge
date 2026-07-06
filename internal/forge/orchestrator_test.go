@@ -1154,6 +1154,72 @@ kubernetes:
 	assert.NotNil(t, sess)
 }
 
+func TestStart_WithDockerEnabled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	configContent := `docker:
+  enabled: true
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.True(t, opts.Privileged)
+			assert.Equal(t, "1", opts.Env["FORGE_ENABLE_DOCKER"])
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
+func TestStart_DockerDisabledByDefault(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.False(t, opts.Privileged)
+			assert.NotContains(t, opts.Env, "FORGE_ENABLE_DOCKER")
+			return "agent-id", nil
+		})
+
+	sess, err := orch.Start(context.Background(), StartOptions{
+		ProjectDir: projectDir,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, sess)
+}
+
 func TestStartKubernetesMCP_StartsNewContainer(t *testing.T) {
 	ctrl := gomock.NewController(t)
 

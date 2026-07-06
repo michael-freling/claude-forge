@@ -40,6 +40,7 @@ const (
 type Config struct {
 	Images     ImagesConfig      `yaml:"images"`
 	Defaults   DefaultsConfig    `yaml:"defaults"`
+	Docker     DockerConfig      `yaml:"docker"`
 	Kubernetes KubernetesConfig  `yaml:"kubernetes"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
 }
@@ -234,6 +235,19 @@ type ImagesConfig struct {
 type DefaultsConfig struct {
 	SkipPermissions bool `yaml:"skip_permissions"`
 	Worktree        bool `yaml:"worktree"`
+}
+
+// DockerConfig holds Docker-in-Docker (DinD) configuration for the agent.
+//
+// When enabled, a dedicated dockerd runs inside the agent container so the
+// agent can build and run its own containers. The host Docker socket is never
+// mounted: the in-container daemon is fully separate, so the agent cannot see,
+// inspect, start, or stop containers belonging to the host, to claude-forge
+// itself, or to other sessions. Enabling this runs the agent container with
+// --privileged (required for a nested dockerd), which weakens the
+// container-to-host boundary — leave it disabled unless sessions need Docker.
+type DockerConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // KubernetesConfig holds Kubernetes MCP integration configuration.
