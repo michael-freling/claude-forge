@@ -58,6 +58,10 @@ type Options struct {
 // BuildContainerConfig constructs the full container configuration from options.
 // This is the main entry point -- it generates env vars, command args, volume mounts,
 // and gitconfig content that the Docker client needs to start the agent container.
+//
+// NOTE: the orchestrator does not consume this yet -- orchestrator.go builds
+// its own env/cmd/mounts independently (see agentEnv in Orchestrator.Start).
+// Until StartAgent is wired to use this, keep the two in sync.
 func BuildContainerConfig(opts Options) (*ContainerConfig, error) {
 	if err := validate(opts); err != nil {
 		return nil, err
@@ -97,6 +101,12 @@ func buildEnv(opts Options) map[string]string {
 	env := map[string]string{
 		"HOME":                "/home/user",
 		"GIT_TERMINAL_PROMPT": "0",
+		// Keep Claude Code at the version installed at image build time;
+		// without this the auto-updater updates the install in-place (the
+		// legacy autoUpdaterStatus settings key is ignored by newer versions)
+		// and, on npm-based images with a root-owned prefix, warns
+		// "no write permission to npm prefix".
+		"DISABLE_AUTOUPDATER": "1",
 	}
 	if opts.AuthType == "api_key" {
 		env["ANTHROPIC_API_KEY"] = opts.AuthToken

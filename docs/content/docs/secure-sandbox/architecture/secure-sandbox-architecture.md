@@ -477,14 +477,19 @@ RUN apt-get update && apt-get install -y \
     tar unzip openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code
-RUN npm install -g @anthropic-ai/claude-code
+RUN useradd -m -s /bin/bash user
+
+# Claude Code (standalone installer, owned by the runtime user so the
+# auto-update npm-prefix warning never fires)
+USER user
+RUN HOME=/home/user bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+USER root
+ENV PATH="/home/user/.local/bin:${PATH}"
+RUN ln -sf /home/user/.local/bin/claude /usr/local/bin/claude
 
 # forge-gh (aliased as gh)
 COPY forge-gh /usr/local/bin/forge-gh
 RUN ln -s /usr/local/bin/forge-gh /usr/local/bin/gh
-
-RUN useradd -m -s /bin/bash user
 USER user
 WORKDIR /work
 ENTRYPOINT ["claude"]

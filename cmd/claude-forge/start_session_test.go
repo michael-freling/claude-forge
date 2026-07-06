@@ -120,17 +120,20 @@ func TestStartSession_PluginSyncFailureNonFatal(t *testing.T) {
 
 	originalSync := syncHostPlugins
 	var syncedHomeDir string
-	syncHostPlugins = func(h string) error {
+	var syncedForce bool
+	syncHostPlugins = func(h string, force bool) error {
 		syncedHomeDir = h
+		syncedForce = force
 		return errors.New("boom")
 	}
 	t.Cleanup(func() { syncHostPlugins = originalSync })
 
 	err = startSession(true, false, "do a task", "", "", false, nil, "", "")
 	require.NoError(t, err)
-	// Sync was invoked with the orchestrator's home dir, and its failure was
-	// tolerated.
+	// Sync was invoked with the orchestrator's home dir without forcing a
+	// reinstall, and its failure was tolerated.
 	require.Equal(t, homeDir, syncedHomeDir)
+	require.False(t, syncedForce)
 }
 
 func runGitIn(t *testing.T, dir string, args ...string) {

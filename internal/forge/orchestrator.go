@@ -356,6 +356,12 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		"GIT_TERMINAL_PROMPT": "0",
 		"FORGE_PROJECT_OWNER": proj.Owner,
 		"FORGE_PROJECT_REPO":  proj.Repo,
+		// Keep Claude Code at the version installed at image build time;
+		// without this the auto-updater updates the install in-place (the
+		// legacy autoUpdaterStatus settings key is ignored by newer versions)
+		// and, on npm-based images with a root-owned prefix, warns
+		// "no write permission to npm prefix".
+		"DISABLE_AUTOUPDATER": "1",
 	}
 	switch creds.AuthType {
 	case "api_key":
