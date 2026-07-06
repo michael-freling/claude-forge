@@ -37,14 +37,23 @@ RUN apt-get update && apt-get install -y software-properties-common \
     tar unzip openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code (latest)
-RUN npm install -g @anthropic-ai/claude-code
+# Create non-root user (entrypoint adjusts UID/GID at startup)
+RUN useradd -m -s /bin/bash user
+
+# Claude Code (latest) via the standalone installer, installed as the runtime
+# user. An npm -g install lives in a root-owned prefix, and Claude Code warns
+# "Auto-update failed: no write permission to npm prefix" at startup even with
+# auto-updates disabled. The native install under /home/user is writable by
+# the user (the entrypoint chowns /home/user), so the warning never fires;
+# DISABLE_AUTOUPDATER=1 set by the orchestrator keeps the pinned version.
+USER user
+RUN HOME=/home/user bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+USER root
+ENV PATH="/home/user/.local/bin:${PATH}"
+RUN ln -sf /home/user/.local/bin/claude /usr/local/bin/claude
 
 # Copy claude-forge binary (built in CI or locally)
 COPY claude-forge /usr/local/bin/claude-forge
-
-# Create non-root user (entrypoint adjusts UID/GID at startup)
-RUN useradd -m -s /bin/bash user
 
 # Entrypoint handles UID/GID mapping and runs as the user
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
