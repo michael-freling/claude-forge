@@ -15,8 +15,7 @@ everything under `/docs/development/` from rendering, listing, and search.
 To browse it, run the site locally:
 
 ```bash
-cd docs
-hugo server
+make docs-serve
 ```
 
 or read the markdown directly under `docs/content/docs/development/` in the

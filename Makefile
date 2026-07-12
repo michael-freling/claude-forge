@@ -57,7 +57,7 @@ kube-mcp-image: ## Pull the shared Kubernetes MCP image (built upstream)
 # production config, which excludes them — same output GitHub Pages publishes.
 
 docs-serve: ## Serve the docs site locally, including internal dev docs
-	hugo server --source docs
+	hugo server --source docs --bind 0.0.0.0
 
 docs-build: ## Build the docs site as published (internal dev docs excluded)
 	hugo --gc --minify --source docs --environment production
