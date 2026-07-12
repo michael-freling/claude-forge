@@ -62,6 +62,31 @@ func TestBuildRules_SkipsDeniedSubresources(t *testing.T) {
 	assert.NotContains(t, rules[0].Resources, "serviceaccounts/token")
 }
 
+func TestBuildRules_GrantsSubresourcesWithParent(t *testing.T) {
+	// kubectl api-resources never lists subresources; pods/log must be
+	// granted whenever pods is discovered.
+	resources := []APIResource{
+		{APIGroup: "", Resource: "pods", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "", Resource: "configmaps", Namespaced: true, Verbs: []string{"*"}},
+	}
+
+	rules := buildRules(resources)
+
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules[0].Resources, "pods/log")
+}
+
+func TestBuildRules_SkipsSubresourcesWithoutParent(t *testing.T) {
+	resources := []APIResource{
+		{APIGroup: "", Resource: "configmaps", Namespaced: true, Verbs: []string{"*"}},
+	}
+
+	rules := buildRules(resources)
+
+	require.Len(t, rules, 1)
+	assert.NotContains(t, rules[0].Resources, "pods/log")
+}
+
 func TestBuildRules_ClusterScopedReadOnly(t *testing.T) {
 	resources := []APIResource{
 		{APIGroup: "", Resource: "namespaces", Namespaced: false, Verbs: []string{"*"}},
