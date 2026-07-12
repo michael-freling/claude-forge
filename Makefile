@@ -18,7 +18,8 @@ KUBE_MCP_IMAGE   ?= ghcr.io/containers/kubernetes-mcp-server:latest
 GOARCH ?= $(shell go env GOARCH)
 
 .PHONY: help test images images-no-cache \
-	agent-image gateway-image github-mcp-image kube-mcp-image
+	agent-image gateway-image github-mcp-image kube-mcp-image \
+	docs-serve docs-build
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -49,3 +50,14 @@ github-mcp-image: ## Build the per-session GitHub MCP image
 
 kube-mcp-image: ## Pull the shared Kubernetes MCP image (built upstream)
 	docker pull $(KUBE_MCP_IMAGE)
+
+# Docs targets need Hugo extended >= 0.146 (https://gohugo.io/installation/).
+# `docs-serve` runs in Hugo's development environment, so it also renders the
+# internal docs under content/docs/development/; `docs-build` uses the
+# production config, which excludes them — same output GitHub Pages publishes.
+
+docs-serve: ## Serve the docs site locally, including internal dev docs
+	hugo server --source docs
+
+docs-build: ## Build the docs site as published (internal dev docs excluded)
+	hugo --gc --minify --source docs --environment production
