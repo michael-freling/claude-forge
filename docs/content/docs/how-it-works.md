@@ -1,6 +1,6 @@
 ---
 title: How It Works
-weight: 6
+weight: 5
 ---
 
 When you run `claude-forge start`, it:
@@ -20,7 +20,8 @@ When you run `claude-forge start`, it:
    plus `kubernetes` and each custom sidecar **only if it actually started**,
    plus remote (`http`/`sse`) and `stdio` custom servers
 9. Starts an **agent** container running Claude Code with your project mounted
-   at `/work`
+   at `/work` (and its own isolated Docker daemon inside, when `docker.enabled`
+   is set)
 10. Attaches your terminal (interactive) or waits for completion (with `-p`)
 
 ```mermaid
@@ -59,4 +60,13 @@ GitHub access is restricted at two independent points:
 
 Remote MCP servers (`type: http`/`sse`) are reached over the agent's normal
 outbound internet — the gateway only mediates GitHub traffic. See
-[Custom MCP Servers]({{< relref "/docs/mcp-servers" >}}) for the full model.
+[MCP Servers]({{< relref "/docs/mcp-servers" >}}) for the full model.
+
+## Docker-in-Docker (optional)
+
+By default the agent has no Docker access at all: the host's Docker socket is
+never mounted, in any configuration. Setting `docker.enabled` in `config.yaml`
+starts a **separate Docker daemon inside the agent container** (which then runs
+`--privileged`), so Claude Code can build and run its own containers. That
+daemon is private to the session — the agent cannot see or control the host's
+containers, claude-forge's own containers, or those of other sessions.

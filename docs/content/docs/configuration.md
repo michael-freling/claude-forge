@@ -74,8 +74,8 @@ kubernetes:
       service_account_namespace: default
 ```
 
-See [Custom MCP Servers]({{< relref "/docs/mcp-servers" >}}) for the full
-`mcp_servers` reference and [Kubernetes Access]({{< relref "/docs/kubernetes" >}})
+See [Custom Servers]({{< relref "/docs/mcp-servers/custom" >}}) for the full
+`mcp_servers` reference and [Kubernetes]({{< relref "/docs/mcp-servers/kubernetes" >}})
 for the `kubernetes` section.
 
 ## Authentication

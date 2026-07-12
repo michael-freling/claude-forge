@@ -1,6 +1,6 @@
 ---
-title: Kubernetes Access
-weight: 5
+title: Kubernetes
+weight: 2
 ---
 
 

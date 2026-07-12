@@ -31,8 +31,8 @@ layout: hextra-home
     subtitle="A gateway proxy mediates all git and GitHub API traffic: read any repository, but push and PR creation are restricted to the current project only."
   >}}
   {{< hextra/feature-card
-    title="Pick up where you left off"
-    subtitle="Stop a session and resume it days later by name, conversation intact — while sessions for your other projects keep running in parallel."
+    title="One command, whole environment"
+    subtitle="`claude-forge start` wires up the session network, gateway, and MCP sidecars, and tears them down again — `list`, `resume`, and `prune` manage the container environments for you."
   >}}
   {{< hextra/feature-card
     title="Your tools keep working"

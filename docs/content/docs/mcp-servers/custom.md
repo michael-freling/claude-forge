@@ -1,6 +1,6 @@
 ---
-title: Custom MCP Servers
-weight: 4
+title: Custom Servers
+weight: 1
 ---
 
 
