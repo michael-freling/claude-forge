@@ -1,6 +1,6 @@
 baseURL: https://michael-freling.github.io/claude-forge/
 languageCode: en-us
-title: Claude Code Tools
+title: claude-forge
 theme: hugo-book
 
 params:

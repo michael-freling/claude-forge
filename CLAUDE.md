@@ -41,6 +41,19 @@ When changing flags passed to any container image, check the image's `--help`
 output to verify the flags exist. The kubernetes-mcp-server in particular has
 changed its CLI interface across versions.
 
+## Documentation
+
+- `README.md` — user-facing docs (kept in sync by the `update-readme` skill).
+- `docs/` — Hugo site (theme: hugo-book submodule) deployed to GitHub Pages by
+  `.github/workflows/docs.yml`.
+  - `docs/content/docs/` — **user-facing** pages, published. Content mirrors
+    README.md: when a CLI command, flag, or config field changes, update both.
+  - `docs/content/docs/development/` — internal architecture research and
+    proposals. **Not published**: `docs/config/production/hugo.yaml` excludes
+    it from the production build via a `build: {render: never, list: never}`
+    cascade. Preview locally with `hugo server` in `docs/` (development
+    environment renders everything).
+
 ## Architecture
 
 - `cmd/claude-forge/main.go` — CLI commands (start, resume, init, etc.)

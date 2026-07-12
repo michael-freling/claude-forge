@@ -6,7 +6,7 @@ weight: 1
 # Proposal: Kubernetes Support in claude-forge
 
 **Status**: Draft
-**Depends on**: [Secure Sandbox Architecture]({{< relref "/docs/secure-sandbox/architecture/secure-sandbox-architecture" >}})
+**Depends on**: [Secure Sandbox Architecture]({{< relref "/docs/development/secure-sandbox/architecture/secure-sandbox-architecture" >}})
 
 ## 1. Motivation
 
@@ -77,7 +77,7 @@ The K8s MCP server runs as a **shared service** — a singleton container on the
 - RBAC scoping is done at the cluster level via the ServiceAccount, not per-repo.
 - Running one K8s MCP server per session would waste resources and complicate token management.
 
-This contrasts with per-session **sidecars** (like the GitHub MCP server) which must be scoped to a specific repo. See the [GitHub MCP Server proposal]({{< relref "/docs/secure-sandbox/proposals/github-mcp-server" >}}) for the full sidecar vs shared model.
+This contrasts with per-session **sidecars** (like the GitHub MCP server) which must be scoped to a specific repo. See the [GitHub MCP Server proposal]({{< relref "/docs/development/secure-sandbox/proposals/github-mcp-server" >}}) for the full sidecar vs shared model.
 
 ### 4.3 Network Topology
 

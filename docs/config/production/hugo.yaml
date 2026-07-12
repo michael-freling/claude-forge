@@ -1,0 +1,17 @@
+# Production overlay (used by the GitHub Pages deploy).
+#
+# The published site is user-facing documentation only: everything under
+# content/docs/development/ (architecture research, proposals) is excluded
+# from rendering, listing, sitemap, and search. Local previews with
+# `hugo server` run in the "development" environment and still show it.
+cascade:
+  - target:
+      path: /docs/development
+    build:
+      render: never
+      list: never
+  - target:
+      path: /docs/development/**
+    build:
+      render: never
+      list: never
