@@ -23,13 +23,16 @@ concurrency:
 env:
   # Pin the Hugo extended release. The hextra theme requires extended >= 0.146.0.
   HUGO_VERSION: 0.148.2
+  # sha256 of hugo_extended_${HUGO_VERSION}_linux-amd64.deb, from the release's
+  # checksums.txt. Update together with HUGO_VERSION.
+  HUGO_DEB_SHA256: 59b31532b3f649bb6a54d454271d16974adde51b535fc1dcea687810a743dd80
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           # The hextra theme at docs/themes/hextra is a git submodule;
           # the build fails without it.
@@ -39,11 +42,12 @@ jobs:
         run: |
           wget -O /tmp/hugo.deb \
             "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb"
+          echo "${HUGO_DEB_SHA256}  /tmp/hugo.deb" | sha256sum --check
           sudo dpkg -i /tmp/hugo.deb
 
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
 
       - name: Build with Hugo
         env:
@@ -54,7 +58,7 @@ jobs:
         run: hugo --gc --minify --source docs --baseURL "${{ steps.pages.outputs.base_url }}/"
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: docs/public
 
@@ -67,4 +71,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
