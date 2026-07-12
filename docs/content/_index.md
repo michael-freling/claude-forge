@@ -27,10 +27,6 @@ layout: hextra-home
     subtitle="Claude Code runs with `--dangerously-skip-permissions` — but inside a container, where the worst it can touch is the project you mounted, never your host."
   >}}
   {{< hextra/feature-card
-    title="GitHub write protection"
-    subtitle="A gateway proxy mediates all git and GitHub API traffic: read any repository, but push and PR creation are restricted to the current project only."
-  >}}
-  {{< hextra/feature-card
     title="One command, whole environment"
     subtitle="`claude-forge start` wires up the session network, gateway, and MCP sidecars, and tears them down again — `list`, `resume`, and `prune` manage the container environments for you."
   >}}
