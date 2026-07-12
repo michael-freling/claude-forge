@@ -56,8 +56,11 @@ kube-mcp-image: ## Pull the shared Kubernetes MCP image (built upstream)
 # internal docs under content/docs/development/; `docs-build` uses the
 # production config, which excludes them — same output GitHub Pages publishes.
 
+# --bind 0.0.0.0 so the server is reachable from outside a container, and
+# --baseURL / so pages serve at the root path instead of the /claude-forge/
+# subpath the published site uses (visiting / would otherwise 404).
 docs-serve: ## Serve the docs site locally, including internal dev docs
-	hugo server --source docs --bind 0.0.0.0
+	hugo server --source docs --bind 0.0.0.0 --baseURL /
 
 docs-build: ## Build the docs site as published (internal dev docs excluded)
 	hugo --gc --minify --source docs --environment production
