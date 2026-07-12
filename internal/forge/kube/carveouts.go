@@ -33,6 +33,16 @@ func DeniedSubresources() []string {
 	}
 }
 
+// GrantedSubresources returns core-group namespaced subresources that are
+// always granted when their parent resource is discovered. Discovery via
+// `kubectl api-resources` never lists subresources, and an RBAC grant on the
+// parent resource does not extend to them, so they must be added explicitly.
+func GrantedSubresources() []string {
+	return []string{
+		"pods/log",
+	}
+}
+
 // DeniedVerbs returns verbs that are filtered from all rules.
 func DeniedVerbs() []string {
 	return []string{

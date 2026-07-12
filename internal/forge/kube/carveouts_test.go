@@ -27,6 +27,14 @@ func TestIsSubresourceDenied(t *testing.T) {
 	assert.False(t, IsSubresourceDenied("pods/log"))
 }
 
+func TestGrantedSubresources(t *testing.T) {
+	granted := GrantedSubresources()
+	assert.Contains(t, granted, "pods/log")
+	for _, sub := range granted {
+		assert.False(t, IsSubresourceDenied(sub))
+	}
+}
+
 func TestFilterVerbs(t *testing.T) {
 	result := FilterVerbs([]string{"get", "list", "impersonate", "watch"})
 	assert.Equal(t, []string{"get", "list", "watch"}, result)

@@ -99,6 +99,15 @@ func buildRules(resources []APIResource) []PolicyRule {
 		}
 	}
 
+	// Discovery via `kubectl api-resources` never lists subresources, so
+	// allowed ones (e.g. pods/log) are granted here alongside their parent.
+	for _, sub := range GrantedSubresources() {
+		parent, _, _ := strings.Cut(sub, "/")
+		if coreNamespaced[parent] {
+			coreNamespaced[sub] = true
+		}
+	}
+
 	var rules []PolicyRule
 	fullVerbs := FilterVerbs([]string{"*"})
 
