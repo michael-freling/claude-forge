@@ -1,18 +1,27 @@
 ---
 name: update-readme
-description: Keep README.md, the end-user documentation, in sync with the actual claude-forge CLI and configuration. Use after adding/removing/renaming a CLI command or flag, changing config fields or default images, or whenever the README may have drifted from the code. Verifies every documented command, flag, config key, and image against the source of truth.
+description: Keep the end-user documentation — README.md (condensed overview) and the user guide under docs/content/docs/ (published to GitHub Pages) — in sync with the actual claude-forge CLI and configuration. Use after adding/removing/renaming a CLI command or flag, changing config fields or default images, or whenever the docs may have drifted from the code. Verifies every documented command, flag, config key, and image against the source of truth.
 ---
 
-# Keep the README up to date
+# Keep the end-user docs up to date
 
-`README.md` is the primary end-user documentation for claude-forge. It drifts
-out of sync whenever the CLI or config changes but the docs don't. This skill
-keeps it accurate by checking every claim against the source of truth — never
-from memory.
+End-user documentation lives in two places that drift out of sync whenever the
+CLI or config changes but the docs don't:
+
+- `README.md` — a **condensed overview**: features, prerequisites,
+  installation, quick start, and links to the docs site. No detailed command
+  or config reference.
+- `docs/content/docs/*.md` — the **full user guide**, published to GitHub
+  Pages (usage, configuration, MCP servers, Kubernetes, authentication,
+  how-it-works). This is where the detailed reference lives. Ignore
+  `docs/content/docs/development/` (internal, not user-facing).
+
+This skill keeps both accurate by checking every claim against the source of
+truth — never from memory.
 
 ## Sources of truth
 
-| What the README documents | Where the truth lives |
+| What the docs document | Where the truth lives |
 | --- | --- |
 | Commands, subcommands, flags, args | `cmd/claude-forge/main.go` (cobra `Use:`/`Short:`/`Long:`, `cmd.Flags()`, `Args:`) |
 | Config keys and structure | `internal/forge/config/config.go` (struct `yaml:"..."` tags) |
@@ -42,19 +51,24 @@ from memory.
    every `yaml:"..."` key under `Config`, `ImagesConfig`, `DefaultsConfig`, and
    `KubernetesConfig`, and the `Default*Image` constant values.
 
-4. **Diff against the README.** Compare the lists to `README.md`. Flag:
+4. **Diff against the docs.** Compare the lists to `README.md` and every page
+   under `docs/content/docs/` (excluding `development/`). Flag:
    - Commands/flags documented but no longer present (remove them)
    - Commands/flags that exist but are undocumented (add them)
    - Wrong required arguments (e.g. `start` requires a `<name>`)
    - Stale config keys, image references, or example values
    - Examples that would error if run verbatim
 
-5. **Update `README.md`.** Fix the discrepancies. Keep the existing structure,
-   tone, and section order. Use realistic, copy-pasteable examples that match
-   the real flags. Don't invent features that aren't in the code.
+5. **Update the docs.** Fix the discrepancies. Detailed reference material goes
+   in the `docs/content/docs/` pages; the README only carries the overview,
+   quick start, and links. Keep each file's existing structure, tone, and
+   section order. Use realistic, copy-pasteable examples that match the real
+   flags. Don't invent features that aren't in the code.
 
-6. **Verify.** Re-read the relevant README sections and re-run `--help` for any
-   command you touched to confirm the docs now match.
+6. **Verify.** Re-read the sections you touched and re-run `--help` for any
+   command involved to confirm the docs now match. If you changed pages under
+   `docs/content/docs/`, build the site (`make docs-build`, or `hugo --source
+   docs` with a Hugo extended binary) to catch broken relrefs.
 
 ## Guardrails
 
@@ -66,6 +80,10 @@ from memory.
   internal subcommand.
 - **Keep examples runnable.** If an example shows `claude-forge start`, make
   sure the required `<name>` argument is present.
-- **One concern per change.** This skill maintains end-user docs in
-  `README.md`. Architecture/design docs live under `docs/` and `CLAUDE.md`;
-  update those separately when relevant.
+- **Keep the README condensed.** Detailed command/config reference belongs in
+  `docs/content/docs/`, not the README. If a README section starts growing a
+  full reference, move the detail to the docs site and link to it.
+- **One concern per change.** This skill maintains end-user docs (`README.md`
+  and `docs/content/docs/`). Internal architecture/design docs live under
+  `docs/content/docs/development/` and `CLAUDE.md`; update those separately
+  when relevant.

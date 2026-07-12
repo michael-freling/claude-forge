@@ -3,13 +3,12 @@ title: "Secure Sandbox Architecture"
 weight: 2
 ---
 
-# Secure Sandbox Architecture
 
 ## 1. Overview
 
 `claude-forge` is a Go CLI that launches Claude Code inside an isolated Docker container, pre-authenticated and ready to work on the user's project. A companion gateway container mediates git and GitHub operations — allowing read access (clone, pull, fetch) to any repository but restricting push operations to only the current project's repository. Multiple instances can run in parallel across different project directories. The command installs locally via `go install` — container images are pulled from GHCR.io (nightly rebuilt with cosign signing for security verification).
 
-For the threat model and technology survey, see the [Secure Sandbox Environments Research]({{< relref "/docs/secure-sandbox/secure-sandbox-environments" >}}).
+For the threat model and technology survey, see the [Secure Sandbox Environments Research]({{< relref "/docs/development/secure-sandbox/architecture/secure-sandbox-environments" >}}).
 
 ---
 
@@ -497,7 +496,7 @@ ENTRYPOINT ["claude"]
 
 Includes: Node.js LTS, Python 3, Go 1.26, Docker (daemon + CLI), and common CLIs (ripgrep, git, jq, curl, make, tar, unzip, ssh-client, bash). `gh` is symlinked to `forge-gh` so Claude Code's natural `gh` commands work transparently through the gateway.
 
-When `docker.enabled` is set in config.yaml, a Docker daemon (`dockerd`) runs inside the agent container for `docker build` and similar operations. The host Docker socket is NOT mounted in any configuration. See the [Docker container support proposal]({{< relref "/docs/secure-sandbox/proposals/docker-container-support" >}}).
+When `docker.enabled` is set in config.yaml, a Docker daemon (`dockerd`) runs inside the agent container for `docker build` and similar operations. The host Docker socket is NOT mounted in any configuration. See the [Docker container support proposal]({{< relref "/docs/development/secure-sandbox/proposals/docker-container-support" >}}).
 
 ### Gateway Image (Multi-Stage)
 

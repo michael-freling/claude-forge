@@ -1,10 +1,8 @@
 ---
 title: Secure Sandbox
 weight: 1
-bookCollapseSection: false
 ---
 
-# Secure Sandbox
 
 Research and design for securing AI coding agent environments.
 

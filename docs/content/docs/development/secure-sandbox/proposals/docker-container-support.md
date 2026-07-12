@@ -3,10 +3,9 @@ title: "Proposal: Docker Container Support in the Agent"
 weight: 3
 ---
 
-# Proposal: Docker Container Support in the Agent
 
 **Status**: Implemented
-**Depends on**: [Secure Sandbox Architecture]({{< relref "/docs/secure-sandbox/architecture/secure-sandbox-architecture" >}})
+**Depends on**: [Secure Sandbox Architecture]({{< relref "/docs/development/secure-sandbox/architecture/secure-sandbox-architecture" >}})
 
 ## 1. Motivation
 

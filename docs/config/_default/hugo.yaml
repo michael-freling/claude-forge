@@ -1,0 +1,60 @@
+baseURL: https://michael-freling.github.io/claude-forge/
+languageCode: en-us
+title: claude-forge
+theme: hextra
+
+enableRobotsTXT: true
+
+menu:
+  main:
+    - name: Documentation
+      pageRef: /docs
+      weight: 1
+    - name: Search
+      weight: 2
+      params:
+        type: search
+    - name: GitHub
+      weight: 3
+      url: https://github.com/michael-freling/claude-forge
+      params:
+        icon: github
+
+params:
+  description: >-
+    Run Claude Code autonomously inside isolated Docker containers, with a
+    gateway proxy that limits GitHub writes to the current project.
+
+  navbar:
+    displayTitle: true
+    displayLogo: false
+
+  theme:
+    default: system
+    displayToggle: true
+
+  footer:
+    enable: true
+    displayCopyright: false
+    displayPoweredBy: false
+
+  search:
+    enable: true
+    type: flexsearch
+    flexsearch:
+      index: content
+      tokenize: forward
+
+  editURL:
+    enable: true
+    base: "https://github.com/michael-freling/claude-forge/edit/main/docs/content"
+
+markup:
+  goldmark:
+    renderer:
+      unsafe: true
+  highlight:
+    noClasses: false
+  tableOfContents:
+    startLevel: 2
+    endLevel: 4
