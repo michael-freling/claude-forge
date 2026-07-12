@@ -1,7 +1,6 @@
 ---
 title: Architecture
 weight: 1
-bookCollapseSection: false
 ---
 
 # Architecture

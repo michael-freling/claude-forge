@@ -1,7 +1,6 @@
 ---
 title: Proposals
 weight: 2
-bookCollapseSection: false
 ---
 
 # Proposals

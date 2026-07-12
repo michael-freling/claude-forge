@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Pin the Hugo extended release. The hugo-book theme requires extended >= 0.146.0.
+  # Pin the Hugo extended release. The hextra theme requires extended >= 0.146.0.
   HUGO_VERSION: 0.148.2
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # The hugo-book theme at docs/themes/hugo-book is a git submodule;
+          # The hextra theme at docs/themes/hextra is a git submodule;
           # the build fails without it.
           submodules: recursive
 

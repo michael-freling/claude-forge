@@ -15,5 +15,19 @@ When you run `claude-forge start`, it:
 6. Starts an **agent** container running Claude Code with your project mounted at `/work`
 7. Attaches your terminal (interactive) or waits for completion (with `-p`)
 
+```mermaid
+flowchart LR
+    subgraph host [Your machine]
+        T[Terminal] -- attach --> A
+        P[Project directory] -- mounted at /work --> A
+    end
+    subgraph net [Session Docker network]
+        A[Agent<br/>Claude Code] -- git + GitHub API --> G[Gateway<br/>write restrictions]
+        A -- MCP --> M[GitHub MCP<br/>scoped to this repo]
+    end
+    G -- reads: any repo<br/>writes: this repo only --> GH[(GitHub)]
+    M --> G
+```
+
 The gateway ensures Claude Code can freely read from any GitHub repository but
 can only push to or create PRs on the current project's repository.

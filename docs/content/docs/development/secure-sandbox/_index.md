@@ -1,7 +1,6 @@
 ---
 title: Secure Sandbox
 weight: 1
-bookCollapseSection: false
 ---
 
 # Secure Sandbox

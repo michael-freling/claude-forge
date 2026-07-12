@@ -1,35 +1,49 @@
 ---
 title: claude-forge
-type: docs
+layout: hextra-home
 ---
 
-# claude-forge
+<div class="hx:mt-6 hx:mb-6">
+{{< hextra/hero-headline >}}
+  Run Claude Code autonomously,&nbsp;<br class="hx:sm:block hx:hidden" />without risking your machine
+{{< /hextra/hero-headline >}}
+</div>
 
-`claude-forge` launches Claude Code inside isolated Docker containers with a
-secure gateway proxy for GitHub access. The gateway allows read operations
-(clone, pull, fetch) to any repository but restricts push and write operations
-to only the current project's repository.
+<div class="hx:mb-12">
+{{< hextra/hero-subtitle >}}
+  claude-forge runs Claude Code with full autonomy inside an isolated&nbsp;<br class="hx:sm:block hx:hidden" />Docker container — a gateway proxy guards your GitHub access.
+{{< /hextra/hero-subtitle >}}
+</div>
 
-```bash
-go install github.com/michael-freling/claude-forge/cmd/claude-forge@latest
-cd ~/my-project
-claude-forge start "add auth tests"
-```
+<div class="hx:mb-6">
+{{< hextra/hero-button text="Get Started" link="docs/getting-started" >}}
+</div>
 
-[Get started →]({{< relref "/docs/getting-started" >}})
+<div class="hx:mt-6"></div>
 
-## Features
-
-- Runs Claude Code in Docker with `--dangerously-skip-permissions` by default
-- Gateway proxy mediates all GitHub traffic (git + API) with per-repo write restrictions
-- Per-session **GitHub MCP** sidecar scoped to the current repository
-- Optional shared **Kubernetes MCP** server for cluster access, gated by generated RBAC
-- Custom **MCP servers** (remote http/sse or stdio) configurable per install
-- Optional **Docker-in-Docker**: sessions get their own isolated Docker daemon,
-  unable to see or touch host or other sessions' containers
-- Multiple instances can run in parallel across different projects
-- Named sessions with persistence — resume previous sessions by ID or name
-- Automatic auth detection from `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`,
-  or `~/.claude/.credentials.json`
-- Dependency caching for Go, npm, pnpm, and pip
-- Host git identity, Claude Code configuration, and plugins carried into the container
+{{< hextra/feature-grid >}}
+  {{< hextra/feature-card
+    title="Isolated by default"
+    subtitle="Claude Code runs with `--dangerously-skip-permissions` — but inside a container, where the worst it can touch is the project you mounted, never your host."
+  >}}
+  {{< hextra/feature-card
+    title="GitHub write protection"
+    subtitle="A gateway proxy mediates all git and GitHub API traffic: read any repository, but push and PR creation are restricted to the current project only."
+  >}}
+  {{< hextra/feature-card
+    title="Named, resumable sessions"
+    subtitle="Run parallel sessions across projects, list them, resume any by name or ID, and prune old ones when you're done."
+  >}}
+  {{< hextra/feature-card
+    title="MCP servers built in"
+    subtitle="A per-session GitHub MCP sidecar scoped to your repo, an optional Kubernetes MCP gated by RBAC you generate, and any custom MCP server you configure."
+  >}}
+  {{< hextra/feature-card
+    title="Docker-in-Docker, opt-in"
+    subtitle="Give sessions their own isolated Docker daemon for building and running containers — with no view of the host's containers."
+  >}}
+  {{< hextra/feature-card
+    title="Feels like your machine"
+    subtitle="Host git identity, Claude Code configuration, plugins, and Go/npm/pnpm/pip caches are carried into every session automatically."
+  >}}
+{{< /hextra/feature-grid >}}

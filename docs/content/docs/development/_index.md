@@ -1,7 +1,6 @@
 ---
 title: Development (internal)
 weight: 100
-bookCollapseSection: true
 ---
 
 # Development

@@ -45,7 +45,7 @@ changed its CLI interface across versions.
 
 - `README.md` — condensed overview (features, install, quick start) linking to
   the docs site. Detailed reference material does not belong here.
-- `docs/` — Hugo site (theme: hugo-book submodule) deployed to GitHub Pages by
+- `docs/` — Hugo site (theme: hextra submodule) deployed to GitHub Pages by
   `.github/workflows/docs.yml`. `make docs-serve` previews it locally.
   - `docs/content/docs/` — the **user guide**, published. This is the canonical
     detailed documentation: when a CLI command, flag, or config field changes,
