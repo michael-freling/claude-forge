@@ -3,7 +3,6 @@ title: "Proposal: Kubernetes Support in claude-forge"
 weight: 1
 ---
 
-# Proposal: Kubernetes Support in claude-forge
 
 **Status**: Draft
 **Depends on**: [Secure Sandbox Architecture]({{< relref "/docs/development/secure-sandbox/architecture/secure-sandbox-architecture" >}})

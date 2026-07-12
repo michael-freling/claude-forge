@@ -3,7 +3,6 @@ title: Proposals
 weight: 2
 ---
 
-# Proposals
 
 Design proposals for future features. These may contradict the architecture docs until implemented.
 

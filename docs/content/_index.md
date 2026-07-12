@@ -31,19 +31,19 @@ layout: hextra-home
     subtitle="A gateway proxy mediates all git and GitHub API traffic: read any repository, but push and PR creation are restricted to the current project only."
   >}}
   {{< hextra/feature-card
-    title="Named, resumable sessions"
-    subtitle="Run parallel sessions across projects, list them, resume any by name or ID, and prune old ones when you're done."
+    title="Pick up where you left off"
+    subtitle="Stop a session and resume it days later by name, conversation intact — while sessions for your other projects keep running in parallel."
   >}}
   {{< hextra/feature-card
-    title="MCP servers built in"
-    subtitle="A per-session GitHub MCP sidecar scoped to your repo, an optional Kubernetes MCP gated by RBAC you generate, and any custom MCP server you configure."
+    title="Your tools keep working"
+    subtitle="Sandboxing usually breaks an agent's tooling. Here GitHub operations work out of the box via a repo-scoped MCP server, Kubernetes is available behind RBAC you control, and your own MCP servers plug in via config."
   >}}
   {{< hextra/feature-card
     title="Docker-in-Docker, opt-in"
     subtitle="Give sessions their own isolated Docker daemon for building and running containers — with no view of the host's containers."
   >}}
   {{< hextra/feature-card
-    title="Feels like your machine"
-    subtitle="Host git identity, Claude Code configuration, plugins, and Go/npm/pnpm/pip caches are carried into every session automatically."
+    title="Zero setup inside the sandbox"
+    subtitle="No re-configuring a fresh container every run: your git identity, Claude Code login, plugins, and dependency caches are carried in automatically, so sessions behave like your own machine."
   >}}
 {{< /hextra/feature-grid >}}

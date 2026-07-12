@@ -3,7 +3,6 @@ title: "Proposal: GitHub MCP Server for claude-forge"
 weight: 2
 ---
 
-# Proposal: GitHub MCP Server for claude-forge
 
 **Status**: Draft
 **Depends on**: [Secure Sandbox Architecture]({{< relref "/docs/development/secure-sandbox/architecture/secure-sandbox-architecture" >}})

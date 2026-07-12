@@ -3,7 +3,6 @@ title: Secure Sandbox Environments for AI Coding Agents
 weight: 1
 ---
 
-# Secure Sandbox Environments for AI Coding Agents
 
 This document surveys existing technologies, products, and approaches for securing AI coding agents (Claude Code, OpenAI Codex, Cursor, GitHub Copilot, etc.) across four layers: container/VM isolation, command-level security policies, network egress control (preventing unauthorized external service interactions), and secret/credential protection.
 

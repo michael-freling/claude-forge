@@ -3,7 +3,6 @@ title: Development (internal)
 weight: 100
 ---
 
-# Development
 
 Internal architecture research and design proposals for claude-forge
 contributors.

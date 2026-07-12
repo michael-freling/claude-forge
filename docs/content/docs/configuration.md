@@ -3,7 +3,6 @@ title: Configuration
 weight: 3
 ---
 
-# Configuration
 
 Configuration is stored in `~/.config/claude-forge/config.yaml`. Run
 `claude-forge init` to write a default file with detected settings.
@@ -78,3 +77,14 @@ kubernetes:
 See [Custom MCP Servers]({{< relref "/docs/mcp-servers" >}}) for the full
 `mcp_servers` reference and [Kubernetes Access]({{< relref "/docs/kubernetes" >}})
 for the `kubernetes` section.
+
+## Authentication
+
+Claude Code credentials are not part of `config.yaml` — `claude-forge` detects
+them automatically, in this order:
+
+1. `ANTHROPIC_API_KEY` environment variable
+2. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
+3. `~/.claude/.credentials.json` (written by `claude` CLI login)
+
+Run `claude-forge auth` to verify your credentials are detected.

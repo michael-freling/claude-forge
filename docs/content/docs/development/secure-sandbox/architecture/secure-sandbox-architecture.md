@@ -3,7 +3,6 @@ title: "Secure Sandbox Architecture"
 weight: 2
 ---
 
-# Secure Sandbox Architecture
 
 ## 1. Overview
 

@@ -3,7 +3,6 @@ title: Getting Started
 weight: 1
 ---
 
-# Getting Started
 
 ## Prerequisites
 
@@ -48,7 +47,5 @@ and reaches GitHub through the gateway.
 ## Next Steps
 
 - [Usage]({{< relref "/docs/usage" >}}) — the full CLI command reference
-- [Configuration]({{< relref "/docs/configuration" >}}) — customize images,
-  defaults, MCP servers, and more
-- [Authentication]({{< relref "/docs/authentication" >}}) — how credentials
-  are detected
+- [Configuration]({{< relref "/docs/configuration" >}}) — customize images
+  and defaults, and see how credentials are detected

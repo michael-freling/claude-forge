@@ -3,7 +3,6 @@ title: Custom MCP Servers
 weight: 4
 ---
 
-# Custom MCP Servers
 
 Beyond the built-in `github` (and optional `kubernetes`) servers, you can expose
 any number of additional MCP servers to the agent via the `mcp_servers` list in

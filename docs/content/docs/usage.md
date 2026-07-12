@@ -3,7 +3,6 @@ title: Usage
 weight: 2
 ---
 
-# Usage
 
 ## Start a Session
 

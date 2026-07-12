@@ -59,10 +59,9 @@ The full user guide lives on the [documentation site](https://michael-freling.gi
 
 - [Getting Started](https://michael-freling.github.io/claude-forge/docs/getting-started/) — install and run your first session
 - [Usage](https://michael-freling.github.io/claude-forge/docs/usage/) — the full CLI command reference
-- [Configuration](https://michael-freling.github.io/claude-forge/docs/configuration/) — the `config.yaml` reference
+- [Configuration](https://michael-freling.github.io/claude-forge/docs/configuration/) — the `config.yaml` reference and credential detection
 - [Custom MCP Servers](https://michael-freling.github.io/claude-forge/docs/mcp-servers/) — expose additional MCP servers to the agent
 - [Kubernetes Access](https://michael-freling.github.io/claude-forge/docs/kubernetes/) — RBAC-gated cluster access
-- [Authentication](https://michael-freling.github.io/claude-forge/docs/authentication/) — how credentials are resolved
 - [How It Works](https://michael-freling.github.io/claude-forge/docs/how-it-works/) — what happens when a session starts
 
 ## License
