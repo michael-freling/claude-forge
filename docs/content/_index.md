@@ -11,7 +11,7 @@ layout: hextra-home
 
 <div class="hx:mb-12">
 {{< hextra/hero-subtitle >}}
-  claude-forge runs Claude Code with full autonomy inside an isolated&nbsp;<br class="hx:sm:block hx:hidden" />Docker container — a gateway proxy guards your GitHub access.
+  claude-forge runs Claude Code with full autonomy inside an isolated&nbsp;<br class="hx:sm:block hx:hidden" />Docker container — it reaches only your project and what you allow.
 {{< /hextra/hero-subtitle >}}
 </div>
 
