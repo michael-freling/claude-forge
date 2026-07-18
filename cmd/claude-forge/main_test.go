@@ -114,10 +114,19 @@ func pruneSetup(t *testing.T) string {
 	return sessionDir
 }
 
+// ageFile pushes a file's mtime into the past so prune sees it as inactive.
+func ageFile(t *testing.T, path string, age time.Duration) {
+	t.Helper()
+	old := time.Now().Add(-age)
+	require.NoError(t, os.Chtimes(path, old, old))
+}
+
 func TestPruneCmd(t *testing.T) {
 	t.Run("defaults to older-than 30 days", func(t *testing.T) {
 		sessionDir := pruneSetup(t)
-		writeSessionFile(t, filepath.Join(sessionDir, "-work", "old.jsonl"), "2020-01-01T00:00:00Z", "old")
+		oldFile := filepath.Join(sessionDir, "-work", "old.jsonl")
+		writeSessionFile(t, oldFile, "2020-01-01T00:00:00Z", "old")
+		ageFile(t, oldFile, 31*24*time.Hour)
 		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 		writeSessionFile(t, filepath.Join(sessionDir, "-work", "new.jsonl"), recent, "new")
 
@@ -126,7 +135,7 @@ func TestPruneCmd(t *testing.T) {
 		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
 
 		assert.Contains(t, out, "Deleted 1 session")
-		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "old.jsonl"))
+		assert.NoFileExists(t, oldFile)
 		assert.FileExists(t, filepath.Join(sessionDir, "-work", "new.jsonl"))
 	})
 
@@ -150,6 +159,7 @@ func TestPruneCmd(t *testing.T) {
 		sessionDir := pruneSetup(t)
 		oldFile := filepath.Join(sessionDir, "-work", "old.jsonl")
 		writeSessionFile(t, oldFile, "2020-01-01T00:00:00Z", "old one")
+		ageFile(t, oldFile, 31*24*time.Hour)
 		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 		newFile := filepath.Join(sessionDir, "-work", "new.jsonl")
 		writeSessionFile(t, newFile, recent, "new one")
@@ -169,6 +179,7 @@ func TestPruneCmd(t *testing.T) {
 		sessionDir := pruneSetup(t)
 		oldFile := filepath.Join(sessionDir, "-work", "old.jsonl")
 		writeSessionFile(t, oldFile, "2020-01-01T00:00:00Z", "old one")
+		ageFile(t, oldFile, 31*24*time.Hour)
 		require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "old.json"), []byte(`{"name":"gone"}`), 0o644))
 		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 		newFile := filepath.Join(sessionDir, "-work", "new.jsonl")
@@ -184,20 +195,180 @@ func TestPruneCmd(t *testing.T) {
 		assert.FileExists(t, newFile) // recent one survives
 	})
 
-	t.Run("keep protects newest", func(t *testing.T) {
+	t.Run("keep alone protects most recently active, ignores age", func(t *testing.T) {
 		sessionDir := pruneSetup(t)
-		writeSessionFile(t, filepath.Join(sessionDir, "-work", "a.jsonl"), "2026-01-01T00:00:00Z", "a")
-		writeSessionFile(t, filepath.Join(sessionDir, "-work", "b.jsonl"), "2026-02-01T00:00:00Z", "b")
-		writeSessionFile(t, filepath.Join(sessionDir, "-work", "c.jsonl"), "2026-03-01T00:00:00Z", "c")
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		for name, age := range map[string]time.Duration{
+			"a.jsonl": 3 * time.Hour,
+			"b.jsonl": 2 * time.Hour,
+			"c.jsonl": time.Hour,
+		} {
+			path := filepath.Join(sessionDir, "-work", name)
+			writeSessionFile(t, path, recent, name)
+			ageFile(t, path, age)
+		}
 
 		cmd := newPruneCmd()
 		cmd.SetArgs([]string{"--keep", "1"})
 		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
 
+		// All sessions are hours old — far inside the default 30d window — yet
+		// --keep alone still prunes everything beyond the most recently active.
 		assert.Contains(t, out, "Deleted 2 session")
-		assert.FileExists(t, filepath.Join(sessionDir, "-work", "c.jsonl"))   // newest kept
-		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "a.jsonl")) // older pruned
+		assert.FileExists(t, filepath.Join(sessionDir, "-work", "c.jsonl"))   // most recently active kept
+		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "a.jsonl")) // less recent pruned
 		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "b.jsonl"))
+	})
+
+	t.Run("explicit keep and older-than are ANDed", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		for name, age := range map[string]time.Duration{
+			"fresh.jsonl": time.Hour,
+			"mid.jsonl":   2 * time.Hour,
+			"old.jsonl":   40 * 24 * time.Hour,
+		} {
+			path := filepath.Join(sessionDir, "-work", name)
+			writeSessionFile(t, path, recent, name)
+			ageFile(t, path, age)
+		}
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{"--keep", "1", "--older-than", "30d"})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		// mid is beyond --keep 1 but not older than 30d, so only old goes.
+		assert.Contains(t, out, "Deleted 1 session")
+		assert.FileExists(t, filepath.Join(sessionDir, "-work", "fresh.jsonl"))
+		assert.FileExists(t, filepath.Join(sessionDir, "-work", "mid.jsonl"))
+		assert.NoFileExists(t, filepath.Join(sessionDir, "-work", "old.jsonl"))
+	})
+
+	t.Run("negative keep errors", func(t *testing.T) {
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{"--keep", "-1"})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--keep must be >= 0")
+	})
+
+	t.Run("age is last activity, not session start", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		// Started years ago but resumed recently: fresh mtime → survives.
+		resumed := filepath.Join(sessionDir, "-work", "resumed.jsonl")
+		writeSessionFile(t, resumed, "2020-01-01T00:00:00Z", "resumed")
+		// Started recently per its first timestamp but long inactive: old
+		// mtime → pruned.
+		stale := filepath.Join(sessionDir, "-work", "stale.jsonl")
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		writeSessionFile(t, stale, recent, "stale")
+		ageFile(t, stale, 31*24*time.Hour)
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "Deleted 1 session")
+		assert.FileExists(t, resumed)
+		assert.NoFileExists(t, stale)
+	})
+
+	t.Run("sweeps orphaned sidecars", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		const orphanID = "12345678-1234-4234-8234-123456789abc"
+		orphan := filepath.Join(sessionDir, orphanID+".json")
+		require.NoError(t, os.WriteFile(orphan, []byte(`{"name":"gone"}`), 0o644))
+		ageFile(t, orphan, 2*time.Hour) // past the just-started grace period
+		// Non-UUID .json files are never swept.
+		other := filepath.Join(sessionDir, "settings.json")
+		require.NoError(t, os.WriteFile(other, []byte(`{}`), 0o644))
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{"--dry-run"})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+		assert.Contains(t, out, "would delete orphaned sidecar  "+orphanID)
+		assert.FileExists(t, orphan) // dry-run: nothing removed
+
+		cmd = newPruneCmd()
+		cmd.SetArgs([]string{})
+		out = captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+		assert.Contains(t, out, "deleted orphaned sidecar  "+orphanID)
+		assert.Contains(t, out, "1 orphaned sidecar(s)")
+		assert.NoFileExists(t, orphan)
+		assert.FileExists(t, other)
+	})
+
+	t.Run("fresh orphan sidecar survives the sweep", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		// A just-started session writes its sidecar before Claude Code creates
+		// the transcript; the fresh mtime must protect it from the sweep.
+		const freshID = "abcdefab-abcd-4bcd-8bcd-abcdefabcdef"
+		fresh := filepath.Join(sessionDir, freshID+".json")
+		require.NoError(t, os.WriteFile(fresh, []byte(`{"name":"live"}`), 0o644))
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+		assert.Contains(t, out, "No sessions to prune.")
+		assert.FileExists(t, fresh)
+	})
+
+	t.Run("worktree hint when last referencing session is pruned", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		wtDir := filepath.Join(sessionDir, "-work--claude-worktrees-feature")
+		require.NoError(t, os.MkdirAll(wtDir, 0o755))
+		wtFile := filepath.Join(wtDir, "wt.jsonl")
+		writeSessionFile(t, wtFile, "2020-01-01T00:00:00Z", "wt")
+		ageFile(t, wtFile, 31*24*time.Hour)
+		// pruneSetup chdirs into the repo, so the worktree path is relative to cwd.
+		require.NoError(t, os.MkdirAll(filepath.Join(".claude-worktrees", "feature"), 0o755))
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "git worktree remove .claude-worktrees/feature")
+		// The worktree itself is never removed automatically.
+		assert.DirExists(t, filepath.Join(".claude-worktrees", "feature"))
+	})
+
+	t.Run("no worktree hint while another session references it", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		wtDir := filepath.Join(sessionDir, "-work--claude-worktrees-feature")
+		require.NoError(t, os.MkdirAll(wtDir, 0o755))
+		oldWt := filepath.Join(wtDir, "old-wt.jsonl")
+		writeSessionFile(t, oldWt, "2020-01-01T00:00:00Z", "old wt")
+		ageFile(t, oldWt, 31*24*time.Hour)
+		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		writeSessionFile(t, filepath.Join(wtDir, "new-wt.jsonl"), recent, "new wt")
+		require.NoError(t, os.MkdirAll(filepath.Join(".claude-worktrees", "feature"), 0o755))
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "Deleted 1 session")
+		assert.NotContains(t, out, "git worktree remove")
+	})
+
+	t.Run("no worktree hint while an unparseable transcript remains", func(t *testing.T) {
+		sessionDir := pruneSetup(t)
+		wtDir := filepath.Join(sessionDir, "-work--claude-worktrees-feature")
+		require.NoError(t, os.MkdirAll(wtDir, 0o755))
+		oldWt := filepath.Join(wtDir, "old-wt.jsonl")
+		writeSessionFile(t, oldWt, "2020-01-01T00:00:00Z", "old wt")
+		ageFile(t, oldWt, 31*24*time.Hour)
+		// A just-launched session's transcript exists but has no parseable
+		// timestamp yet, so List skips it; it must still suppress the hint.
+		require.NoError(t, os.WriteFile(filepath.Join(wtDir, "launching.jsonl"), nil, 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(".claude-worktrees", "feature"), 0o755))
+
+		cmd := newPruneCmd()
+		cmd.SetArgs([]string{})
+		out := captureStdout(t, func() { require.NoError(t, cmd.Execute()) })
+
+		assert.Contains(t, out, "Deleted 1 session")
+		assert.NotContains(t, out, "git worktree remove")
 	})
 
 	t.Run("nothing to prune", func(t *testing.T) {

@@ -241,9 +241,100 @@ func TestList(t *testing.T) {
 			}
 
 			require.NoError(t, err)
+			// LastActive is the file mtime (set at write time above); clear it
+			// so the table can compare the parsed fields deterministically.
+			for i := range got {
+				assert.False(t, got[i].LastActive.IsZero())
+				got[i].LastActive = time.Time{}
+			}
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestList_PopulatesLastActiveFromMtime(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	workDir := filepath.Join(tmpDir, "-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	jsonl := filepath.Join(workDir, "sess-1.jsonl")
+	require.NoError(t, os.WriteFile(jsonl,
+		[]byte(`{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2020-01-01T00:00:00Z"}`+"\n"), 0o644))
+
+	// The session started in 2020, but its transcript was touched much later:
+	// LastActive must reflect the mtime, not the first timestamp.
+	lastActive := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(jsonl, lastActive, lastActive))
+
+	got, err := List(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), got[0].CreatedAt)
+	assert.True(t, got[0].LastActive.Equal(lastActive), "LastActive = %v, want %v", got[0].LastActive, lastActive)
+}
+
+func TestOrphanedSidecars(t *testing.T) {
+	const (
+		orphanID = "11111111-2222-4333-8444-555555555555"
+		keptID   = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+		legacyID = "99999999-8888-4777-8666-555555555555"
+	)
+
+	t.Run("orphan detected", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, orphanID+".json"), []byte(`{"name":"gone"}`), 0o644))
+
+		got, err := OrphanedSidecars(tmpDir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{orphanID}, got)
+	})
+
+	t.Run("sidecar with transcript in subdir is kept", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		workDir := filepath.Join(tmpDir, "-work")
+		require.NoError(t, os.MkdirAll(workDir, 0o755))
+		// The transcript need not be parseable; its presence keeps the sidecar.
+		require.NoError(t, os.WriteFile(filepath.Join(workDir, keptID+".jsonl"), []byte("not json"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, keptID+".json"), []byte(`{"name":"kept"}`), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, orphanID+".json"), []byte(`{"name":"gone"}`), 0o644))
+
+		got, err := OrphanedSidecars(tmpDir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{orphanID}, got)
+	})
+
+	t.Run("sidecar with legacy top-level transcript is kept", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, legacyID+".jsonl"), []byte("{}"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, legacyID+".json"), []byte(`{"name":"legacy"}`), 0o644))
+
+		got, err := OrphanedSidecars(tmpDir)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("non-UUID json ignored", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "settings.json"), []byte(`{}`), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "sess-1.json"), []byte(`{"name":"short-id"}`), 0o644))
+
+		got, err := OrphanedSidecars(tmpDir)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("missing directory", func(t *testing.T) {
+		got, err := OrphanedSidecars(filepath.Join(t.TempDir(), "missing"))
+		require.NoError(t, err)
+		assert.Nil(t, got)
+	})
+
+	t.Run("unreadable directory errors", func(t *testing.T) {
+		notADir := filepath.Join(t.TempDir(), "file")
+		require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o644))
+		_, err := OrphanedSidecars(notADir)
+		require.Error(t, err)
+	})
 }
 
 func TestList_NonExistentDirectory(t *testing.T) {
