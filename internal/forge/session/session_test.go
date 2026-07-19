@@ -286,7 +286,9 @@ func TestOrphanedSidecars(t *testing.T) {
 
 		got, err := OrphanedSidecars(tmpDir)
 		require.NoError(t, err)
-		assert.Equal(t, []string{orphanID}, got)
+		require.Len(t, got, 1)
+		assert.Equal(t, orphanID, got[0].ID)
+		assert.False(t, got[0].ModTime.IsZero(), "ModTime should come from the sidecar file")
 	})
 
 	t.Run("sidecar with transcript in subdir is kept", func(t *testing.T) {
@@ -300,7 +302,8 @@ func TestOrphanedSidecars(t *testing.T) {
 
 		got, err := OrphanedSidecars(tmpDir)
 		require.NoError(t, err)
-		assert.Equal(t, []string{orphanID}, got)
+		require.Len(t, got, 1)
+		assert.Equal(t, orphanID, got[0].ID)
 	})
 
 	t.Run("sidecar with legacy top-level transcript is kept", func(t *testing.T) {
@@ -334,6 +337,40 @@ func TestOrphanedSidecars(t *testing.T) {
 		require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o644))
 		_, err := OrphanedSidecars(notADir)
 		require.Error(t, err)
+	})
+}
+
+func TestDeleteSidecar(t *testing.T) {
+	const id = "11111111-2222-4333-8444-555555555555"
+
+	t.Run("removes sidecar", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, WriteMetadata(tmpDir, id, Metadata{Name: "doomed"}))
+		require.NoError(t, DeleteSidecar(tmpDir, id))
+		assert.NoFileExists(t, filepath.Join(tmpDir, id+".json"))
+	})
+
+	t.Run("missing sidecar is not an error", func(t *testing.T) {
+		require.NoError(t, DeleteSidecar(t.TempDir(), id))
+	})
+}
+
+func TestHasTranscripts(t *testing.T) {
+	t.Run("transcript present", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "a.jsonl"), []byte("not even json"), 0o644))
+		assert.True(t, HasTranscripts(tmpDir))
+	})
+
+	t.Run("only non-transcript files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "a.json"), []byte("{}"), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "b.jsonl"), 0o755)) // a directory does not count
+		assert.False(t, HasTranscripts(tmpDir))
+	})
+
+	t.Run("missing directory", func(t *testing.T) {
+		assert.False(t, HasTranscripts(filepath.Join(t.TempDir(), "missing")))
 	})
 }
 

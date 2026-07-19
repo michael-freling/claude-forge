@@ -528,20 +528,19 @@ removal hint is printed instead. Use --dry-run to preview.`,
 				return fmt.Errorf("failed to scan for orphaned sidecars: %w", err)
 			}
 			var orphans []string
-			for _, id := range allOrphans {
-				info, err := os.Stat(filepath.Join(sessionDir, id+".json"))
-				if err != nil || now.Sub(info.ModTime()) < orphanSidecarGrace {
+			for _, o := range allOrphans {
+				if now.Sub(o.ModTime) < orphanSidecarGrace {
 					continue
 				}
-				orphans = append(orphans, id)
+				orphans = append(orphans, o.ID)
 			}
 			for _, id := range orphans {
 				if dryRun {
 					fmt.Fprintf(w, "would delete orphaned sidecar  %s\n", id)
 					continue
 				}
-				if err := os.Remove(filepath.Join(sessionDir, id+".json")); err != nil && !os.IsNotExist(err) {
-					return fmt.Errorf("failed to remove orphaned sidecar: %w", err)
+				if err := session.DeleteSidecar(sessionDir, id); err != nil {
+					return err
 				}
 				fmt.Fprintf(w, "deleted orphaned sidecar  %s\n", id)
 			}
@@ -587,35 +586,21 @@ func printWorktreeHints(w io.Writer, sessionDir string, pruned []session.Session
 	if err != nil {
 		return
 	}
-	hinted := make(map[string]bool)
+	seen := make(map[string]bool)
 	for _, s := range pruned {
 		name := s.WorktreeName()
-		if name == "" || hinted[name] {
+		if name == "" || seen[name] {
 			continue
 		}
-		if hasTranscripts(filepath.Join(sessionDir, s.Subdir)) {
+		seen[name] = true
+		if session.HasTranscripts(filepath.Join(sessionDir, s.Subdir)) {
 			continue // another session, parseable or not, still references it
 		}
 		if _, err := os.Stat(filepath.Join(cwd, ".claude-worktrees", name)); err != nil {
 			continue
 		}
-		hinted[name] = true
 		fmt.Fprintf(w, "note: worktree .claude-worktrees/%s was left in place; remove it with: git worktree remove .claude-worktrees/%s\n", name, name)
 	}
-}
-
-// hasTranscripts reports whether dir contains any transcript (.jsonl) file.
-func hasTranscripts(dir string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
-			return true
-		}
-	}
-	return false
 }
 
 // newResumeCmd creates the "resume" subcommand.

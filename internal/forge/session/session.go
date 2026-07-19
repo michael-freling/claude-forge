@@ -272,7 +272,13 @@ func Delete(sessionDir string, s Session) error {
 	if err := os.Remove(jsonl); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove session transcript: %w", err)
 	}
-	if err := os.Remove(metadataPath(sessionDir, s.ID)); err != nil && !os.IsNotExist(err) {
+	return DeleteSidecar(sessionDir, s.ID)
+}
+
+// DeleteSidecar removes a session's sidecar metadata file, if present. A
+// missing file is not an error.
+func DeleteSidecar(sessionDir, sessionID string) error {
+	if err := os.Remove(metadataPath(sessionDir, sessionID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove session metadata: %w", err)
 	}
 	return nil
@@ -283,12 +289,20 @@ func Delete(sessionDir string, s Session) error {
 // shape guarantees unrelated .json files are never touched.
 var sidecarIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// OrphanedSidecars returns the sorted IDs of top-level sidecar metadata files
+// OrphanedSidecar identifies a sidecar metadata file with no matching
+// transcript, along with its last modification time so callers can apply an
+// age policy without re-statting the file.
+type OrphanedSidecar struct {
+	ID      string
+	ModTime time.Time
+}
+
+// OrphanedSidecars returns, sorted by ID, the top-level sidecar metadata files
 // ("<id>.json" with a UUID-shaped id) whose transcript ("<id>.jsonl") no longer
 // exists, neither at the top level nor in any first-level subdirectory. The
 // transcript's mere presence keeps a sidecar; it need not be parseable. A
 // missing sessionDir yields no orphans.
-func OrphanedSidecars(sessionDir string) ([]string, error) {
+func OrphanedSidecars(sessionDir string) ([]OrphanedSidecar, error) {
 	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -316,21 +330,38 @@ func OrphanedSidecars(sessionDir string) ([]string, error) {
 		}
 	}
 
-	var orphans []string
+	var orphans []OrphanedSidecar
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
-		if !sidecarIDPattern.MatchString(id) {
+		if !sidecarIDPattern.MatchString(id) || hasTranscript[id] {
 			continue
 		}
-		if !hasTranscript[id] {
-			orphans = append(orphans, id)
+		info, err := e.Info()
+		if err != nil {
+			continue // vanished between ReadDir and Info; nothing to sweep
+		}
+		orphans = append(orphans, OrphanedSidecar{ID: id, ModTime: info.ModTime()})
+	}
+	sort.Slice(orphans, func(i, j int) bool { return orphans[i].ID < orphans[j].ID })
+	return orphans, nil
+}
+
+// HasTranscripts reports whether dir contains any transcript (.jsonl) file,
+// parseable or not. A missing or unreadable dir has none.
+func HasTranscripts(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+			return true
 		}
 	}
-	sort.Strings(orphans)
-	return orphans, nil
+	return false
 }
 
 // Find locates a session by exact ID, or failing that by name, across all

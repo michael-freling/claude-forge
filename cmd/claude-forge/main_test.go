@@ -121,14 +121,27 @@ func ageFile(t *testing.T, path string, age time.Duration) {
 	require.NoError(t, os.Chtimes(path, old, old))
 }
 
+// seedSession writes a transcript in dir and pushes its mtime age into the
+// past (zero age leaves it recently active). Prune's age policy reads only the
+// mtime, so the transcript's CreatedAt is an arbitrary recent time; tests
+// about the CreatedAt/mtime distinction seed their files explicitly instead.
+func seedSession(t *testing.T, dir, name string, age time.Duration) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	recent := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	writeSessionFile(t, path, recent, strings.TrimSuffix(name, ".jsonl"))
+	if age > 0 {
+		ageFile(t, path, age)
+	}
+	return path
+}
+
 func TestPruneCmd(t *testing.T) {
 	t.Run("defaults to older-than 30 days", func(t *testing.T) {
 		sessionDir := pruneSetup(t)
-		oldFile := filepath.Join(sessionDir, "-work", "old.jsonl")
-		writeSessionFile(t, oldFile, "2020-01-01T00:00:00Z", "old")
-		ageFile(t, oldFile, 31*24*time.Hour)
-		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-		writeSessionFile(t, filepath.Join(sessionDir, "-work", "new.jsonl"), recent, "new")
+		workDir := filepath.Join(sessionDir, "-work")
+		oldFile := seedSession(t, workDir, "old.jsonl", 31*24*time.Hour)
+		seedSession(t, workDir, "new.jsonl", 0)
 
 		cmd := newPruneCmd()
 		cmd.SetArgs([]string{}) // no flags → default 30d window
@@ -157,12 +170,9 @@ func TestPruneCmd(t *testing.T) {
 
 	t.Run("older-than dry-run keeps files", func(t *testing.T) {
 		sessionDir := pruneSetup(t)
-		oldFile := filepath.Join(sessionDir, "-work", "old.jsonl")
-		writeSessionFile(t, oldFile, "2020-01-01T00:00:00Z", "old one")
-		ageFile(t, oldFile, 31*24*time.Hour)
-		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-		newFile := filepath.Join(sessionDir, "-work", "new.jsonl")
-		writeSessionFile(t, newFile, recent, "new one")
+		workDir := filepath.Join(sessionDir, "-work")
+		oldFile := seedSession(t, workDir, "old.jsonl", 31*24*time.Hour)
+		newFile := seedSession(t, workDir, "new.jsonl", 0)
 
 		cmd := newPruneCmd()
 		cmd.SetArgs([]string{"--older-than", "30d", "--dry-run"})
@@ -177,13 +187,10 @@ func TestPruneCmd(t *testing.T) {
 
 	t.Run("older-than deletes old transcript and sidecar", func(t *testing.T) {
 		sessionDir := pruneSetup(t)
-		oldFile := filepath.Join(sessionDir, "-work", "old.jsonl")
-		writeSessionFile(t, oldFile, "2020-01-01T00:00:00Z", "old one")
-		ageFile(t, oldFile, 31*24*time.Hour)
+		workDir := filepath.Join(sessionDir, "-work")
+		oldFile := seedSession(t, workDir, "old.jsonl", 31*24*time.Hour)
 		require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "old.json"), []byte(`{"name":"gone"}`), 0o644))
-		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-		newFile := filepath.Join(sessionDir, "-work", "new.jsonl")
-		writeSessionFile(t, newFile, recent, "new one")
+		newFile := seedSession(t, workDir, "new.jsonl", 0)
 
 		cmd := newPruneCmd()
 		cmd.SetArgs([]string{"--older-than", "30d"})
@@ -197,15 +204,13 @@ func TestPruneCmd(t *testing.T) {
 
 	t.Run("keep alone protects most recently active, ignores age", func(t *testing.T) {
 		sessionDir := pruneSetup(t)
-		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		workDir := filepath.Join(sessionDir, "-work")
 		for name, age := range map[string]time.Duration{
 			"a.jsonl": 3 * time.Hour,
 			"b.jsonl": 2 * time.Hour,
 			"c.jsonl": time.Hour,
 		} {
-			path := filepath.Join(sessionDir, "-work", name)
-			writeSessionFile(t, path, recent, name)
-			ageFile(t, path, age)
+			seedSession(t, workDir, name, age)
 		}
 
 		cmd := newPruneCmd()
@@ -222,15 +227,13 @@ func TestPruneCmd(t *testing.T) {
 
 	t.Run("explicit keep and older-than are ANDed", func(t *testing.T) {
 		sessionDir := pruneSetup(t)
-		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+		workDir := filepath.Join(sessionDir, "-work")
 		for name, age := range map[string]time.Duration{
 			"fresh.jsonl": time.Hour,
 			"mid.jsonl":   2 * time.Hour,
 			"old.jsonl":   40 * 24 * time.Hour,
 		} {
-			path := filepath.Join(sessionDir, "-work", name)
-			writeSessionFile(t, path, recent, name)
-			ageFile(t, path, age)
+			seedSession(t, workDir, name, age)
 		}
 
 		cmd := newPruneCmd()
@@ -317,9 +320,7 @@ func TestPruneCmd(t *testing.T) {
 		sessionDir := pruneSetup(t)
 		wtDir := filepath.Join(sessionDir, "-work--claude-worktrees-feature")
 		require.NoError(t, os.MkdirAll(wtDir, 0o755))
-		wtFile := filepath.Join(wtDir, "wt.jsonl")
-		writeSessionFile(t, wtFile, "2020-01-01T00:00:00Z", "wt")
-		ageFile(t, wtFile, 31*24*time.Hour)
+		seedSession(t, wtDir, "wt.jsonl", 31*24*time.Hour)
 		// pruneSetup chdirs into the repo, so the worktree path is relative to cwd.
 		require.NoError(t, os.MkdirAll(filepath.Join(".claude-worktrees", "feature"), 0o755))
 
@@ -336,11 +337,8 @@ func TestPruneCmd(t *testing.T) {
 		sessionDir := pruneSetup(t)
 		wtDir := filepath.Join(sessionDir, "-work--claude-worktrees-feature")
 		require.NoError(t, os.MkdirAll(wtDir, 0o755))
-		oldWt := filepath.Join(wtDir, "old-wt.jsonl")
-		writeSessionFile(t, oldWt, "2020-01-01T00:00:00Z", "old wt")
-		ageFile(t, oldWt, 31*24*time.Hour)
-		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-		writeSessionFile(t, filepath.Join(wtDir, "new-wt.jsonl"), recent, "new wt")
+		seedSession(t, wtDir, "old-wt.jsonl", 31*24*time.Hour)
+		seedSession(t, wtDir, "new-wt.jsonl", 0)
 		require.NoError(t, os.MkdirAll(filepath.Join(".claude-worktrees", "feature"), 0o755))
 
 		cmd := newPruneCmd()
@@ -355,9 +353,7 @@ func TestPruneCmd(t *testing.T) {
 		sessionDir := pruneSetup(t)
 		wtDir := filepath.Join(sessionDir, "-work--claude-worktrees-feature")
 		require.NoError(t, os.MkdirAll(wtDir, 0o755))
-		oldWt := filepath.Join(wtDir, "old-wt.jsonl")
-		writeSessionFile(t, oldWt, "2020-01-01T00:00:00Z", "old wt")
-		ageFile(t, oldWt, 31*24*time.Hour)
+		seedSession(t, wtDir, "old-wt.jsonl", 31*24*time.Hour)
 		// A just-launched session's transcript exists but has no parseable
 		// timestamp yet, so List skips it; it must still suppress the hint.
 		require.NoError(t, os.WriteFile(filepath.Join(wtDir, "launching.jsonl"), nil, 0o644))
@@ -373,8 +369,7 @@ func TestPruneCmd(t *testing.T) {
 
 	t.Run("nothing to prune", func(t *testing.T) {
 		sessionDir := pruneSetup(t)
-		recent := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-		writeSessionFile(t, filepath.Join(sessionDir, "-work", "new.jsonl"), recent, "new")
+		seedSession(t, filepath.Join(sessionDir, "-work"), "new.jsonl", 0)
 
 		cmd := newPruneCmd()
 		cmd.SetArgs([]string{"--older-than", "30d"})
