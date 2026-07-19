@@ -45,18 +45,39 @@ claude-forge resume <session-id> --name "new name"
 
 ## Prune Old Sessions
 
+Session age is measured by **last activity** (the transcript file's
+modification time), so a session started long ago but resumed recently is not
+pruned.
+
 ```bash
-# Delete sessions older than 30 days (default)
+# Delete sessions inactive for 30+ days (default)
 claude-forge prune
 
-# Delete sessions older than a custom age
+# Delete sessions inactive for a custom duration
 claude-forge prune --older-than 7d
 
-# Keep the 10 most recent sessions, delete the rest
+# Keep the 10 most recently active sessions, delete all the rest
+# (used alone, --keep replaces the 30-day default instead of combining with it)
 claude-forge prune --keep 10
+
+# Combine both: only delete sessions that are inactive for 7+ days
+# AND not among the 10 most recently active
+claude-forge prune --older-than 7d --keep 10
 
 # Preview without deleting
 claude-forge prune --dry-run
+```
+
+Prune also cleans up orphaned session-name sidecar files whose transcript no
+longer exists. Sidecars written within the last hour are left alone: a
+just-started session records its name before its transcript exists.
+
+Git worktrees created by `start --worktree` are never removed automatically —
+they may contain uncommitted work. When pruning deletes the last session that
+referenced a worktree, prune prints a hint to remove it yourself:
+
+```bash
+git worktree remove .claude-worktrees/<name>
 ```
 
 ## Manage Containers

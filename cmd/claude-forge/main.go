@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -426,6 +427,13 @@ func parseAge(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
+// orphanSidecarGrace protects the name sidecar of a just-started session: the
+// orchestrator writes <id>.json as soon as the agent container starts, but
+// Claude Code only creates <id>.jsonl once the conversation records its first
+// line, which for an interactive session can be minutes later. A sidecar is
+// treated as orphaned only once its mtime is older than this grace period.
+const orphanSidecarGrace = time.Hour
+
 // newPruneCmd creates the "prune" subcommand.
 func newPruneCmd() *cobra.Command {
 	var (
@@ -438,12 +446,32 @@ func newPruneCmd() *cobra.Command {
 		Use:   "prune",
 		Short: "Delete old Claude Code sessions for the current project",
 		Long: `Prune removes session transcripts (and their name sidecars) for the
-current project. By default it deletes sessions older than 30 days. Narrow
-or widen the window with --older-than, and protect the N most recent
-sessions with --keep. Use --dry-run to preview.`,
+current project. Session age is measured by last activity (the transcript's
+modification time), not by when the session started.
+
+By default, sessions inactive for 30 or more days are deleted. --keep N on
+its own disables that age window: it keeps the N most recently active
+sessions and deletes all the rest. When both --keep and --older-than are
+given, only sessions that are beyond the N most recently active AND older
+than the age are deleted.
+
+Orphaned name sidecars (a <id>.json whose transcript no longer exists) are
+always swept, except sidecars written within the last hour: a just-started
+session has a sidecar before its transcript exists. Git worktrees left
+behind by pruned worktree sessions are never removed automatically; a
+removal hint is printed instead. Use --dry-run to preview.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			keepSet := cmd.Flags().Changed("keep")
+			ageSet := cmd.Flags().Changed("older-than")
+			if keepSet && keep < 0 {
+				return fmt.Errorf("--keep must be >= 0")
+			}
+			// --keep alone disables the default 30d age window; an explicit
+			// --older-than alongside --keep means both conditions must hold.
+			applyAge := ageSet || !keepSet
+
 			var maxAge time.Duration
-			if olderThan != "" {
+			if applyAge {
 				var err error
 				maxAge, err = parseAge(olderThan)
 				if err != nil {
@@ -460,50 +488,119 @@ sessions with --keep. Use --dry-run to preview.`,
 				return fmt.Errorf("failed to list sessions: %w", err)
 			}
 
-			// sessions are sorted most-recent-first.
+			// List sorts by CreatedAt, but --keep protects by recency of
+			// activity, so re-sort by LastActive (most recent first).
+			sort.Slice(sessions, func(i, j int) bool {
+				return sessions[i].LastActive.After(sessions[j].LastActive)
+			})
+
 			now := time.Now()
 			var toPrune []session.Session
 			for i, s := range sessions {
-				if keep >= 0 && i < keep {
-					continue // protected: among the N newest
+				if keepSet && i < keep {
+					continue // protected: among the N most recently active
 				}
-				if olderThan != "" && now.Sub(s.CreatedAt) < maxAge {
-					continue // not old enough
+				if applyAge && now.Sub(s.LastActive) < maxAge {
+					continue // recently active
 				}
 				toPrune = append(toPrune, s)
 			}
 
 			w := cmd.OutOrStdout()
-			if len(toPrune) == 0 {
-				fmt.Fprintln(w, "No sessions to prune.")
-				return nil
-			}
-
 			for _, s := range toPrune {
 				if dryRun {
-					fmt.Fprintf(w, "would delete  %s  %s  %s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.Name)
+					fmt.Fprintf(w, "would delete  %s  %s  %s\n", s.ID, s.LastActive.Format(time.RFC3339), s.Name)
 					continue
 				}
 				if err := session.Delete(sessionDir, s); err != nil {
 					return err
 				}
-				fmt.Fprintf(w, "deleted  %s  %s  %s\n", s.ID, s.CreatedAt.Format(time.RFC3339), s.Name)
+				fmt.Fprintf(w, "deleted  %s  %s  %s\n", s.ID, s.LastActive.Format(time.RFC3339), s.Name)
+			}
+
+			// Sidecars whose transcript was deleted by other means are never
+			// listed, so sweep them here even when no transcripts were pruned.
+			// Recently written sidecars are skipped: a just-started session has
+			// a sidecar before Claude Code creates its transcript, and sweeping
+			// it would strip the live session's name.
+			allOrphans, err := session.OrphanedSidecars(sessionDir)
+			if err != nil {
+				return fmt.Errorf("failed to scan for orphaned sidecars: %w", err)
+			}
+			var orphans []string
+			for _, o := range allOrphans {
+				if now.Sub(o.ModTime) < orphanSidecarGrace {
+					continue
+				}
+				orphans = append(orphans, o.ID)
+			}
+			for _, id := range orphans {
+				if dryRun {
+					fmt.Fprintf(w, "would delete orphaned sidecar  %s\n", id)
+					continue
+				}
+				if err := session.DeleteSidecar(sessionDir, id); err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "deleted orphaned sidecar  %s\n", id)
+			}
+
+			if len(toPrune) == 0 && len(orphans) == 0 {
+				fmt.Fprintln(w, "No sessions to prune.")
+				return nil
 			}
 
 			verb := "Deleted"
 			if dryRun {
 				verb = "Would delete"
 			}
-			fmt.Fprintf(w, "%s %d session(s).\n", verb, len(toPrune))
+			summary := fmt.Sprintf("%s %d session(s)", verb, len(toPrune))
+			if len(orphans) > 0 {
+				summary += fmt.Sprintf(" and %d orphaned sidecar(s)", len(orphans))
+			}
+			fmt.Fprintln(w, summary+".")
+
+			if !dryRun {
+				printWorktreeHints(w, sessionDir, toPrune)
+			}
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&olderThan, "older-than", "30d", "Delete sessions older than this age (e.g. 30d, 720h)")
-	cmd.Flags().IntVar(&keep, "keep", -1, "Keep the N most recent sessions, delete the rest")
+	cmd.Flags().StringVar(&olderThan, "older-than", "30d", "Delete sessions whose last activity is older than this age (e.g. 30d, 720h)")
+	cmd.Flags().IntVar(&keep, "keep", -1, "Keep the N most recently active sessions; alone it overrides the default age window, with --older-than both must match")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be deleted without deleting")
 
 	return cmd
+}
+
+// printWorktreeHints notes git worktrees orphaned by pruned worktree sessions.
+// Worktrees may hold uncommitted work, so they are never removed automatically:
+// a hint is printed only when the worktree's session subdirectory retains no
+// transcript files and the worktree directory still exists under the current
+// project. "Still referenced" is decided from the filesystem rather than the
+// parsed session list, so transcripts List cannot parse (e.g. a just-launched
+// session's still-empty JSONL) also suppress the hint.
+func printWorktreeHints(w io.Writer, sessionDir string, pruned []session.Session) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	seen := make(map[string]bool)
+	for _, s := range pruned {
+		name := s.WorktreeName()
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if session.HasTranscripts(filepath.Join(sessionDir, s.Subdir)) {
+			continue // another session, parseable or not, still references it
+		}
+		if _, err := os.Stat(filepath.Join(cwd, ".claude-worktrees", name)); err != nil {
+			continue
+		}
+		fmt.Fprintf(w, "note: worktree .claude-worktrees/%s was left in place; remove it with: git worktree remove .claude-worktrees/%s\n", name, name)
+	}
 }
 
 // newResumeCmd creates the "resume" subcommand.

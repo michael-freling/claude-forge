@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -37,11 +38,12 @@ func GenerateUUID() (string, error) {
 
 // Session represents a claude-forge session.
 type Session struct {
-	ID        string
-	CreatedAt time.Time
-	FirstMsg  string
-	Name      string // human-readable name from the sidecar metadata file
-	Subdir    string // relative subdirectory within session dir (e.g., "-work", "-work-.claude-worktrees-feature")
+	ID         string
+	CreatedAt  time.Time
+	LastActive time.Time // last activity, taken from the transcript file's mtime
+	FirstMsg   string
+	Name       string // human-readable name from the sidecar metadata file
+	Subdir     string // relative subdirectory within session dir (e.g., "-work", "-work--claude-worktrees-feature")
 }
 
 // Metadata is sidecar information about a session, stored next to the JSONL
@@ -145,7 +147,7 @@ func extractContent(raw json.RawMessage) string {
 // sessionDir is the host path like ~/.claude-forge/<project-id>/, which is
 // bind-mounted to /home/user/.claude/projects in the container. Claude Code
 // stores sessions under <encoded-cwd>/<session-id>.jsonl — typically -work/ for
-// the main workspace and -work-.claude-worktrees-<name>/ for each worktree.
+// the main workspace and -work--claude-worktrees-<name>/ for each worktree.
 //
 // To surface all of those in `resume --list`, List walks one level of
 // subdirectories. .jsonl files placed directly under sessionDir are also
@@ -178,6 +180,12 @@ func List(sessionDir string) ([]Session, error) {
 			}
 			sess.Subdir = subdir
 			sess.Name = readMetadata(sessionDir, sessionID).Name
+			// The transcript is appended on every turn, so its mtime is the
+			// session's last activity. Fall back to the parsed start time.
+			sess.LastActive = sess.CreatedAt
+			if info, err := e.Info(); err == nil {
+				sess.LastActive = info.ModTime()
+			}
 			sessions = append(sessions, *sess)
 		}
 	}
@@ -264,10 +272,96 @@ func Delete(sessionDir string, s Session) error {
 	if err := os.Remove(jsonl); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove session transcript: %w", err)
 	}
-	if err := os.Remove(metadataPath(sessionDir, s.ID)); err != nil && !os.IsNotExist(err) {
+	return DeleteSidecar(sessionDir, s.ID)
+}
+
+// DeleteSidecar removes a session's sidecar metadata file, if present. A
+// missing file is not an error.
+func DeleteSidecar(sessionDir, sessionID string) error {
+	if err := os.Remove(metadataPath(sessionDir, sessionID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove session metadata: %w", err)
 	}
 	return nil
+}
+
+// sidecarIDPattern matches the UUID-v4-shaped IDs (8-4-4-4-12 lowercase hex)
+// that WriteMetadata is invoked with. Restricting the orphan sweep to this
+// shape guarantees unrelated .json files are never touched.
+var sidecarIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// OrphanedSidecar identifies a sidecar metadata file with no matching
+// transcript, along with its last modification time so callers can apply an
+// age policy without re-statting the file.
+type OrphanedSidecar struct {
+	ID      string
+	ModTime time.Time
+}
+
+// OrphanedSidecars returns, sorted by ID, the top-level sidecar metadata files
+// ("<id>.json" with a UUID-shaped id) whose transcript ("<id>.jsonl") no longer
+// exists, neither at the top level nor in any first-level subdirectory. The
+// transcript's mere presence keeps a sidecar; it need not be parseable. A
+// missing sessionDir yields no orphans.
+func OrphanedSidecars(sessionDir string) ([]OrphanedSidecar, error) {
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read session directory: %w", err)
+	}
+
+	hasTranscript := make(map[string]bool)
+	for _, e := range entries {
+		if e.IsDir() {
+			subEntries, err := os.ReadDir(filepath.Join(sessionDir, e.Name()))
+			if err != nil {
+				continue
+			}
+			for _, se := range subEntries {
+				if !se.IsDir() && strings.HasSuffix(se.Name(), ".jsonl") {
+					hasTranscript[strings.TrimSuffix(se.Name(), ".jsonl")] = true
+				}
+			}
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".jsonl") {
+			hasTranscript[strings.TrimSuffix(e.Name(), ".jsonl")] = true
+		}
+	}
+
+	var orphans []OrphanedSidecar
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		if !sidecarIDPattern.MatchString(id) || hasTranscript[id] {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue // vanished between ReadDir and Info; nothing to sweep
+		}
+		orphans = append(orphans, OrphanedSidecar{ID: id, ModTime: info.ModTime()})
+	}
+	sort.Slice(orphans, func(i, j int) bool { return orphans[i].ID < orphans[j].ID })
+	return orphans, nil
+}
+
+// HasTranscripts reports whether dir contains any transcript (.jsonl) file,
+// parseable or not. A missing or unreadable dir has none.
+func HasTranscripts(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+			return true
+		}
+	}
+	return false
 }
 
 // Find locates a session by exact ID, or failing that by name, across all
