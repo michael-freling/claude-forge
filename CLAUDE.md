@@ -67,6 +67,9 @@ changed its CLI interface across versions.
 ## Key invariants
 
 - Kubernetes MCP runs without `--read-only` or `--disable-destructive` (RBAC is the safety layer)
+- The k8s MCP kubeconfig references SA tokens via `tokenFile` in a mounted
+  directory; rotating credentials means rewriting the token files (at session
+  start and periodically while attached), never restarting the container
 - MCP servers are only written to `settings.json` when actually running
 - `UpdateMCPServers` replaces the map entirely (no stale entries from prior sessions)
 - The host Docker socket is never mounted into the agent; the agent runs

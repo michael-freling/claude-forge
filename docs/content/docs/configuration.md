@@ -67,6 +67,10 @@ mcp_servers:
 kubernetes:
   enabled: false
   image: ghcr.io/containers/kubernetes-mcp-server:latest
+  # ServiceAccount token lifetime to request (Go duration, default 24h).
+  # Tokens are re-minted at session start and refreshed while sessions run;
+  # the API server may cap the granted lifetime.
+  token_duration: 24h
   default_context: dev
   contexts:
     - host_context: dev

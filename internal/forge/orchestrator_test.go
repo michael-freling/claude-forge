@@ -14,6 +14,7 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/kube"
 	"github.com/michael-freling/claude-forge/internal/forge/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1327,11 +1328,17 @@ func TestStartKubernetesMCP_DefaultContextFallback(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestStartKubernetesMCP_AlreadyRunning(t *testing.T) {
+func TestStartKubernetesMCP_AlreadyRunning_RefreshesTokens(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	mockCM := NewMockContainerManager(ctrl)
 	orch, _ := setupOrchestrator(t, mockCM)
+
+	// A generated kubeconfig with the tokenFile layout already exists, so the
+	// running container is kept and only the tokens are refreshed.
+	kubeconfigDir := filepath.Join(orch.ConfigDir, "k8s-mcp")
+	require.NoError(t, os.MkdirAll(kubeconfigDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(kubeconfigDir, kube.KubeconfigFileName), []byte("apiVersion: v1\nkind: Config\n"), 0o644))
 
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
@@ -1346,8 +1353,98 @@ func TestStartKubernetesMCP_AlreadyRunning(t *testing.T) {
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
 
+	// Token refresh fails (no kubectl in the test environment) but that is
+	// non-fatal for an already-running server.
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	require.NoError(t, err)
+
+	// The refresher is armed so the session keeps tokens fresh while attached.
+	require.NotNil(t, orch.kubeRefresher)
+
+	// With the refresher armed, RunKubeTokenRefresher runs until cancelled.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		orch.RunKubeTokenRefresher(cancelled)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunKubeTokenRefresher did not honor context cancellation")
+	}
+}
+
+func TestStartKubernetesMCP_AlreadyRunning_LegacyLayoutRecreates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	// No tokenFile-layout kubeconfig on disk: the running container still
+	// bind-mounts the legacy single-file kubeconfig with an inline token, so
+	// it must be recreated.
+	cfg := &config.Config{
+		Kubernetes: config.KubernetesConfig{
+			Enabled: true,
+			Image:   "k8s-mcp:latest",
+			Contexts: []config.KubeContextEntry{
+				{HostContext: "ctx-1", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+			},
+		},
+	}
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
+	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil).Times(2)
+
+	// Recreation proceeds to GenerateKubeconfig, which fails without a host
+	// kubeconfig — the recreate path was exercised.
+	err := orch.startKubernetesMCP(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to generate kubeconfig")
+}
+
+func TestStartKubernetesMCP_InvalidTokenDuration(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	cfg := &config.Config{
+		Kubernetes: config.KubernetesConfig{
+			Enabled:       true,
+			Image:         "k8s-mcp:latest",
+			TokenDuration: "not-a-duration",
+			Contexts: []config.KubeContextEntry{
+				{HostContext: "ctx-1", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+			},
+		},
+	}
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
+
+	err := orch.startKubernetesMCP(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "token_duration")
+}
+
+func TestRunKubeTokenRefresher_NoopWithoutKubernetesMCP(t *testing.T) {
+	orch := &Orchestrator{}
+	// Must return immediately when no Kubernetes MCP was started.
+	done := make(chan struct{})
+	go func() {
+		orch.RunKubeTokenRefresher(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunKubeTokenRefresher did not return for a nil refresher")
+	}
 }
 
 func TestStartKubernetesMCP_EnsureNetworkFails(t *testing.T) {

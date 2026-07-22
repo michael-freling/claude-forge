@@ -13,7 +13,9 @@ When you run `claude-forge start`, it:
 5. Starts a **GitHub MCP** sidecar scoped to the current repository
 6. If `kubernetes.enabled` is set, ensures the shared **Kubernetes MCP** server
    is running — a single instance on the `forge-shared` network, reused by
-   every session rather than started per session
+   every session rather than started per session — and re-mints its
+   ServiceAccount tokens, which are then refreshed periodically for as long as
+   the session runs
 7. Starts any custom **container MCP sidecars** from `config.yaml` — on the
    session network (`scope: session`) or the shared network (`scope: global`)
 8. Writes the MCP server list for Claude Code: the built-in `github` server,
