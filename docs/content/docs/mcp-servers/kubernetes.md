@@ -49,3 +49,10 @@ being asleep.
 If your clusters grant long lifetimes and you prefer effectively long-lived
 credentials, set for example `token_duration: 168h`. Either way the
 ServiceAccount's RBAC — not the token lifetime — remains the safety boundary.
+
+On a multi-user host, note the on-disk trade-off: the MCP container runs as a
+non-host uid, so token files must be world-readable (0644) inside
+execute-only (0711) directories. Their names are salted with a 0600
+`.token-salt` file, so other local users cannot list or derive them — but
+anyone who obtains a token path (or root) can read a live, RBAC-scoped
+cluster credential from `~/.config/claude-forge/k8s-mcp/tokens/`.

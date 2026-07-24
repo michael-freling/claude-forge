@@ -434,6 +434,64 @@ func TestResolveToken_KubectlFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "kubectl create token failed")
 }
 
+// fakeKubectl puts a kubectl shell script on PATH for the test. The script
+// body sees the kubectl arguments as "$@".
+func fakeKubectl(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestResolveToken_DurationRejectedFallsBack(t *testing.T) {
+	// A server that rejects over-maximum --duration requests: the fallback
+	// without --duration must return its token, not the rejection error.
+	fakeKubectl(t, `for arg in "$@"; do
+  if [ "$arg" = "--duration" ]; then echo "duration rejected" >&2; exit 1; fi
+done
+echo fallback-token`)
+
+	token, err := resolveToken(ContextConfig{
+		HostContext:             "ctx",
+		ServiceAccountName:      "sa",
+		ServiceAccountNamespace: "ns",
+	}, "unused", time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, "fallback-token", token)
+}
+
+func TestResolveToken_FallbackFailureReportsOriginalError(t *testing.T) {
+	// When both attempts fail server-side, the first error names the real
+	// problem and must be the one reported.
+	fakeKubectl(t, `for arg in "$@"; do
+  if [ "$arg" = "--duration" ]; then echo "original failure detail" >&2; exit 1; fi
+done
+echo "second failure" >&2; exit 1`)
+
+	_, err := resolveToken(ContextConfig{
+		HostContext:             "ctx",
+		ServiceAccountName:      "sa",
+		ServiceAccountNamespace: "ns",
+	}, "unused", time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "original failure detail")
+	assert.NotContains(t, err.Error(), "second failure")
+}
+
+func TestResolveToken_NoDurationSkipsFallback(t *testing.T) {
+	// Without a requested duration there is exactly one attempt.
+	fakeKubectl(t, `echo plain-token`)
+
+	token, err := resolveToken(ContextConfig{
+		HostContext:             "ctx",
+		ServiceAccountName:      "sa",
+		ServiceAccountNamespace: "ns",
+	}, "unused", 0)
+	require.NoError(t, err)
+	assert.Equal(t, "plain-token", token)
+}
+
 func TestListContexts(t *testing.T) {
 	t.Run("returns context names", func(t *testing.T) {
 		tmpDir := t.TempDir()

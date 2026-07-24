@@ -954,6 +954,11 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 	// so we can create a fresh one with the same name.
 	_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
 
+	// The container is down, so rebuild the tokens dir from scratch: contexts
+	// removed from the config would otherwise leave their token files behind
+	// forever (same no-stale-entries rule as UpdateMCPServers).
+	_ = os.RemoveAll(filepath.Join(kubeconfigDir, kube.TokensDirName))
+
 	if err := kube.GenerateKubeconfig(contexts, homeKubeconfig, defaultCtx, kubeconfigDir, tokenDuration); err != nil {
 		return fmt.Errorf("failed to generate kubeconfig: %w", err)
 	}
