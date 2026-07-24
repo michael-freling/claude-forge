@@ -6,9 +6,9 @@ import (
 )
 
 // DefaultTokenRefreshInterval is how often a running session re-mints SA
-// tokens. It must stay comfortably below the smallest token lifetime an API
-// server will grant (1h on most clusters) so a single missed refresh never
-// leaves the MCP server with expired credentials.
+// tokens. Run caps the effective interval at half the requested token
+// lifetime, so even a token_duration near the 10m TokenRequest minimum is
+// refreshed before it can expire.
 const DefaultTokenRefreshInterval = 15 * time.Minute
 
 // TokenRefresher periodically re-mints the SA tokens used by the shared
@@ -31,6 +31,9 @@ func (r *TokenRefresher) Run(ctx context.Context) {
 	interval := r.Interval
 	if interval <= 0 {
 		interval = DefaultTokenRefreshInterval
+	}
+	if r.TokenDuration > 0 && r.TokenDuration/2 < interval {
+		interval = r.TokenDuration / 2
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

@@ -53,6 +53,32 @@ func TestTokenRefresher_RefreshesUntilCancelled(t *testing.T) {
 	assert.Contains(t, string(data), "token-")
 }
 
+func TestTokenRefresher_IntervalCappedByTokenDuration(t *testing.T) {
+	var calls atomic.Int32
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+		calls.Add(1)
+		return "token", nil
+	})
+
+	// A long explicit Interval must be capped to half the token lifetime —
+	// otherwise a short-lived token would expire between ticks.
+	r := &TokenRefresher{
+		Contexts: []ContextConfig{
+			{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+		},
+		KubeconfigPath: "unused",
+		OutputDir:      filepath.Join(t.TempDir(), "out"),
+		TokenDuration:  10 * time.Millisecond,
+		Interval:       time.Hour,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	require.Eventually(t, func() bool { return calls.Load() >= 2 }, 5*time.Second, time.Millisecond)
+}
+
 func TestTokenRefresher_LogsAndKeepsGoingOnError(t *testing.T) {
 	var calls atomic.Int32
 	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {

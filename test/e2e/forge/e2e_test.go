@@ -403,15 +403,17 @@ func TestKubernetesMCPServer_Starts(t *testing.T) {
 }
 
 // writeKubeDirLayout writes the generated-kubeconfig directory layout the
-// orchestrator mounts into the k8s-mcp container (config + tokens/<file>),
-// with the world-readable permissions the non-root container user needs.
+// orchestrator mounts into the k8s-mcp container (config + tokens/<file>):
+// execute-only 0711 directories (the non-root container user opens exact
+// paths, other host users cannot list the tokens) and 0644 files.
 // Returns the directory and the host path of the token file.
 func writeKubeDirLayout(t *testing.T, token string) (kubeDir, tokenPath string) {
 	t.Helper()
 
 	kubeDir = filepath.Join(t.TempDir(), "k8s-mcp")
 	tokensDir := filepath.Join(kubeDir, kube.TokensDirName)
-	require.NoError(t, os.MkdirAll(tokensDir, 0o755))
+	require.NoError(t, os.MkdirAll(tokensDir, 0o711))
+	require.NoError(t, os.Chmod(kubeDir, 0o711))
 
 	tokenFile := kube.TokenFileName("dummy")
 	kubeconfig := `apiVersion: v1

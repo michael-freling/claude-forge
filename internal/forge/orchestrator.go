@@ -922,6 +922,22 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 		running = false
 	}
 
+	// The server reads its kubeconfig only at startup, so context changes in
+	// config.yaml require a recreate: the old kubeconfig would keep
+	// referencing token files that are no longer refreshed.
+	if running {
+		upToDate, err := kube.KubeconfigUpToDate(contexts, homeKubeconfig, defaultCtx, kubeconfigDir)
+		switch {
+		case err != nil:
+			o.Log("Warning: could not compare Kubernetes MCP kubeconfig: %v", err)
+		case !upToDate:
+			o.Log("Recreating Kubernetes MCP: context configuration changed")
+			_ = o.Containers.StopContainer(ctx, k8sMCPName)
+			_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
+			running = false
+		}
+	}
+
 	if running {
 		// Non-fatal: the running server's current tokens may still be valid,
 		// and the in-session refresher will retry.
@@ -943,7 +959,7 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 	}
 	// Drop the pre-tokenFile-layout kubeconfig so the mounted directory only
 	// carries current credentials.
-	_ = os.Remove(filepath.Join(kubeconfigDir, "kubeconfig"))
+	_ = os.Remove(filepath.Join(kubeconfigDir, legacyKubeconfigFile))
 
 	cmd := kube.MCPServerArgs()
 
@@ -975,12 +991,24 @@ func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Confi
 	return nil
 }
 
-// hasTokenFileLayout reports whether the generated-kubeconfig directory uses
-// the tokenFile-based layout the container's directory mount expects, as
-// opposed to the legacy single-file layout with an inline token.
+// legacyKubeconfigFile is the single-file kubeconfig (inline token) written
+// by binaries that predate the tokenFile layout.
+const legacyKubeconfigFile = "kubeconfig"
+
+// hasTokenFileLayout reports whether the running container was created with
+// the tokenFile-based directory mount, as opposed to the legacy single-file
+// mount with an inline token. Legacy binaries rewrite their single-file
+// kubeconfig whenever they create the container (and this binary removes it
+// after every create), so its presence means an old binary created the
+// running container even if the new layout also exists on disk.
 func hasTokenFileLayout(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, kube.KubeconfigFileName))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(dir, kube.KubeconfigFileName)); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, legacyKubeconfigFile)); err == nil {
+		return false
+	}
+	return true
 }
 
 func (o *Orchestrator) setKubeRefresher(contexts []kube.ContextConfig, kubeconfigPath, outputDir string, tokenDuration time.Duration) {
@@ -998,11 +1026,21 @@ func (o *Orchestrator) setKubeRefresher(contexts []kube.ContextConfig, kubeconfi
 // expire after ~1h on most clusters while sessions can stay open for days, so
 // the CLI keeps them fresh for as long as it is attached. No-op when the
 // Kubernetes MCP was not started by this process.
-func (o *Orchestrator) RunKubeTokenRefresher(ctx context.Context) {
+//
+// quiet suppresses failure warnings: during an interactive session stdout
+// belongs to the attached Claude Code TUI, and a background printf would
+// corrupt it. Failed refreshes are retried on the next tick either way.
+func (o *Orchestrator) RunKubeTokenRefresher(ctx context.Context, quiet bool) {
 	if o.kubeRefresher == nil {
 		return
 	}
-	o.kubeRefresher.Run(ctx)
+	r := o.kubeRefresher
+	if quiet {
+		rc := *r
+		rc.Log = nil
+		r = &rc
+	}
+	r.Run(ctx)
 }
 
 // RestartSharedMCP stops all shared MCP containers and starts them again.

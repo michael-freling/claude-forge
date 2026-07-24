@@ -120,12 +120,13 @@ func TestGenerateKubeconfig_Success(t *testing.T) {
 		assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 	}
 
-	// The container user is not necessarily the host user: the mounted
-	// directory tree must be world-readable.
+	// The container user is not necessarily the host user: it needs traversal
+	// into the mounted directories (x), but other host users must not be able
+	// to list the token files (no r).
 	for _, p := range []string{outDir, filepath.Join(outDir, TokensDirName)} {
 		info, err := os.Stat(p)
 		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(), p)
+		assert.Equal(t, os.FileMode(0o711), info.Mode().Perm(), p)
 	}
 	info, err := os.Stat(filepath.Join(outDir, KubeconfigFileName))
 	require.NoError(t, err)
@@ -153,7 +154,7 @@ func TestGenerateKubeconfig_OverwritesRestrictivePermissions(t *testing.T) {
 
 	info, err := os.Stat(outDir)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(), "dir permissions should be widened to 0755")
+	assert.Equal(t, os.FileMode(0o711), info.Mode().Perm(), "dir permissions should be widened to 0711 for container traversal")
 
 	info, err = os.Stat(filepath.Join(outDir, KubeconfigFileName))
 	require.NoError(t, err)
@@ -324,8 +325,59 @@ func TestTokenFileName(t *testing.T) {
 	for range 20 {
 		long += "0123456789"
 	}
-	assert.LessOrEqual(t, len(TokenFileName(long)), 64+1+8)
+	assert.LessOrEqual(t, len(TokenFileName(long)), 64+1+16)
 	assert.NotEqual(t, TokenFileName(long), TokenFileName(long+"x"))
+}
+
+func TestKubeconfigUpToDate(t *testing.T) {
+	stubResolveToken(t, staticToken)
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outDir := filepath.Join(tmpDir, "out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+	}
+	require.NoError(t, GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour))
+
+	t.Run("true when nothing changed", func(t *testing.T) {
+		upToDate, err := KubeconfigUpToDate(contexts, srcPath, "ctx-a", outDir)
+		require.NoError(t, err)
+		assert.True(t, upToDate)
+	})
+
+	t.Run("false when contexts changed", func(t *testing.T) {
+		changed := append(contexts, ContextConfig{HostContext: "ctx-b", ServiceAccountName: "sa-b", ServiceAccountNamespace: "ns-b"})
+		upToDate, err := KubeconfigUpToDate(changed, srcPath, "ctx-a", outDir)
+		require.NoError(t, err)
+		assert.False(t, upToDate)
+	})
+
+	t.Run("false when default context changed", func(t *testing.T) {
+		upToDate, err := KubeconfigUpToDate(contexts, srcPath, "ctx-b", outDir)
+		require.NoError(t, err)
+		assert.False(t, upToDate)
+	})
+
+	t.Run("error when no generated kubeconfig exists", func(t *testing.T) {
+		_, err := KubeconfigUpToDate(contexts, srcPath, "ctx-a", filepath.Join(tmpDir, "missing"))
+		assert.Error(t, err)
+	})
+}
+
+func TestResolveToken_KubectlFailure(t *testing.T) {
+	// Exercise the real resolveToken: with no cluster (and possibly no
+	// kubectl), both the --duration attempt and the fallback must fail with a
+	// wrapped error rather than returning a bogus token.
+	_, err := resolveToken(ContextConfig{
+		HostContext:             "nope",
+		ServiceAccountName:      "sa",
+		ServiceAccountNamespace: "ns",
+	}, filepath.Join(t.TempDir(), "missing-kubeconfig"), time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kubectl create token failed")
 }
 
 func TestListContexts(t *testing.T) {

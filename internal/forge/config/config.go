@@ -349,8 +349,12 @@ func Load(configDir string) (*Config, error) {
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
 		return nil, err
 	}
-	if _, err := cfg.Kubernetes.TokenDurationValue(); err != nil {
-		return nil, err
+	// Only validated when the integration is on: a leftover bad value in a
+	// disabled section must not break unrelated commands.
+	if cfg.Kubernetes.Enabled {
+		if _, err := cfg.Kubernetes.TokenDurationValue(); err != nil {
+			return nil, err
+		}
 	}
 
 	return cfg, nil

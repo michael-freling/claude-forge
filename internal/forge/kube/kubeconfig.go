@@ -1,7 +1,9 @@
 package kube
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -69,14 +71,53 @@ type userInfo struct {
 // token files (see RefreshTokens) rotates credentials inside the running
 // container without a restart.
 func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext, outputDir string, tokenDuration time.Duration) error {
+	outData, err := buildKubeconfig(contexts, kubeconfigPath, defaultContext)
+	if err != nil {
+		return err
+	}
+
+	if err := ensureDir(outputDir); err != nil {
+		return fmt.Errorf("failed to create kubeconfig dir: %w", err)
+	}
+
+	if err := RefreshTokens(contexts, kubeconfigPath, outputDir, tokenDuration); err != nil {
+		return err
+	}
+
+	if err := writeFileAtomic(filepath.Join(outputDir, KubeconfigFileName), outData, 0o644); err != nil {
+		return fmt.Errorf("failed to write generated kubeconfig: %w", err)
+	}
+	return nil
+}
+
+// KubeconfigUpToDate reports whether the generated kubeconfig in outputDir
+// matches what the given contexts would generate. The k8s-mcp server only
+// reads its kubeconfig at startup, so a mismatch means the running container
+// must be recreated for context changes to take effect.
+func KubeconfigUpToDate(contexts []ContextConfig, kubeconfigPath, defaultContext, outputDir string) (bool, error) {
+	desired, err := buildKubeconfig(contexts, kubeconfigPath, defaultContext)
+	if err != nil {
+		return false, err
+	}
+	current, err := os.ReadFile(filepath.Join(outputDir, KubeconfigFileName))
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(desired, current), nil
+}
+
+// buildKubeconfig renders the self-contained kubeconfig for the given
+// contexts without touching the filesystem beyond reading the source
+// kubeconfig. Marshalling is deterministic, so the output is byte-comparable.
+func buildKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext string) ([]byte, error) {
 	data, err := os.ReadFile(kubeconfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to read kubeconfig %s: %w", kubeconfigPath, err)
+		return nil, fmt.Errorf("failed to read kubeconfig %s: %w", kubeconfigPath, err)
 	}
 
 	var srcConfig kubeConfig
 	if err := yaml.Unmarshal(data, &srcConfig); err != nil {
-		return fmt.Errorf("failed to parse kubeconfig: %w", err)
+		return nil, fmt.Errorf("failed to parse kubeconfig: %w", err)
 	}
 
 	clusterByContext := make(map[string]namedCluster)
@@ -98,7 +139,7 @@ func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext
 	for _, ctx := range contexts {
 		cl, ok := clusterByContext[ctx.HostContext]
 		if !ok {
-			return fmt.Errorf("context %q not found in kubeconfig or its cluster is missing", ctx.HostContext)
+			return nil, fmt.Errorf("context %q not found in kubeconfig or its cluster is missing", ctx.HostContext)
 		}
 
 		userName := ctx.HostContext + "-sa"
@@ -124,28 +165,11 @@ func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext
 		})
 	}
 
-	// The directory (not just the kubeconfig) is bind-mounted, and the
-	// container's user is not necessarily the host user, so everything under
-	// it must be world-readable.
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create kubeconfig dir: %w", err)
-	}
-	if err := os.Chmod(outputDir, 0o755); err != nil {
-		return fmt.Errorf("failed to set kubeconfig dir permissions: %w", err)
-	}
-
-	if err := RefreshTokens(contexts, kubeconfigPath, outputDir, tokenDuration); err != nil {
-		return err
-	}
-
 	outData, err := yaml.Marshal(&out)
 	if err != nil {
-		return fmt.Errorf("failed to marshal generated kubeconfig: %w", err)
+		return nil, fmt.Errorf("failed to marshal generated kubeconfig: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(outputDir, KubeconfigFileName), outData, 0o644); err != nil {
-		return fmt.Errorf("failed to write generated kubeconfig: %w", err)
-	}
-	return nil
+	return outData, nil
 }
 
 // RefreshTokens re-mints the SA tokens referenced by the generated kubeconfig
@@ -156,11 +180,8 @@ func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext
 // its own expiry, so rotation never races in-flight requests.
 func RefreshTokens(contexts []ContextConfig, kubeconfigPath, outputDir string, tokenDuration time.Duration) error {
 	tokensDir := filepath.Join(outputDir, TokensDirName)
-	if err := os.MkdirAll(tokensDir, 0o755); err != nil {
+	if err := ensureDir(tokensDir); err != nil {
 		return fmt.Errorf("failed to create tokens dir: %w", err)
-	}
-	if err := os.Chmod(tokensDir, 0o755); err != nil {
-		return fmt.Errorf("failed to set tokens dir permissions: %w", err)
 	}
 	for _, ctx := range contexts {
 		token, err := resolveToken(ctx, kubeconfigPath, tokenDuration)
@@ -178,7 +199,8 @@ func RefreshTokens(contexts []ContextConfig, kubeconfigPath, outputDir string, t
 // TokenFileName returns a stable, filesystem-safe file name for a context's
 // token. Context names may contain characters that are invalid in file names
 // (EKS ARN contexts contain "/" and ":"), so unsafe runes are replaced and a
-// short hash keeps distinct contexts from colliding.
+// hash of the full name keeps distinct contexts from colliding even when
+// their sanitized prefixes match.
 func TokenFileName(hostContext string) string {
 	sum := sha256.Sum256([]byte(hostContext))
 	safe := strings.Map(func(r rune) rune {
@@ -193,7 +215,19 @@ func TokenFileName(hostContext string) string {
 	if len(safe) > 64 {
 		safe = safe[:64]
 	}
-	return fmt.Sprintf("%s-%x", safe, sum[:4])
+	return fmt.Sprintf("%s-%x", safe, sum[:8])
+}
+
+// ensureDir creates dir if needed and forces 0711 permissions even on a
+// pre-existing directory (MkdirAll does not chmod those). The k8s-mcp
+// container runs as a non-host uid and opens only exact paths from the
+// kubeconfig, so it needs traversal (x) but not listing; withholding the
+// read bit keeps other host users from listing the minted token files.
+func ensureDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o711); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o711)
 }
 
 // writeFileAtomic writes data via temp-file-plus-rename so concurrent
@@ -238,10 +272,11 @@ func ListContexts(kubeconfigPath string) ([]string, error) {
 	return names, nil
 }
 
-// resolveToken calls `kubectl create token` to mint an SA token. The API
-// server caps the duration at its configured maximum (managed clusters
-// commonly cap at 24-48h), so longer requests degrade gracefully to the
-// cluster's cap rather than failing.
+// resolveToken calls `kubectl create token` to mint an SA token. Most API
+// servers cap the requested duration at their configured maximum (managed
+// clusters commonly cap at 24-48h); for servers that reject over-maximum
+// requests instead, it retries without --duration so a long token_duration
+// degrades to the server-default lifetime rather than disabling the MCP.
 var resolveToken = func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
 	args := []string{
 		"create", "token",
@@ -251,10 +286,21 @@ var resolveToken = func(ctx ContextConfig, kubeconfigPath string, duration time.
 		"--kubeconfig", kubeconfigPath,
 	}
 	if duration > 0 {
-		args = append(args, "--duration", duration.String())
+		token, err := kubectlCreateToken(append(args, "--duration", duration.String()))
+		if err == nil {
+			return token, nil
+		}
 	}
+	return kubectlCreateToken(args)
+}
+
+func kubectlCreateToken(args []string) (string, error) {
 	out, err := exec.Command("kubectl", args...).Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("kubectl create token failed: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return "", fmt.Errorf("kubectl create token failed: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil

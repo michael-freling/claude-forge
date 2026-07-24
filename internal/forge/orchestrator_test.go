@@ -1361,19 +1361,114 @@ func TestStartKubernetesMCP_AlreadyRunning_RefreshesTokens(t *testing.T) {
 	// The refresher is armed so the session keeps tokens fresh while attached.
 	require.NotNil(t, orch.kubeRefresher)
 
-	// With the refresher armed, RunKubeTokenRefresher runs until cancelled.
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	done := make(chan struct{})
-	go func() {
-		orch.RunKubeTokenRefresher(cancelled)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("RunKubeTokenRefresher did not honor context cancellation")
+	// With the refresher armed, RunKubeTokenRefresher runs until cancelled —
+	// including in quiet mode, which must not mutate the stored refresher.
+	for _, quiet := range []bool{false, true} {
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		done := make(chan struct{})
+		go func() {
+			orch.RunKubeTokenRefresher(cancelled, quiet)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("RunKubeTokenRefresher did not honor context cancellation")
+		}
 	}
+	assert.NotNil(t, orch.kubeRefresher.Log, "quiet mode must not clear the stored refresher's logger")
+}
+
+func TestStartKubernetesMCP_AlreadyRunning_ContextChangeRecreates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	// Host kubeconfig with two contexts.
+	kubeDir := filepath.Join(homeDir, ".kube")
+	require.NoError(t, os.MkdirAll(kubeDir, 0o755))
+	hostKubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+- name: my-cluster
+  cluster:
+    server: https://k8s.example.com:6443
+contexts:
+- name: my-cluster
+  context:
+    cluster: my-cluster
+    user: admin
+users:
+- name: admin
+  user:
+    token: admin-token
+current-context: my-cluster
+`
+	require.NoError(t, os.WriteFile(filepath.Join(kubeDir, "config"), []byte(hostKubeconfig), 0o644))
+
+	// The generated kubeconfig on disk does not match the current contexts.
+	kubeconfigDir := filepath.Join(orch.ConfigDir, "k8s-mcp")
+	require.NoError(t, os.MkdirAll(kubeconfigDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(kubeconfigDir, kube.KubeconfigFileName), []byte("apiVersion: v1\nkind: Config\ncurrent-context: old-ctx\n"), 0o644))
+
+	cfg := &config.Config{
+		Kubernetes: config.KubernetesConfig{
+			Enabled: true,
+			Image:   "k8s-mcp:latest",
+			Contexts: []config.KubeContextEntry{
+				{HostContext: "my-cluster", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+			},
+		},
+	}
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
+	// Context change: the running container is recreated, then the create
+	// path removes any stale container again.
+	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil).Times(2)
+
+	// Recreation reaches GenerateKubeconfig, which fails minting (no kubectl)
+	// — the recreate-on-context-change path was exercised.
+	err := orch.startKubernetesMCP(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to generate kubeconfig")
+}
+
+func TestStartKubernetesMCP_AlreadyRunning_LegacyFilePresentRecreates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	// Both layouts on disk: a legacy binary ran after the new layout was
+	// written (downgrade/upgrade), so the running container mounts the legacy
+	// single file and must be recreated.
+	kubeconfigDir := filepath.Join(orch.ConfigDir, "k8s-mcp")
+	require.NoError(t, os.MkdirAll(kubeconfigDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(kubeconfigDir, kube.KubeconfigFileName), []byte("apiVersion: v1\nkind: Config\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(kubeconfigDir, "kubeconfig"), []byte("legacy"), 0o644))
+
+	cfg := &config.Config{
+		Kubernetes: config.KubernetesConfig{
+			Enabled: true,
+			Image:   "k8s-mcp:latest",
+			Contexts: []config.KubeContextEntry{
+				{HostContext: "ctx-1", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+			},
+		},
+	}
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
+	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil).Times(2)
+
+	err := orch.startKubernetesMCP(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to generate kubeconfig")
 }
 
 func TestStartKubernetesMCP_AlreadyRunning_LegacyLayoutRecreates(t *testing.T) {
@@ -1437,7 +1532,7 @@ func TestRunKubeTokenRefresher_NoopWithoutKubernetesMCP(t *testing.T) {
 	// Must return immediately when no Kubernetes MCP was started.
 	done := make(chan struct{})
 	go func() {
-		orch.RunKubeTokenRefresher(context.Background())
+		orch.RunKubeTokenRefresher(context.Background(), false)
 		close(done)
 	}()
 	select {

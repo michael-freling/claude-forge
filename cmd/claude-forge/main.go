@@ -127,10 +127,11 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 
 	// The Kubernetes MCP server's SA tokens expire after ~1h on most clusters
 	// while a session can stay open for days; keep re-minting them for as
-	// long as this process is attached to the session.
+	// long as this process is attached to the session. Quiet in interactive
+	// mode: stdout belongs to the attached TTY there.
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	defer stopRefresh()
-	go orch.RunKubeTokenRefresher(refreshCtx)
+	go orch.RunKubeTokenRefresher(refreshCtx, interactive)
 
 	if interactive {
 		// Attach to the agent container's TTY using docker attach.

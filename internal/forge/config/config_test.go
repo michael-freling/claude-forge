@@ -63,9 +63,10 @@ func TestLoad_KubernetesTokenDuration(t *testing.T) {
 		assert.Equal(t, 48*time.Hour, d)
 	})
 
-	t.Run("invalid value fails at load", func(t *testing.T) {
+	t.Run("invalid value fails at load when enabled", func(t *testing.T) {
 		dir := t.TempDir()
 		configYAML := `kubernetes:
+  enabled: true
   token_duration: nope
 `
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
@@ -73,6 +74,18 @@ func TestLoad_KubernetesTokenDuration(t *testing.T) {
 		_, err := Load(dir)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "token_duration")
+	})
+
+	t.Run("invalid value is ignored when kubernetes is disabled", func(t *testing.T) {
+		dir := t.TempDir()
+		configYAML := `kubernetes:
+  enabled: false
+  token_duration: nope
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
+
+		_, err := Load(dir)
+		require.NoError(t, err, "a bad value in a disabled section must not break unrelated commands")
 	})
 }
 
