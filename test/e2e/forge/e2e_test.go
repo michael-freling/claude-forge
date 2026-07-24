@@ -415,7 +415,7 @@ func writeKubeDirLayout(t *testing.T, token string) (kubeDir, tokenPath string) 
 	require.NoError(t, os.MkdirAll(tokensDir, 0o711))
 	require.NoError(t, os.Chmod(kubeDir, 0o711))
 
-	tokenFile := kube.TokenFileName("dummy")
+	tokenFile := kube.TokenFileName("dummy", "e2e-salt")
 	kubeconfig := `apiVersion: v1
 kind: Config
 clusters:

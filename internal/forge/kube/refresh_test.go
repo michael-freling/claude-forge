@@ -48,7 +48,7 @@ func TestTokenRefresher_RefreshesUntilCancelled(t *testing.T) {
 		t.Fatal("refresher did not stop after cancellation")
 	}
 
-	data, err := os.ReadFile(filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a")))
+	data, err := os.ReadFile(filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a", readSalt(t, outDir))))
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "token-")
 }

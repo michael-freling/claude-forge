@@ -101,16 +101,17 @@ func TestGenerateKubeconfig_Success(t *testing.T) {
 	assert.Equal(t, "ctx-b-sa", out.Contexts[1].Context.User)
 
 	// Users reference container-side token files instead of embedding tokens.
+	salt := readSalt(t, outDir)
 	require.Len(t, out.Users, 2)
 	assert.Equal(t, "ctx-a-sa", out.Users[0].Name)
-	assert.Equal(t, MCPServerKubeDir+"/"+TokensDirName+"/"+TokenFileName("ctx-a"), out.Users[0].User.TokenFile)
+	assert.Equal(t, MCPServerKubeDir+"/"+TokensDirName+"/"+TokenFileName("ctx-a", salt), out.Users[0].User.TokenFile)
 	assert.Equal(t, "ctx-b-sa", out.Users[1].Name)
-	assert.Equal(t, MCPServerKubeDir+"/"+TokensDirName+"/"+TokenFileName("ctx-b"), out.Users[1].User.TokenFile)
+	assert.Equal(t, MCPServerKubeDir+"/"+TokensDirName+"/"+TokenFileName("ctx-b", salt), out.Users[1].User.TokenFile)
 	assert.NotContains(t, string(data), "sa-token-", "tokens must not be embedded in the kubeconfig")
 
 	// Token files hold the minted tokens.
 	for _, name := range []string{"ctx-a", "ctx-b"} {
-		tokenPath := filepath.Join(outDir, TokensDirName, TokenFileName(name))
+		tokenPath := filepath.Join(outDir, TokensDirName, TokenFileName(name, salt))
 		token, err := os.ReadFile(tokenPath)
 		require.NoError(t, err)
 		assert.Equal(t, "sa-token-"+name, string(token))
@@ -272,7 +273,7 @@ func TestRefreshTokens_RewritesTokenFiles(t *testing.T) {
 	}
 	require.NoError(t, GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour))
 
-	tokenPath := filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a"))
+	tokenPath := filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a", readSalt(t, outDir)))
 	data, err := os.ReadFile(tokenPath)
 	require.NoError(t, err)
 	assert.Equal(t, "first", string(data))
@@ -309,24 +310,77 @@ func TestRefreshTokens_ResolveTokenError(t *testing.T) {
 }
 
 func TestTokenFileName(t *testing.T) {
+	const salt = "test-salt"
+
 	// Unsafe runes (EKS ARN-style contexts) are replaced.
-	name := TokenFileName("arn:aws:eks:us-east-1:123:cluster/prod")
+	name := TokenFileName("arn:aws:eks:us-east-1:123:cluster/prod", salt)
 	assert.NotContains(t, name, "/")
 	assert.NotContains(t, name, ":")
 
 	// Distinct contexts that sanitize identically still get distinct names.
-	assert.NotEqual(t, TokenFileName("ctx/a"), TokenFileName("ctx:a"))
+	assert.NotEqual(t, TokenFileName("ctx/a", salt), TokenFileName("ctx:a", salt))
 
-	// Stable across calls.
-	assert.Equal(t, TokenFileName("ctx-a"), TokenFileName("ctx-a"))
+	// Stable across calls with the same salt, underivable without it.
+	assert.Equal(t, TokenFileName("ctx-a", salt), TokenFileName("ctx-a", salt))
+	assert.NotEqual(t, TokenFileName("ctx-a", salt), TokenFileName("ctx-a", "other-salt"))
 
 	// Very long context names are truncated but stay unique via the hash.
 	long := ""
 	for range 20 {
 		long += "0123456789"
 	}
-	assert.LessOrEqual(t, len(TokenFileName(long)), 64+1+16)
-	assert.NotEqual(t, TokenFileName(long), TokenFileName(long+"x"))
+	assert.LessOrEqual(t, len(TokenFileName(long, salt)), 64+1+16)
+	assert.NotEqual(t, TokenFileName(long, salt), TokenFileName(long+"x", salt))
+}
+
+// readSalt returns the token salt GenerateKubeconfig/RefreshTokens created in
+// outDir.
+func readSalt(t *testing.T, outDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(outDir, saltFileName))
+	require.NoError(t, err)
+	return string(data)
+}
+
+func TestTokenSalt(t *testing.T) {
+	dir := t.TempDir()
+
+	salt, err := tokenSalt(dir)
+	require.NoError(t, err)
+	assert.NotEmpty(t, salt)
+
+	// Stable across calls: token file names must not change between the
+	// process that generated the kubeconfig and later refreshers.
+	again, err := tokenSalt(dir)
+	require.NoError(t, err)
+	assert.Equal(t, salt, again)
+
+	// Different installs get different salts.
+	other, err := tokenSalt(t.TempDir())
+	require.NoError(t, err)
+	assert.NotEqual(t, salt, other)
+
+	// Owner-only: other host users must not be able to read the salt, or
+	// they could derive token file paths through the 0711 dirs.
+	info, err := os.Stat(filepath.Join(dir, saltFileName))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	t.Run("errors when the dir does not exist", func(t *testing.T) {
+		_, err := tokenSalt(filepath.Join(t.TempDir(), "missing"))
+		assert.Error(t, err)
+	})
+
+	t.Run("errors on an empty salt file instead of using it", func(t *testing.T) {
+		dir := t.TempDir()
+		// An empty file skips the fast-path read (a zero-length salt would
+		// silently weaken every token file name) and makes the exclusive
+		// link fail, exercising the lost-the-race branch.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, saltFileName), nil, 0o600))
+		_, err := tokenSalt(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "token salt")
+	})
 }
 
 func TestKubeconfigUpToDate(t *testing.T) {
