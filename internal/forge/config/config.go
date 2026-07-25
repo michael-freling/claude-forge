@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -34,6 +35,17 @@ const (
 	// DefaultMCPPath is the HTTP path a container MCP sidecar is reached at when
 	// the server config does not specify one.
 	DefaultMCPPath = "/mcp"
+
+	// DefaultKubeTokenDuration is the SA token lifetime requested for the
+	// Kubernetes MCP server when kubernetes.token_duration is unset. API
+	// servers cap it at their own maximum (often 1h, 24h on EKS, 48h on GKE);
+	// requesting long and letting the server cap covers refresh gaps such as
+	// the host sleeping between refresh ticks.
+	DefaultKubeTokenDuration = 24 * time.Hour
+
+	// MinKubeTokenDuration is the smallest expiration the TokenRequest API
+	// accepts.
+	MinKubeTokenDuration = 10 * time.Minute
 )
 
 // Config holds the claude-forge configuration.
@@ -256,6 +268,28 @@ type KubernetesConfig struct {
 	Image          string             `yaml:"image"`
 	Contexts       []KubeContextEntry `yaml:"contexts"`
 	DefaultContext string             `yaml:"default_context"`
+	// TokenDuration is the SA token lifetime to request, as a Go duration
+	// string (e.g. "1h", "168h"). Defaults to DefaultKubeTokenDuration; the
+	// API server may cap the granted lifetime at its own maximum. Tokens are
+	// re-minted at session start and refreshed while sessions run, so this
+	// only needs to cover gaps between refreshes.
+	TokenDuration string `yaml:"token_duration,omitempty"`
+}
+
+// TokenDurationValue returns the parsed token_duration, or the default when
+// unset.
+func (k KubernetesConfig) TokenDurationValue() (time.Duration, error) {
+	if k.TokenDuration == "" {
+		return DefaultKubeTokenDuration, nil
+	}
+	d, err := time.ParseDuration(k.TokenDuration)
+	if err != nil {
+		return 0, fmt.Errorf("invalid kubernetes.token_duration %q: %w", k.TokenDuration, err)
+	}
+	if d < MinKubeTokenDuration {
+		return 0, fmt.Errorf("kubernetes.token_duration %q is below the %s minimum the Kubernetes TokenRequest API accepts", k.TokenDuration, MinKubeTokenDuration)
+	}
+	return d, nil
 }
 
 // KubeContextEntry configures a single Kubernetes context to expose to the agent.
@@ -314,6 +348,13 @@ func Load(configDir string) (*Config, error) {
 
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
 		return nil, err
+	}
+	// Only validated when the integration is on: a leftover bad value in a
+	// disabled section must not break unrelated commands.
+	if cfg.Kubernetes.Enabled {
+		if _, err := cfg.Kubernetes.TokenDurationValue(); err != nil {
+			return nil, err
+		}
 	}
 
 	return cfg, nil

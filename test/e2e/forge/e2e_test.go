@@ -357,10 +357,65 @@ func TestKubernetesMCPServer_Starts(t *testing.T) {
 	out, err := pullCmd.CombinedOutput()
 	require.NoError(t, err, "failed to pull k8s-mcp image: %s", out)
 
-	// Create a minimal kubeconfig (no real cluster needed — the server starts
-	// regardless and serves MCP tooling; k8s calls would fail but startup won't)
-	tmpDir := t.TempDir()
-	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
+	// Create a minimal kubeconfig directory in the layout the orchestrator
+	// generates: a kubeconfig referencing per-context token files, all mounted
+	// as one directory (no real cluster needed — the server starts regardless
+	// and serves MCP tooling; k8s calls would fail but startup won't).
+	kubeDir, tokenPath := writeKubeDirLayout(t, "dummy-token")
+
+	containerName := "forge-e2e-k8s-mcp-test"
+
+	// Clean up any previous run
+	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	})
+
+	runArgs := []string{
+		"run", "-d",
+		"--name", containerName,
+		"-v", kubeDir + ":" + kube.MCPServerKubeDir + ":ro",
+		image,
+	}
+	runArgs = append(runArgs, kube.MCPServerArgs()...)
+	runCmd := exec.CommandContext(ctx, "docker", runArgs...)
+	out, err = runCmd.CombinedOutput()
+	require.NoError(t, err, "failed to start k8s-mcp container: %s", out)
+
+	// Wait for the container to be running (not immediately exited).
+	// waitForRunning includes a 1s stabilization delay to catch immediate crashes.
+	waitForRunning(t, ctx, containerName, 15*time.Second)
+
+	// Rotate the token host-side the way RefreshTokens does (atomic rename)
+	// and verify the running container sees the new content through the
+	// read-only directory mount — the mechanism that keeps long sessions
+	// authenticated without restarting the server.
+	tmpToken := filepath.Join(filepath.Dir(tokenPath), ".tmp-rotate")
+	require.NoError(t, os.WriteFile(tmpToken, []byte("rotated-token"), 0o644))
+	require.NoError(t, os.Rename(tmpToken, tokenPath))
+
+	containerTokenPath := kube.MCPServerKubeDir + "/" + kube.TokensDirName + "/" + filepath.Base(tokenPath)
+	catCmd := exec.CommandContext(ctx, "docker", "exec", containerName, "/bin/cat", containerTokenPath)
+	catOut, err := catCmd.CombinedOutput()
+	require.NoError(t, err, "failed to read token inside container: %s", catOut)
+	require.Equal(t, "rotated-token", strings.TrimSpace(string(catOut)),
+		"container must see host-side token rotation without a restart")
+}
+
+// writeKubeDirLayout writes the generated-kubeconfig directory layout the
+// orchestrator mounts into the k8s-mcp container (config + tokens/<file>):
+// execute-only 0711 directories (the non-root container user opens exact
+// paths, other host users cannot list the tokens) and 0644 files.
+// Returns the directory and the host path of the token file.
+func writeKubeDirLayout(t *testing.T, token string) (kubeDir, tokenPath string) {
+	t.Helper()
+
+	kubeDir = filepath.Join(t.TempDir(), "k8s-mcp")
+	tokensDir := filepath.Join(kubeDir, kube.TokensDirName)
+	require.NoError(t, os.MkdirAll(tokensDir, 0o711))
+	require.NoError(t, os.Chmod(kubeDir, 0o711))
+
+	tokenFile := kube.TokenFileName("dummy", "e2e-salt")
 	kubeconfig := `apiVersion: v1
 kind: Config
 clusters:
@@ -375,33 +430,14 @@ contexts:
 users:
   - name: dummy
     user:
-      token: dummy-token
+      tokenFile: ` + kube.MCPServerKubeDir + "/" + kube.TokensDirName + "/" + tokenFile + `
 current-context: dummy
 `
-	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(kubeDir, kube.KubeconfigFileName), []byte(kubeconfig), 0o644))
 
-	containerName := "forge-e2e-k8s-mcp-test"
-
-	// Clean up any previous run
-	_ = exec.Command("docker", "rm", "-f", containerName).Run()
-	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-f", containerName).Run()
-	})
-
-	runArgs := []string{
-		"run", "-d",
-		"--name", containerName,
-		"-v", kubeconfigPath + ":" + kube.MCPServerKubeconfigPath + ":ro",
-		image,
-	}
-	runArgs = append(runArgs, kube.MCPServerArgs()...)
-	runCmd := exec.CommandContext(ctx, "docker", runArgs...)
-	out, err = runCmd.CombinedOutput()
-	require.NoError(t, err, "failed to start k8s-mcp container: %s", out)
-
-	// Wait for the container to be running (not immediately exited).
-	// waitForRunning includes a 1s stabilization delay to catch immediate crashes.
-	waitForRunning(t, ctx, containerName, 15*time.Second)
+	tokenPath = filepath.Join(tokensDir, tokenFile)
+	require.NoError(t, os.WriteFile(tokenPath, []byte(token), 0o644))
+	return kubeDir, tokenPath
 }
 
 // TestAgentDockerInDocker verifies the agent image's Docker-in-Docker support:
@@ -525,27 +561,9 @@ func TestKubernetesMCPServer_AgentConnectivity(t *testing.T) {
 		_ = exec.Command("docker", "network", "rm", sessionNet).Run()
 	})
 
-	// Create kubeconfig with 0644 (testing the permission fix)
-	tmpDir := t.TempDir()
-	kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
-	kubeconfig := `apiVersion: v1
-kind: Config
-clusters:
-  - name: dummy
-    cluster:
-      server: https://localhost:6443
-contexts:
-  - name: dummy
-    context:
-      cluster: dummy
-      user: dummy
-users:
-  - name: dummy
-    user:
-      token: dummy-token
-current-context: dummy
-`
-	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644))
+	// Create the kubeconfig directory layout with world-readable permissions
+	// (the container runs as a non-root user that differs from the host user)
+	kubeDir, _ := writeKubeDirLayout(t, "dummy-token")
 
 	// Start k8s MCP on the shared network with alias "k8s-mcp"
 	k8sName := "forge-e2e-k8s-mcp-conn"
@@ -559,7 +577,7 @@ current-context: dummy
 		"--name", k8sName,
 		"--network", sharedNet,
 		"--network-alias", "k8s-mcp",
-		"-v", kubeconfigPath + ":" + kube.MCPServerKubeconfigPath + ":ro",
+		"-v", kubeDir + ":" + kube.MCPServerKubeDir + ":ro",
 		k8sImage,
 	}
 	k8sArgs = append(k8sArgs, kube.MCPServerArgs()...)

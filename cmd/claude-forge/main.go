@@ -125,6 +125,14 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 		return err
 	}
 
+	// The Kubernetes MCP server's SA tokens expire after ~1h on most clusters
+	// while a session can stay open for days; keep re-minting them for as
+	// long as this process is attached to the session. Quiet in interactive
+	// mode: stdout belongs to the attached TTY there.
+	refreshCtx, stopRefresh := context.WithCancel(ctx)
+	defer stopRefresh()
+	go orch.RunKubeTokenRefresher(refreshCtx, interactive)
+
 	if interactive {
 		// Attach to the agent container's TTY using docker attach.
 		fmt.Println("Claude Code is ready. Attaching to session...")
@@ -284,8 +292,10 @@ docker:
 #     path: /mcp
 
 # Kubernetes MCP server integration.
-# When enabled, a shared MCP server container gives agents read-only
-# access to your clusters via short-lived ServiceAccount tokens.
+# When enabled, a shared MCP server container gives agents access to your
+# clusters via ServiceAccount tokens that claude-forge mints at session start
+# and keeps refreshing while sessions run. token_duration sets the requested
+# token lifetime (default 24h; the API server may cap it lower).
 #
 # Prerequisites:
 #   1. Create RBAC resources:  claude-forge kube render --context <ctx> | kubectl apply -f -
@@ -303,6 +313,7 @@ docker:
 # kubernetes:
 #   enabled: true
 #   image: ` + forgeconfig.DefaultKubernetesMCPImage + `
+#   token_duration: 24h
 #   default_context: my-cluster
 #   contexts:
 #     - host_context: my-cluster
@@ -315,6 +326,7 @@ docker:
 	b.WriteString("# kubernetes:\n")
 	b.WriteString("#   enabled: true\n")
 	b.WriteString("#   image: " + forgeconfig.DefaultKubernetesMCPImage + "\n")
+	b.WriteString("#   token_duration: 24h\n")
 	b.WriteString("#   default_context: " + contexts[0] + "\n")
 	b.WriteString("#   contexts:\n")
 	for _, ctx := range contexts {

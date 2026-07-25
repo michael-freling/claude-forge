@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,16 +45,24 @@ users:
 `
 }
 
+// stubResolveToken replaces resolveToken for the duration of the test.
+func stubResolveToken(t *testing.T, fn func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error)) {
+	t.Helper()
+	orig := resolveToken
+	resolveToken = fn
+	t.Cleanup(func() { resolveToken = orig })
+}
+
+func staticToken(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+	return "sa-token-" + ctx.HostContext, nil
+}
+
 func TestGenerateKubeconfig_Success(t *testing.T) {
-	origResolveToken := resolveToken
-	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
-		return "sa-token-" + ctx.HostContext, nil
-	}
-	t.Cleanup(func() { resolveToken = origResolveToken })
+	stubResolveToken(t, staticToken)
 
 	tmpDir := t.TempDir()
 	srcPath := filepath.Join(tmpDir, "kubeconfig")
-	outPath := filepath.Join(tmpDir, "kubeconfig-out")
+	outDir := filepath.Join(tmpDir, "out")
 	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
 
 	contexts := []ContextConfig{
@@ -61,10 +70,10 @@ func TestGenerateKubeconfig_Success(t *testing.T) {
 		{HostContext: "ctx-b", ServiceAccountName: "sa-b", ServiceAccountNamespace: "ns-b"},
 	}
 
-	err := GenerateKubeconfig(contexts, srcPath, "ctx-a", outPath)
+	err := GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(outPath)
+	data, err := os.ReadFile(filepath.Join(outDir, KubeconfigFileName))
 	require.NoError(t, err)
 
 	var out kubeConfig
@@ -91,120 +100,123 @@ func TestGenerateKubeconfig_Success(t *testing.T) {
 	assert.Equal(t, "ctx-b", out.Contexts[1].Context.Cluster)
 	assert.Equal(t, "ctx-b-sa", out.Contexts[1].Context.User)
 
-	// Users
+	// Users reference container-side token files instead of embedding tokens.
+	salt := readSalt(t, outDir)
 	require.Len(t, out.Users, 2)
 	assert.Equal(t, "ctx-a-sa", out.Users[0].Name)
-	assert.Equal(t, "sa-token-ctx-a", out.Users[0].User.Token)
+	assert.Equal(t, MCPServerKubeDir+"/"+TokensDirName+"/"+TokenFileName("ctx-a", salt), out.Users[0].User.TokenFile)
 	assert.Equal(t, "ctx-b-sa", out.Users[1].Name)
-	assert.Equal(t, "sa-token-ctx-b", out.Users[1].User.Token)
+	assert.Equal(t, MCPServerKubeDir+"/"+TokensDirName+"/"+TokenFileName("ctx-b", salt), out.Users[1].User.TokenFile)
+	assert.NotContains(t, string(data), "sa-token-", "tokens must not be embedded in the kubeconfig")
 
-	// Verify file permissions
-	info, err := os.Stat(outPath)
+	// Token files hold the minted tokens.
+	for _, name := range []string{"ctx-a", "ctx-b"} {
+		tokenPath := filepath.Join(outDir, TokensDirName, TokenFileName(name, salt))
+		token, err := os.ReadFile(tokenPath)
+		require.NoError(t, err)
+		assert.Equal(t, "sa-token-"+name, string(token))
+
+		info, err := os.Stat(tokenPath)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+	}
+
+	// The container user is not necessarily the host user: it needs traversal
+	// into the mounted directories (x), but other host users must not be able
+	// to list the token files (no r).
+	for _, p := range []string{outDir, filepath.Join(outDir, TokensDirName)} {
+		info, err := os.Stat(p)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o711), info.Mode().Perm(), p)
+	}
+	info, err := os.Stat(filepath.Join(outDir, KubeconfigFileName))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 }
 
 func TestGenerateKubeconfig_OverwritesRestrictivePermissions(t *testing.T) {
-	origResolveToken := resolveToken
-	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
-		return "sa-token-" + ctx.HostContext, nil
-	}
-	t.Cleanup(func() { resolveToken = origResolveToken })
+	stubResolveToken(t, staticToken)
 
 	tmpDir := t.TempDir()
 	srcPath := filepath.Join(tmpDir, "kubeconfig")
-	outPath := filepath.Join(tmpDir, "kubeconfig-out")
+	outDir := filepath.Join(tmpDir, "out")
 	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
 
-	// Pre-create the output file with restrictive 0600 permissions, simulating
-	// a file left over from a prior run.
-	require.NoError(t, os.WriteFile(outPath, []byte("old-content"), 0o600))
-	info, err := os.Stat(outPath)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "precondition: file should start with 0600")
+	// Pre-create the output dir with restrictive 0700 permissions, simulating
+	// a directory left over from a prior version.
+	require.NoError(t, os.MkdirAll(outDir, 0o700))
 
 	contexts := []ContextConfig{
 		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
 	}
 
-	err = GenerateKubeconfig(contexts, srcPath, "ctx-a", outPath)
+	err := GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour)
 	require.NoError(t, err)
 
-	// Verify permissions were updated to 0644 despite the pre-existing 0600 file.
-	info, err = os.Stat(outPath)
+	info, err := os.Stat(outDir)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(), "permissions should be 0644 after regeneration")
+	assert.Equal(t, os.FileMode(0o711), info.Mode().Perm(), "dir permissions should be widened to 0711 for container traversal")
+
+	info, err = os.Stat(filepath.Join(outDir, KubeconfigFileName))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 }
 
 func TestGenerateKubeconfig_KubeconfigNotFound(t *testing.T) {
-	origResolveToken := resolveToken
-	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
-		return "unused", nil
-	}
-	t.Cleanup(func() { resolveToken = origResolveToken })
+	stubResolveToken(t, staticToken)
 
 	tmpDir := t.TempDir()
 	missingPath := filepath.Join(tmpDir, "does-not-exist")
-	outPath := filepath.Join(tmpDir, "kubeconfig-out")
+	outDir := filepath.Join(tmpDir, "out")
 
-	err := GenerateKubeconfig([]ContextConfig{{HostContext: "ctx-a"}}, missingPath, "ctx-a", outPath)
+	err := GenerateKubeconfig([]ContextConfig{{HostContext: "ctx-a"}}, missingPath, "ctx-a", outDir, time.Hour)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to read kubeconfig")
 }
 
 func TestGenerateKubeconfig_ContextNotFound(t *testing.T) {
-	origResolveToken := resolveToken
-	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
-		return "token", nil
-	}
-	t.Cleanup(func() { resolveToken = origResolveToken })
+	stubResolveToken(t, staticToken)
 
 	tmpDir := t.TempDir()
 	srcPath := filepath.Join(tmpDir, "kubeconfig")
-	outPath := filepath.Join(tmpDir, "kubeconfig-out")
+	outDir := filepath.Join(tmpDir, "out")
 	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
 
 	contexts := []ContextConfig{
 		{HostContext: "ctx-nonexistent", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
 	}
 
-	err := GenerateKubeconfig(contexts, srcPath, "ctx-nonexistent", outPath)
+	err := GenerateKubeconfig(contexts, srcPath, "ctx-nonexistent", outDir, time.Hour)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context \"ctx-nonexistent\" not found in kubeconfig")
 }
 
 func TestGenerateKubeconfig_ResolveTokenError(t *testing.T) {
-	origResolveToken := resolveToken
-	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
 		return "", fmt.Errorf("kubectl not available")
-	}
-	t.Cleanup(func() { resolveToken = origResolveToken })
+	})
 
 	tmpDir := t.TempDir()
 	srcPath := filepath.Join(tmpDir, "kubeconfig")
-	outPath := filepath.Join(tmpDir, "kubeconfig-out")
+	outDir := filepath.Join(tmpDir, "out")
 	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
 
 	contexts := []ContextConfig{
 		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
 	}
 
-	err := GenerateKubeconfig(contexts, srcPath, "ctx-a", outPath)
+	err := GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to resolve token for context \"ctx-a\"")
 	assert.Contains(t, err.Error(), "kubectl not available")
 }
 
 func TestGenerateKubeconfig_CurrentContext(t *testing.T) {
-	origResolveToken := resolveToken
-	resolveToken = func(ctx ContextConfig, kubeconfigPath string) (string, error) {
-		return "token", nil
-	}
-	t.Cleanup(func() { resolveToken = origResolveToken })
+	stubResolveToken(t, staticToken)
 
 	tmpDir := t.TempDir()
 	srcPath := filepath.Join(tmpDir, "kubeconfig")
-	outPath := filepath.Join(tmpDir, "kubeconfig-out")
+	outDir := filepath.Join(tmpDir, "out")
 	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
 
 	contexts := []ContextConfig{
@@ -213,16 +225,388 @@ func TestGenerateKubeconfig_CurrentContext(t *testing.T) {
 	}
 
 	// Set defaultContext to ctx-b (not ctx-a which is current in source)
-	err := GenerateKubeconfig(contexts, srcPath, "ctx-b", outPath)
+	err := GenerateKubeconfig(contexts, srcPath, "ctx-b", outDir, time.Hour)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(outPath)
+	data, err := os.ReadFile(filepath.Join(outDir, KubeconfigFileName))
 	require.NoError(t, err)
 
 	var out kubeConfig
 	require.NoError(t, yaml.Unmarshal(data, &out))
 
 	assert.Equal(t, "ctx-b", out.CurrentContext)
+}
+
+func TestGenerateKubeconfig_PassesTokenDuration(t *testing.T) {
+	var gotDuration time.Duration
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+		gotDuration = duration
+		return "token", nil
+	})
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outDir := filepath.Join(tmpDir, "out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+	}
+
+	require.NoError(t, GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, 24*time.Hour))
+	assert.Equal(t, 24*time.Hour, gotDuration)
+}
+
+func TestRefreshTokens_RewritesTokenFiles(t *testing.T) {
+	token := "first"
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+		return token, nil
+	})
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outDir := filepath.Join(tmpDir, "out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+	}
+	require.NoError(t, GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour))
+
+	tokenPath := filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a", readSalt(t, outDir)))
+	data, err := os.ReadFile(tokenPath)
+	require.NoError(t, err)
+	assert.Equal(t, "first", string(data))
+
+	kubeconfigBefore, err := os.ReadFile(filepath.Join(outDir, KubeconfigFileName))
+	require.NoError(t, err)
+
+	token = "second"
+	require.NoError(t, RefreshTokens(contexts, srcPath, outDir, time.Hour))
+
+	data, err = os.ReadFile(tokenPath)
+	require.NoError(t, err)
+	assert.Equal(t, "second", string(data))
+
+	// Refresh only rotates token files; the kubeconfig stays untouched.
+	kubeconfigAfter, err := os.ReadFile(filepath.Join(outDir, KubeconfigFileName))
+	require.NoError(t, err)
+	assert.Equal(t, string(kubeconfigBefore), string(kubeconfigAfter))
+}
+
+func TestRefreshTokens_ResolveTokenError(t *testing.T) {
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+		return "", fmt.Errorf("boom")
+	})
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+	}
+
+	err := RefreshTokens(contexts, "unused", outDir, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to resolve token for context \"ctx-a\"")
+}
+
+func TestRefreshTokens_ContinuesPastFailingContext(t *testing.T) {
+	// One broken context must not starve refresh for the healthy contexts
+	// that share the MCP server.
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+		if ctx.HostContext == "broken" {
+			return "", fmt.Errorf("cluster unreachable")
+		}
+		return "token-" + ctx.HostContext, nil
+	})
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	require.NoError(t, ensureDir(outDir))
+	contexts := []ContextConfig{
+		{HostContext: "broken", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+		{HostContext: "healthy-a", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+		{HostContext: "healthy-b", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+	}
+
+	err := RefreshTokens(contexts, "unused", outDir, time.Hour)
+	// The broken context is reported...
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to resolve token for context \"broken\"")
+
+	// ...but the healthy contexts were still refreshed.
+	salt := readSalt(t, outDir)
+	for _, name := range []string{"healthy-a", "healthy-b"} {
+		data, err := os.ReadFile(filepath.Join(outDir, TokensDirName, TokenFileName(name, salt)))
+		require.NoError(t, err, "healthy context %q must be refreshed despite a broken sibling", name)
+		assert.Equal(t, "token-"+name, string(data))
+	}
+	// The broken context has no token file.
+	_, err = os.Stat(filepath.Join(outDir, TokensDirName, TokenFileName("broken", salt)))
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestGenerateKubeconfig_WritesKubeconfigDespiteTokenFailure(t *testing.T) {
+	// A token mint failure must not prevent the kubeconfig from being written:
+	// healthy contexts still work and the refresher retries the rest.
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+		if ctx.HostContext == "ctx-b" {
+			return "", fmt.Errorf("cluster unreachable")
+		}
+		return "token-" + ctx.HostContext, nil
+	})
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outDir := filepath.Join(tmpDir, "out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+		{HostContext: "ctx-b", ServiceAccountName: "sa-b", ServiceAccountNamespace: "ns-b"},
+	}
+
+	err := GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour)
+
+	// The error is a TokenMintError (non-fatal), not a hard failure.
+	require.Error(t, err)
+	var mintErr *TokenMintError
+	require.ErrorAs(t, err, &mintErr)
+	assert.Contains(t, err.Error(), "ctx-b")
+
+	// The kubeconfig was still written, and the healthy context has a token.
+	_, statErr := os.Stat(filepath.Join(outDir, KubeconfigFileName))
+	require.NoError(t, statErr)
+	salt := readSalt(t, outDir)
+	data, readErr := os.ReadFile(filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a", salt)))
+	require.NoError(t, readErr)
+	assert.Equal(t, "token-ctx-a", string(data))
+}
+
+func TestRefreshTokens_PrunesRemovedContexts(t *testing.T) {
+	stubResolveToken(t, staticToken)
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outDir := filepath.Join(tmpDir, "out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	both := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+		{HostContext: "ctx-b", ServiceAccountName: "sa-b", ServiceAccountNamespace: "ns-b"},
+	}
+	require.NoError(t, GenerateKubeconfig(both, srcPath, "ctx-a", outDir, time.Hour))
+	salt := readSalt(t, outDir)
+	bTokenPath := filepath.Join(outDir, TokensDirName, TokenFileName("ctx-b", salt))
+	_, err := os.Stat(bTokenPath)
+	require.NoError(t, err, "precondition: ctx-b token exists")
+
+	// Refresh with ctx-b removed: its token file must be pruned.
+	require.NoError(t, RefreshTokens(both[:1], srcPath, outDir, time.Hour))
+
+	_, err = os.Stat(bTokenPath)
+	assert.True(t, os.IsNotExist(err), "removed context's token file should be pruned")
+	_, err = os.Stat(filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a", salt)))
+	assert.NoError(t, err, "remaining context's token file is kept")
+}
+
+func TestKubectlCreateToken_Timeout(t *testing.T) {
+	// A kubectl that hangs must not block indefinitely; the bounded timeout
+	// turns it into an error rather than a stuck session start. `exec` so the
+	// sleep replaces the shell and the context kill terminates it directly
+	// (as it would the real kubectl), instead of leaving a child holding the
+	// stdout pipe open.
+	fakeKubectl(t, `exec sleep 5`)
+	orig := kubectlTokenTimeout
+	kubectlTokenTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { kubectlTokenTimeout = orig })
+
+	start := time.Now()
+	_, err := kubectlCreateToken([]string{"create", "token", "sa"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Less(t, time.Since(start), 3*time.Second, "should return promptly on timeout, not wait for kubectl")
+}
+
+func TestTokenFileName(t *testing.T) {
+	const salt = "test-salt"
+
+	// Unsafe runes (EKS ARN-style contexts) are replaced.
+	name := TokenFileName("arn:aws:eks:us-east-1:123:cluster/prod", salt)
+	assert.NotContains(t, name, "/")
+	assert.NotContains(t, name, ":")
+
+	// Distinct contexts that sanitize identically still get distinct names.
+	assert.NotEqual(t, TokenFileName("ctx/a", salt), TokenFileName("ctx:a", salt))
+
+	// Stable across calls with the same salt, underivable without it.
+	assert.Equal(t, TokenFileName("ctx-a", salt), TokenFileName("ctx-a", salt))
+	assert.NotEqual(t, TokenFileName("ctx-a", salt), TokenFileName("ctx-a", "other-salt"))
+
+	// Very long context names are truncated but stay unique via the hash.
+	long := ""
+	for range 20 {
+		long += "0123456789"
+	}
+	assert.LessOrEqual(t, len(TokenFileName(long, salt)), 64+1+16)
+	assert.NotEqual(t, TokenFileName(long, salt), TokenFileName(long+"x", salt))
+}
+
+// readSalt returns the token salt GenerateKubeconfig/RefreshTokens created in
+// outDir.
+func readSalt(t *testing.T, outDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(outDir, saltFileName))
+	require.NoError(t, err)
+	return string(data)
+}
+
+func TestTokenSalt(t *testing.T) {
+	dir := t.TempDir()
+
+	salt, err := tokenSalt(dir)
+	require.NoError(t, err)
+	assert.NotEmpty(t, salt)
+
+	// Stable across calls: token file names must not change between the
+	// process that generated the kubeconfig and later refreshers.
+	again, err := tokenSalt(dir)
+	require.NoError(t, err)
+	assert.Equal(t, salt, again)
+
+	// Different installs get different salts.
+	other, err := tokenSalt(t.TempDir())
+	require.NoError(t, err)
+	assert.NotEqual(t, salt, other)
+
+	// Owner-only: other host users must not be able to read the salt, or
+	// they could derive token file paths through the 0711 dirs.
+	info, err := os.Stat(filepath.Join(dir, saltFileName))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	t.Run("errors when the dir does not exist", func(t *testing.T) {
+		_, err := tokenSalt(filepath.Join(t.TempDir(), "missing"))
+		assert.Error(t, err)
+	})
+
+	t.Run("errors on an empty salt file instead of using it", func(t *testing.T) {
+		dir := t.TempDir()
+		// An empty file skips the fast-path read (a zero-length salt would
+		// silently weaken every token file name) and makes the exclusive
+		// link fail, exercising the lost-the-race branch.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, saltFileName), nil, 0o600))
+		_, err := tokenSalt(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "token salt")
+	})
+}
+
+func TestKubeconfigUpToDate(t *testing.T) {
+	stubResolveToken(t, staticToken)
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outDir := filepath.Join(tmpDir, "out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+	}
+	require.NoError(t, GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour))
+
+	t.Run("true when nothing changed", func(t *testing.T) {
+		upToDate, err := KubeconfigUpToDate(contexts, srcPath, "ctx-a", outDir)
+		require.NoError(t, err)
+		assert.True(t, upToDate)
+	})
+
+	t.Run("false when contexts changed", func(t *testing.T) {
+		changed := append(contexts, ContextConfig{HostContext: "ctx-b", ServiceAccountName: "sa-b", ServiceAccountNamespace: "ns-b"})
+		upToDate, err := KubeconfigUpToDate(changed, srcPath, "ctx-a", outDir)
+		require.NoError(t, err)
+		assert.False(t, upToDate)
+	})
+
+	t.Run("false when default context changed", func(t *testing.T) {
+		upToDate, err := KubeconfigUpToDate(contexts, srcPath, "ctx-b", outDir)
+		require.NoError(t, err)
+		assert.False(t, upToDate)
+	})
+
+	t.Run("error when no generated kubeconfig exists", func(t *testing.T) {
+		_, err := KubeconfigUpToDate(contexts, srcPath, "ctx-a", filepath.Join(tmpDir, "missing"))
+		assert.Error(t, err)
+	})
+}
+
+func TestResolveToken_KubectlFailure(t *testing.T) {
+	// Exercise the real resolveToken: with no cluster (and possibly no
+	// kubectl), both the --duration attempt and the fallback must fail with a
+	// wrapped error rather than returning a bogus token.
+	_, err := resolveToken(ContextConfig{
+		HostContext:             "nope",
+		ServiceAccountName:      "sa",
+		ServiceAccountNamespace: "ns",
+	}, filepath.Join(t.TempDir(), "missing-kubeconfig"), time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kubectl create token failed")
+}
+
+// fakeKubectl puts a kubectl shell script on PATH for the test. The script
+// body sees the kubectl arguments as "$@".
+func fakeKubectl(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestResolveToken_DurationRejectedFallsBack(t *testing.T) {
+	// A server that rejects over-maximum --duration requests: the fallback
+	// without --duration must return its token, not the rejection error.
+	fakeKubectl(t, `for arg in "$@"; do
+  if [ "$arg" = "--duration" ]; then echo "duration rejected" >&2; exit 1; fi
+done
+echo fallback-token`)
+
+	token, err := resolveToken(ContextConfig{
+		HostContext:             "ctx",
+		ServiceAccountName:      "sa",
+		ServiceAccountNamespace: "ns",
+	}, "unused", time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, "fallback-token", token)
+}
+
+func TestResolveToken_FallbackFailureReportsOriginalError(t *testing.T) {
+	// When both attempts fail server-side, the first error names the real
+	// problem and must be the one reported.
+	fakeKubectl(t, `for arg in "$@"; do
+  if [ "$arg" = "--duration" ]; then echo "original failure detail" >&2; exit 1; fi
+done
+echo "second failure" >&2; exit 1`)
+
+	_, err := resolveToken(ContextConfig{
+		HostContext:             "ctx",
+		ServiceAccountName:      "sa",
+		ServiceAccountNamespace: "ns",
+	}, "unused", time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "original failure detail")
+	assert.NotContains(t, err.Error(), "second failure")
+}
+
+func TestResolveToken_NoDurationSkipsFallback(t *testing.T) {
+	// Without a requested duration there is exactly one attempt.
+	fakeKubectl(t, `echo plain-token`)
+
+	token, err := resolveToken(ContextConfig{
+		HostContext:             "ctx",
+		ServiceAccountName:      "sa",
+		ServiceAccountNamespace: "ns",
+	}, "unused", 0)
+	require.NoError(t, err)
+	assert.Equal(t, "plain-token", token)
 }
 
 func TestListContexts(t *testing.T) {

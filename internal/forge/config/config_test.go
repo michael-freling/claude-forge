@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,75 @@ func TestDefaultConfig(t *testing.T) {
 	assert.False(t, cfg.Defaults.SkipPermissions)
 	assert.False(t, cfg.Defaults.Worktree)
 	assert.False(t, cfg.Docker.Enabled)
+}
+
+func TestKubernetesConfig_TokenDurationValue(t *testing.T) {
+	t.Run("defaults when unset", func(t *testing.T) {
+		d, err := KubernetesConfig{}.TokenDurationValue()
+		require.NoError(t, err)
+		assert.Equal(t, DefaultKubeTokenDuration, d)
+	})
+
+	t.Run("parses a valid duration", func(t *testing.T) {
+		d, err := KubernetesConfig{TokenDuration: "1h"}.TokenDurationValue()
+		require.NoError(t, err)
+		assert.Equal(t, time.Hour, d)
+	})
+
+	t.Run("rejects an unparseable duration", func(t *testing.T) {
+		_, err := KubernetesConfig{TokenDuration: "one hour"}.TokenDurationValue()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid kubernetes.token_duration")
+	})
+
+	t.Run("rejects durations below the TokenRequest minimum", func(t *testing.T) {
+		_, err := KubernetesConfig{TokenDuration: "5m"}.TokenDurationValue()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "minimum")
+	})
+}
+
+func TestLoad_KubernetesTokenDuration(t *testing.T) {
+	t.Run("valid value is kept", func(t *testing.T) {
+		dir := t.TempDir()
+		configYAML := `kubernetes:
+  enabled: true
+  token_duration: 48h
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
+
+		cfg, err := Load(dir)
+		require.NoError(t, err)
+		assert.Equal(t, "48h", cfg.Kubernetes.TokenDuration)
+		d, err := cfg.Kubernetes.TokenDurationValue()
+		require.NoError(t, err)
+		assert.Equal(t, 48*time.Hour, d)
+	})
+
+	t.Run("invalid value fails at load when enabled", func(t *testing.T) {
+		dir := t.TempDir()
+		configYAML := `kubernetes:
+  enabled: true
+  token_duration: nope
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
+
+		_, err := Load(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "token_duration")
+	})
+
+	t.Run("invalid value is ignored when kubernetes is disabled", func(t *testing.T) {
+		dir := t.TempDir()
+		configYAML := `kubernetes:
+  enabled: false
+  token_duration: nope
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
+
+		_, err := Load(dir)
+		require.NoError(t, err, "a bad value in a disabled section must not break unrelated commands")
+	})
 }
 
 func TestLoad_DockerEnabled(t *testing.T) {
