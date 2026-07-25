@@ -149,6 +149,27 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to create plugins directory: %w", err)
 	}
 
+	// Create todos and tasks directories (persist Claude Code's TodoWrite
+	// state across sessions in its old and new on-disk layouts; surfaced on
+	// the host by `claude-forge todos`)
+	todosDir := session.TodosDir(sessionDir)
+	if err := os.MkdirAll(todosDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create todos directory: %w", err)
+	}
+	tasksDir := session.TasksDir(sessionDir)
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create tasks directory: %w", err)
+	}
+
+	// Ensure the per-project shared backlog file exists so it can be
+	// bind-mounted (Docker would otherwise create a directory in its place).
+	// It belongs to the project, persists across sessions (never pruned with
+	// them), and is editable from the host via `claude-forge todos`.
+	backlogFile := session.BacklogPath(sessionDir)
+	if err := session.EnsureBacklog(sessionDir); err != nil {
+		return nil, err
+	}
+
 	// Write/update gitconfig
 	gitUserName := project.GitConfig("user.name")
 	gitUserEmail := project.GitConfig("user.email")
@@ -363,6 +384,11 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		// "no write permission to npm prefix".
 		"DISABLE_AUTOUPDATER": "1",
 	}
+	// Expose the session name so the in-container agent can tag shared-backlog
+	// items it adds with the session they came from (see the backlog header).
+	if opts.Name != "" {
+		agentEnv["FORGE_SESSION_NAME"] = opts.Name
+	}
 	switch creds.AuthType {
 	case "api_key":
 		agentEnv["ANTHROPIC_API_KEY"] = creds.Token
@@ -445,6 +471,9 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		ConfigDir:          o.ConfigDir,
 		HomeDir:            o.HomeDir,
 		PluginsDir:         pluginsDir,
+		TodosDir:           todosDir,
+		TasksDir:           tasksDir,
+		BacklogFile:        backlogFile,
 		Env:                agentEnv,
 		Privileged:         cfg.Docker.Enabled,
 		EnableDocker:       cfg.Docker.Enabled,

@@ -75,6 +75,12 @@ func TestStart_Success(t *testing.T) {
 			assert.Equal(t, "sk-ant-test-key-123", opts.Env["ANTHROPIC_API_KEY"])
 			assert.Equal(t, "1", opts.Env["DISABLE_AUTOUPDATER"])
 			assert.Contains(t, opts.Cmd, "--dangerously-skip-permissions")
+			assert.Equal(t, filepath.Join(opts.SessionDir, "todos"), opts.TodosDir)
+			assert.DirExists(t, opts.TodosDir, "orchestrator should create the todos dir before starting the agent")
+			assert.Equal(t, filepath.Join(opts.SessionDir, "tasks"), opts.TasksDir)
+			assert.DirExists(t, opts.TasksDir, "orchestrator should create the tasks dir before starting the agent")
+			assert.Equal(t, filepath.Join(opts.SessionDir, "TODO.md"), opts.BacklogFile)
+			assert.FileExists(t, opts.BacklogFile, "orchestrator should create the backlog file before starting the agent")
 			return "agent-id", nil
 		})
 
@@ -536,6 +542,8 @@ func TestStart_WithName_PinsSessionIDAndWritesSidecar(t *testing.T) {
 			assert.Contains(t, opts.Cmd, "claude")
 			assert.NotContains(t, opts.Cmd, "--resume")
 			assert.NotContains(t, opts.Cmd, "--continue")
+			// The session name is exposed to the agent so it can tag backlog items.
+			assert.Equal(t, "claude", opts.Env["FORGE_SESSION_NAME"])
 			// Capture the value following --session-id.
 			for i, a := range opts.Cmd {
 				if a == "--session-id" && i+1 < len(opts.Cmd) {

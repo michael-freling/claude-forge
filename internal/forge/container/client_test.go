@@ -268,6 +268,9 @@ func TestStartAgent_Mounts(t *testing.T) {
 	claudeDir := filepath.Join(homeDir, ".claude")
 	configDir := filepath.Join(homeDir, ".config", "claude-forge")
 	sessionDir := filepath.Join(homeDir, ".claude-forge", "project-id")
+	todosDir := filepath.Join(sessionDir, "todos")
+	tasksDir := filepath.Join(sessionDir, "tasks")
+	backlogFile := filepath.Join(sessionDir, "TODO.md")
 	projectDir := filepath.Join(homeDir, "project")
 
 	for _, dir := range []string{
@@ -277,6 +280,8 @@ func TestStartAgent_Mounts(t *testing.T) {
 		filepath.Join(claudeDir, "skills"),
 		configDir,
 		sessionDir,
+		todosDir,
+		tasksDir,
 		projectDir,
 	} {
 		require.NoError(t, os.MkdirAll(dir, 0o755))
@@ -298,6 +303,9 @@ func TestStartAgent_Mounts(t *testing.T) {
 		NetworkName: "forge_net",
 		ProjectDir:  projectDir,
 		SessionDir:  sessionDir,
+		TodosDir:    todosDir,
+		TasksDir:    tasksDir,
+		BacklogFile: backlogFile,
 		ClaudeDir:   claudeDir,
 		ConfigDir:   configDir,
 		HomeDir:     homeDir,
@@ -325,6 +333,19 @@ func TestStartAgent_Mounts(t *testing.T) {
 			// writes under -work/ and -work-.claude-worktrees-*/ both reach the host.
 			assert.Equal(t, sessionDir, mountsByTarget["/home/user/.claude/projects"],
 				"session dir mount missing or pointed at wrong source")
+
+			// Todos/tasks dirs mount at ~/.claude/{todos,tasks} so TodoWrite
+			// state persists across sessions (in either on-disk layout) and is
+			// readable by `claude-forge todos`.
+			assert.Equal(t, todosDir, mountsByTarget["/home/user/.claude/todos"],
+				"todos dir mount missing or pointed at wrong source")
+			assert.Equal(t, tasksDir, mountsByTarget["/home/user/.claude/tasks"],
+				"tasks dir mount missing or pointed at wrong source")
+
+			// Shared per-project backlog mounts at ~/TODO.md so Claude Code can
+			// see and edit the same list the host CLI manages.
+			assert.Equal(t, backlogFile, mountsByTarget["/home/user/TODO.md"],
+				"backlog mount missing or pointed at wrong source")
 
 			return container.CreateResponse{ID: "c-123"}, nil
 		})

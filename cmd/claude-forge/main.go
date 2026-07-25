@@ -57,6 +57,7 @@ containers, Docker networks, and session state.`,
 		newStartCmd(),
 		newResumeCmd(),
 		newListCmd(),
+		newTodosCmd(),
 		newPruneCmd(),
 		newStopCmd(),
 		newStatusCmd(),
@@ -414,6 +415,250 @@ func newListCmd() *cobra.Command {
 	}
 }
 
+// newTodosCmd creates the "todos" subcommand.
+func newTodosCmd() *cobra.Command {
+	var (
+		all         bool
+		projectOnly bool
+	)
+	cmd := &cobra.Command{
+		Use:   "todos",
+		Short: "Show and manage TODOs across projects",
+		Long: `Todos shows, for every project on this machine, its shared backlog and the
+TODO lists Claude Code recorded in each session, grouped by project and with
+the most recently active project first. Items that are all completed are
+hidden by default (use --all to include them).
+
+Two kinds of list are shown per project:
+
+  - The shared backlog: a user-curated TODO list, one per project, that you
+    edit (todos add / done / edit) and that Claude Code can see and update in
+    every session for that project. It persists with the project.
+  - Session todos: the checklists Claude Code manages within each session,
+    shown read-only so you can tell which session to resume.
+
+State persists per project under ~/.claude-forge/<project-id>/ and is
+bind-mounted into each session, so it survives session cleanup and reappears
+on resume.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to get home directory: %w", err)
+			}
+			forgeDir := filepath.Join(homeDir, ".claude-forge")
+			var projectIDs []string
+			if projectOnly {
+				sessionDir, err := projectSessionDir()
+				if err != nil {
+					return err
+				}
+				projectIDs = []string{filepath.Base(sessionDir)}
+			} else {
+				projectIDs, err = session.ProjectDirs(forgeDir)
+				if err != nil {
+					return err
+				}
+			}
+			return listTodos(cmd.OutOrStdout(), forgeDir, projectIDs, all)
+		},
+	}
+	cmd.Flags().BoolVar(&all, "all", false, "Include items that are all completed")
+	cmd.Flags().BoolVar(&projectOnly, "project", false, "Only show the current project's TODOs")
+	cmd.AddCommand(newTodosAddCmd(), newTodosDoneCmd(), newTodosEditCmd())
+	return cmd
+}
+
+// todoEntry pairs one session's todo list with its project and, when the
+// transcript still exists, the session's name and opening message.
+type todoEntry struct {
+	projectID string
+	list      session.TodoList
+	name      string
+	firstMsg  string
+}
+
+// projectTodos gathers everything shown under one project heading: its shared
+// backlog and its per-session Claude todo lists.
+type projectTodos struct {
+	id         string
+	backlog    []session.BacklogItem
+	backlogMod time.Time
+	sessions   []todoEntry
+	lastActive time.Time // most recent activity across backlog and sessions
+}
+
+// gatherProjectTodos loads the shared backlog and open session todos for one
+// project. Sessions with only completed todos are skipped unless includeDone.
+func gatherProjectTodos(forgeDir, id string, includeDone bool) (projectTodos, error) {
+	sessionDir := filepath.Join(forgeDir, id)
+	p := projectTodos{id: id}
+
+	items, err := session.ReadBacklog(sessionDir)
+	if err != nil {
+		return p, err
+	}
+	p.backlog = items
+	if info, err := os.Stat(session.BacklogPath(sessionDir)); err == nil {
+		p.backlogMod = info.ModTime()
+		if p.backlogMod.After(p.lastActive) {
+			p.lastActive = p.backlogMod
+		}
+	}
+
+	lists, err := session.ListTodos(sessionDir)
+	if err != nil {
+		return p, err
+	}
+	if len(lists) > 0 {
+		// Transcript metadata gives each list human context. A todo list may
+		// outlive its transcript, so a missing session just renders without it.
+		byID := make(map[string]session.Session)
+		if sessions, err := session.List(sessionDir); err == nil {
+			for _, s := range sessions {
+				byID[s.ID] = s
+			}
+		}
+		for _, l := range lists {
+			if !includeDone && l.Open() == 0 {
+				continue
+			}
+			s := byID[l.SessionID]
+			p.sessions = append(p.sessions, todoEntry{projectID: id, list: l, name: s.Name, firstMsg: s.FirstMsg})
+			if l.ModTime.After(p.lastActive) {
+				p.lastActive = l.ModTime
+			}
+		}
+		sort.Slice(p.sessions, func(i, j int) bool {
+			return p.sessions[i].list.ModTime.After(p.sessions[j].list.ModTime)
+		})
+	}
+	return p, nil
+}
+
+// listTodos writes each project's shared backlog and session todos to w,
+// grouped by project so it's clear which list belongs to which project, with
+// the most recently active project first. Projects with nothing open are
+// skipped unless includeDone.
+func listTodos(w io.Writer, forgeDir string, projectIDs []string, includeDone bool) error {
+	var projects []projectTodos
+	for _, id := range projectIDs {
+		p, err := gatherProjectTodos(forgeDir, id, includeDone)
+		if err != nil {
+			return err
+		}
+		// Show a project when it has an open backlog item or an open session;
+		// with --all, any backlog item or session is enough.
+		show := len(p.sessions) > 0 || backlogHasOpen(p.backlog)
+		if includeDone {
+			show = len(p.sessions) > 0 || len(p.backlog) > 0
+		}
+		if show {
+			projects = append(projects, p)
+		}
+	}
+
+	if len(projects) == 0 {
+		if includeDone {
+			fmt.Fprintln(w, "No TODOs found.")
+		} else {
+			fmt.Fprintln(w, "No open TODOs found. Use --all to include completed ones.")
+		}
+		return nil
+	}
+
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].lastActive.After(projects[j].lastActive)
+	})
+
+	now := time.Now()
+	for i, p := range projects {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, p.id)
+
+		// Backlog: list every item so the numbers stay stable for
+		// `claude-forge todos done <n>`, which counts items in file order.
+		if len(p.backlog) > 0 {
+			fmt.Fprintf(w, "  backlog · updated %s\n", formatAge(now.Sub(p.backlogMod)))
+			for idx, it := range p.backlog {
+				text := it.Text
+				if it.Session != "" {
+					text += " (@" + it.Session + ")"
+				}
+				fmt.Fprintf(w, "    %s %d. %s\n", backlogMarker(it.Done), idx+1, text)
+			}
+		}
+
+		for _, e := range p.sessions {
+			fmt.Fprintf(w, "  %s · updated %s\n", e.sessionLabel(), formatAge(now.Sub(e.list.ModTime)))
+			for _, t := range e.list.Todos {
+				fmt.Fprintf(w, "    %s %s\n", todoMarker(t.Status), t.Content)
+			}
+		}
+	}
+	return nil
+}
+
+// backlogHasOpen reports whether any backlog item is still open.
+func backlogHasOpen(items []session.BacklogItem) bool {
+	for _, it := range items {
+		if !it.Done {
+			return true
+		}
+	}
+	return false
+}
+
+// backlogMarker renders a checklist marker for a backlog item.
+func backlogMarker(done bool) string {
+	if done {
+		return "[x]"
+	}
+	return "[ ]"
+}
+
+// sessionLabel renders the most human-readable reference for the entry's
+// session: its name, else its opening message, else the session ID.
+func (e todoEntry) sessionLabel() string {
+	if e.name != "" {
+		return e.name
+	}
+	if msg := strings.TrimSpace(e.firstMsg); msg != "" {
+		if len(msg) > 60 {
+			msg = msg[:57] + "..."
+		}
+		return fmt.Sprintf("%q", msg)
+	}
+	return e.list.SessionID
+}
+
+// todoMarker renders a checklist marker for a todo status.
+func todoMarker(status string) string {
+	switch status {
+	case "completed":
+		return "[x]"
+	case "in_progress":
+		return "[~]"
+	default:
+		return "[ ]"
+	}
+}
+
+// formatAge renders a duration as a coarse human age like "5m ago" or "3d ago".
+func formatAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
 // parseAge parses a session age. It accepts standard Go durations (e.g. "720h")
 // plus a "<N>d" day form (e.g. "30d").
 func parseAge(s string) (time.Duration, error) {
@@ -432,6 +677,7 @@ func parseAge(s string) (time.Duration, error) {
 // Claude Code only creates <id>.jsonl once the conversation records its first
 // line, which for an interactive session can be minutes later. A sidecar is
 // treated as orphaned only once its mtime is older than this grace period.
+// Todo lists get the same grace before their orphan sweep.
 const orphanSidecarGrace = time.Hour
 
 // newPruneCmd creates the "prune" subcommand.
@@ -445,9 +691,9 @@ func newPruneCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Delete old Claude Code sessions for the current project",
-		Long: `Prune removes session transcripts (and their name sidecars) for the
-current project. Session age is measured by last activity (the transcript's
-modification time), not by when the session started.
+		Long: `Prune removes session transcripts (with their name sidecars and todo
+lists) for the current project. Session age is measured by last activity
+(the transcript's modification time), not by when the session started.
 
 By default, sessions inactive for 30 or more days are deleted. --keep N on
 its own disables that age window: it keeps the N most recently active
@@ -455,11 +701,11 @@ sessions and deletes all the rest. When both --keep and --older-than are
 given, only sessions that are beyond the N most recently active AND older
 than the age are deleted.
 
-Orphaned name sidecars (a <id>.json whose transcript no longer exists) are
-always swept, except sidecars written within the last hour: a just-started
-session has a sidecar before its transcript exists. Git worktrees left
-behind by pruned worktree sessions are never removed automatically; a
-removal hint is printed instead. Use --dry-run to preview.`,
+Orphaned name sidecars and todo lists (files whose transcript no longer
+exists) are always swept, except those written within the last hour: a
+just-started session has a sidecar before its transcript exists. Git
+worktrees left behind by pruned worktree sessions are never removed
+automatically; a removal hint is printed instead. Use --dry-run to preview.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keepSet := cmd.Flags().Changed("keep")
 			ageSet := cmd.Flags().Changed("older-than")
@@ -545,7 +791,31 @@ removal hint is printed instead. Use --dry-run to preview.`,
 				fmt.Fprintf(w, "deleted orphaned sidecar  %s\n", id)
 			}
 
-			if len(toPrune) == 0 && len(orphans) == 0 {
+			// Todo lists persist independently of transcripts, so sweep the
+			// ones whose transcript is gone under the same grace period.
+			allTodoOrphans, err := session.OrphanedTodos(sessionDir)
+			if err != nil {
+				return fmt.Errorf("failed to scan for orphaned todos: %w", err)
+			}
+			var todoOrphans []string
+			for _, o := range allTodoOrphans {
+				if now.Sub(o.ModTime) < orphanSidecarGrace {
+					continue
+				}
+				todoOrphans = append(todoOrphans, o.SessionID)
+			}
+			for _, id := range todoOrphans {
+				if dryRun {
+					fmt.Fprintf(w, "would delete orphaned todos  %s\n", id)
+					continue
+				}
+				if err := session.DeleteTodos(sessionDir, id); err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "deleted orphaned todos  %s\n", id)
+			}
+
+			if len(toPrune) == 0 && len(orphans) == 0 && len(todoOrphans) == 0 {
 				fmt.Fprintln(w, "No sessions to prune.")
 				return nil
 			}
@@ -557,6 +827,9 @@ removal hint is printed instead. Use --dry-run to preview.`,
 			summary := fmt.Sprintf("%s %d session(s)", verb, len(toPrune))
 			if len(orphans) > 0 {
 				summary += fmt.Sprintf(" and %d orphaned sidecar(s)", len(orphans))
+			}
+			if len(todoOrphans) > 0 {
+				summary += fmt.Sprintf(" and %d orphaned todo list(s)", len(todoOrphans))
 			}
 			fmt.Fprintln(w, summary+".")
 

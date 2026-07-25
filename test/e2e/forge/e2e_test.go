@@ -15,6 +15,7 @@ import (
 
 	"github.com/michael-freling/claude-forge/internal/forge/container"
 	"github.com/michael-freling/claude-forge/internal/forge/kube"
+	"github.com/michael-freling/claude-forge/internal/forge/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,7 +114,9 @@ func TestForgeStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	prompt := `Run these three commands and show me the output of each:
+	prompt := `First, use the TodoWrite tool to create a todo list with the single
+item "e2e todo check" and leave it pending. Then run these three commands and
+show me the output of each:
 1. git log --oneline -3
 2. git fetch origin main
 3. go test ./internal/forge/config/...
@@ -219,6 +222,47 @@ Reply with the raw command outputs only, no other text.`
 	expectedID := strings.TrimSuffix(sessionFile, ".jsonl")
 	assert.Contains(t, listOutStr, expectedID,
 		"list should include the session ID %s", expectedID)
+
+	// Step 10: the prompt asked Claude Code to record a todo, so its TodoWrite
+	// state must have reached the host through the todos/tasks mounts (newer
+	// Claude Code writes tasks/<session-id>/<n>.json; older versions write
+	// todos/*.json), and `claude-forge todos` must surface it.
+	todoLists, err := session.ListTodos(filepath.Join(tempHome, ".claude-forge", projectID))
+	require.NoError(t, err)
+	assert.NotEmpty(t, todoLists, "expected TodoWrite state under todos/ or tasks/ on the host")
+
+	todosCtx, todosCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer todosCancel()
+	todosCmd := exec.CommandContext(todosCtx, binaryPath, "todos")
+	todosCmd.Dir = projectRoot
+	todosCmd.Env = append(os.Environ(), "HOME="+tempHome)
+
+	todosOutput, todosErr := todosCmd.CombinedOutput()
+	todosOutStr := string(todosOutput)
+	t.Logf("claude-forge todos output:\n%s", todosOutStr)
+	require.NoError(t, todosErr, "todos failed: %s", todosOutStr)
+	assert.Contains(t, todosOutStr, "todo check",
+		"todos should show the item recorded during the session")
+
+	// Step 11: the shared per-project backlog file must have been created on
+	// the host (so it could be bind-mounted at ~/TODO.md), proving the backlog
+	// wiring did not break startup. A `todos add` then round-trips through the
+	// same file the session mounts.
+	backlogPath := session.BacklogPath(filepath.Join(tempHome, ".claude-forge", projectID))
+	assert.FileExists(t, backlogPath, "shared backlog file should exist on the host after a session")
+
+	addCtx, addCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer addCancel()
+	addCmd := exec.CommandContext(addCtx, binaryPath, "todos", "add", "review the PR")
+	addCmd.Dir = projectRoot
+	addCmd.Env = append(os.Environ(), "HOME="+tempHome)
+	addOutput, addErr := addCmd.CombinedOutput()
+	require.NoError(t, addErr, "todos add failed: %s", string(addOutput))
+
+	items, err := session.ReadBacklog(filepath.Join(tempHome, ".claude-forge", projectID))
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "review the PR", items[0].Text)
 }
 
 // TestForgeStart_NoGitHubAuth verifies that claude-forge fails with a clear

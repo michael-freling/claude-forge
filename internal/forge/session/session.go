@@ -265,12 +265,15 @@ func parseSessionFile(sessionID string, filePath string) (*Session, error) {
 	}, nil
 }
 
-// Delete removes a session's transcript (.jsonl) and its sidecar metadata
-// (.json), if present. Missing files are not an error.
+// Delete removes a session's transcript (.jsonl), its todo files, and its
+// sidecar metadata (.json), if present. Missing files are not an error.
 func Delete(sessionDir string, s Session) error {
 	jsonl := filepath.Join(sessionDir, s.Subdir, s.ID+".jsonl")
 	if err := os.Remove(jsonl); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove session transcript: %w", err)
+	}
+	if err := DeleteTodos(sessionDir, s.ID); err != nil {
+		return err
 	}
 	return DeleteSidecar(sessionDir, s.ID)
 }
@@ -311,24 +314,7 @@ func OrphanedSidecars(sessionDir string) ([]OrphanedSidecar, error) {
 		return nil, fmt.Errorf("failed to read session directory: %w", err)
 	}
 
-	hasTranscript := make(map[string]bool)
-	for _, e := range entries {
-		if e.IsDir() {
-			subEntries, err := os.ReadDir(filepath.Join(sessionDir, e.Name()))
-			if err != nil {
-				continue
-			}
-			for _, se := range subEntries {
-				if !se.IsDir() && strings.HasSuffix(se.Name(), ".jsonl") {
-					hasTranscript[strings.TrimSuffix(se.Name(), ".jsonl")] = true
-				}
-			}
-			continue
-		}
-		if strings.HasSuffix(e.Name(), ".jsonl") {
-			hasTranscript[strings.TrimSuffix(e.Name(), ".jsonl")] = true
-		}
-	}
+	hasTranscript := transcriptIDs(sessionDir)
 
 	var orphans []OrphanedSidecar
 	for _, e := range entries {
@@ -347,6 +333,35 @@ func OrphanedSidecars(sessionDir string) ([]OrphanedSidecar, error) {
 	}
 	sort.Slice(orphans, func(i, j int) bool { return orphans[i].ID < orphans[j].ID })
 	return orphans, nil
+}
+
+// transcriptIDs returns the set of session IDs that have a transcript
+// (.jsonl) at the top level of sessionDir or in any first-level subdirectory.
+// An unreadable sessionDir yields an empty set.
+func transcriptIDs(sessionDir string) map[string]bool {
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		return nil
+	}
+	hasTranscript := make(map[string]bool)
+	for _, e := range entries {
+		if e.IsDir() {
+			subEntries, err := os.ReadDir(filepath.Join(sessionDir, e.Name()))
+			if err != nil {
+				continue
+			}
+			for _, se := range subEntries {
+				if !se.IsDir() && strings.HasSuffix(se.Name(), ".jsonl") {
+					hasTranscript[strings.TrimSuffix(se.Name(), ".jsonl")] = true
+				}
+			}
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".jsonl") {
+			hasTranscript[strings.TrimSuffix(e.Name(), ".jsonl")] = true
+		}
+	}
+	return hasTranscript
 }
 
 // HasTranscripts reports whether dir contains any transcript (.jsonl) file,

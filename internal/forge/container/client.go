@@ -201,6 +201,9 @@ type AgentOptions struct {
 	UID                int                 // host user UID (for file ownership mapping)
 	GID                int                 // host user GID (for file ownership mapping)
 	PluginsDir         string              // host path to forge plugins dir (mounted rw at ~/.claude/plugins)
+	TodosDir           string              // host path to per-project todos dir (mounted rw at ~/.claude/todos)
+	TasksDir           string              // host path to per-project tasks dir (mounted rw at ~/.claude/tasks)
+	BacklogFile        string              // host path to per-project shared backlog file (mounted rw at ~/TODO.md)
 	CacheDirs          []CacheDir          // host dependency cache directories to mount (rw)
 	ExtraMounts        []CacheDir          // additional user-specified bind mounts (rw)
 	ResumeWorktreeName string              // worktree name when resuming a worktree session
@@ -275,6 +278,37 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 			Type:   mount.TypeBind,
 			Source: opts.PluginsDir,
 			Target: "/home/user/.claude/plugins",
+		})
+	}
+
+	// Todos/tasks dir mounts (read-write). Claude Code keeps TodoWrite state
+	// under ~/.claude/todos (older versions) or ~/.claude/tasks (newer
+	// versions); without these mounts it lives in the container's ephemeral
+	// layer, so todo lists would vanish on cleanup instead of surviving for
+	// resume and for `claude-forge todos` on the host.
+	if opts.TodosDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: opts.TodosDir,
+			Target: "/home/user/.claude/todos",
+		})
+	}
+	if opts.TasksDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: opts.TasksDir,
+			Target: "/home/user/.claude/tasks",
+		})
+	}
+
+	// Shared per-project backlog (read-write): a user-curated TODO list, one
+	// per project, editable from the host via `claude-forge todos` and visible
+	// to Claude in every session for this project at ~/TODO.md.
+	if opts.BacklogFile != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: opts.BacklogFile,
+			Target: "/home/user/TODO.md",
 		})
 	}
 
