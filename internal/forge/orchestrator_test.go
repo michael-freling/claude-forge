@@ -53,6 +53,47 @@ func setupOrchestrator(t *testing.T, mock *MockContainerManager) (*Orchestrator,
 	return orch, homeDir
 }
 
+// stubFailingKubectl puts a kubectl on PATH that always exits non-zero, so
+// token minting fails fast and deterministically. Minting failures are
+// non-fatal (the container still starts and the refresher retries), so this
+// lets tests exercise the start/recreate paths past token minting without
+// depending on whether a real kubectl or cluster is reachable.
+func stubFailingKubectl(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "kubectl"),
+		[]byte("#!/bin/sh\necho 'no cluster' >&2\nexit 1\n"), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// hostKubeconfigYAML is a minimal host kubeconfig containing a single
+// "my-cluster" context, enough for GenerateKubeconfig to build a valid output.
+const hostKubeconfigYAML = `apiVersion: v1
+kind: Config
+clusters:
+- name: my-cluster
+  cluster:
+    server: https://k8s.example.com:6443
+contexts:
+- name: my-cluster
+  context:
+    cluster: my-cluster
+    user: admin
+users:
+- name: admin
+  user:
+    token: admin-token
+current-context: my-cluster
+`
+
+// writeHostKubeconfig writes hostKubeconfigYAML to homeDir/.kube/config.
+func writeHostKubeconfig(t *testing.T, homeDir string) {
+	t.Helper()
+	kubeDir := filepath.Join(homeDir, ".kube")
+	require.NoError(t, os.MkdirAll(kubeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(kubeDir, "config"), []byte(hostKubeconfigYAML), 0o644))
+}
+
 func TestStart_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
@@ -1093,11 +1134,12 @@ kubernetes:
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
-	// startKubernetesMCP will be called but will fail at GenerateKubeconfig (no kubeconfig file)
-	// Start logs a warning and continues without adding kubernetes to settings.json
+	// startKubernetesMCP is called but fails at GenerateKubeconfig (no host
+	// kubeconfig), which now happens before any container teardown, so no
+	// RemoveContainer call. Start logs a warning and continues without adding
+	// kubernetes to settings.json.
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("shared-net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
 	// ExtraNetworks is NOT set because startKubernetesMCP failed
 
@@ -1140,11 +1182,11 @@ kubernetes:
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
 	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
 	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
-	// startKubernetesMCP fails (no kubeconfig) — Start continues without
-	// kubernetes in settings.json
+	// startKubernetesMCP fails at GenerateKubeconfig (no host kubeconfig),
+	// before any teardown, so no RemoveContainer. Start continues without
+	// kubernetes in settings.json.
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("shared-net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).Return("agent-id", nil)
 
 	sess, err := orch.Start(context.Background(), StartOptions{
@@ -1262,16 +1304,20 @@ current-context: my-cluster
 		},
 	}
 
+	// Token minting fails (fake failing kubectl), but that is non-fatal: the
+	// kubeconfig is still written and the container starts, serving healthy
+	// contexts while the refresher retries the rest.
+	stubFailingKubectl(t)
+
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
 	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
-	// GenerateKubeconfig will fail because kubectl isn't available,
-	// but this test verifies the code path up to that point
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("k8s-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "k8s-id", gomock.Any()).Return(nil)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
-	// Will fail at GenerateKubeconfig (no kubectl), but exercises the setup code
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to generate kubeconfig")
+	require.NoError(t, err)
+	assert.NotNil(t, orch.kubeRefresher)
 }
 
 func TestStartKubernetesMCP_KUBECONFIGEnvVar(t *testing.T) {
@@ -1293,9 +1339,10 @@ func TestStartKubernetesMCP_KUBECONFIGEnvVar(t *testing.T) {
 		},
 	}
 
+	// No host kubeconfig: GenerateKubeconfig hard-fails before any teardown,
+	// so RemoveContainer is not reached.
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	require.Error(t, err)
@@ -1319,9 +1366,9 @@ func TestStartKubernetesMCP_DefaultContextFallback(t *testing.T) {
 		},
 	}
 
+	// No host kubeconfig: GenerateKubeconfig hard-fails before any teardown.
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	// Will fail at GenerateKubeconfig, but exercises the DefaultContext path
@@ -1385,28 +1432,8 @@ func TestStartKubernetesMCP_AlreadyRunning_ContextChangeRecreates(t *testing.T) 
 
 	mockCM := NewMockContainerManager(ctrl)
 	orch, homeDir := setupOrchestrator(t, mockCM)
-
-	// Host kubeconfig with two contexts.
-	kubeDir := filepath.Join(homeDir, ".kube")
-	require.NoError(t, os.MkdirAll(kubeDir, 0o755))
-	hostKubeconfig := `apiVersion: v1
-kind: Config
-clusters:
-- name: my-cluster
-  cluster:
-    server: https://k8s.example.com:6443
-contexts:
-- name: my-cluster
-  context:
-    cluster: my-cluster
-    user: admin
-users:
-- name: admin
-  user:
-    token: admin-token
-current-context: my-cluster
-`
-	require.NoError(t, os.WriteFile(filepath.Join(kubeDir, "config"), []byte(hostKubeconfig), 0o644))
+	writeHostKubeconfig(t, homeDir)
+	stubFailingKubectl(t)
 
 	// The generated kubeconfig on disk does not match the current contexts.
 	kubeconfigDir := filepath.Join(orch.ConfigDir, "k8s-mcp")
@@ -1425,27 +1452,71 @@ current-context: my-cluster
 
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
-	// Context change: the running container is recreated, then the create
-	// path removes any stale container again.
+	// Context drift: the new kubeconfig is generated first, then the running
+	// container is stopped, removed, and replaced.
 	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil).Times(2)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("k8s-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "k8s-id", gomock.Any()).Return(nil)
 
-	// Recreation reaches GenerateKubeconfig, which fails minting (no kubectl)
-	// — the recreate-on-context-change path was exercised.
 	err := orch.startKubernetesMCP(context.Background(), cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to generate kubeconfig")
+	require.NoError(t, err)
+	assert.NotNil(t, orch.kubeRefresher)
 }
 
 func TestStartKubernetesMCP_AlreadyRunning_LegacyFilePresentRecreates(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	mockCM := NewMockContainerManager(ctrl)
-	orch, _ := setupOrchestrator(t, mockCM)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+	writeHostKubeconfig(t, homeDir)
+	stubFailingKubectl(t)
 
 	// Both layouts on disk: a legacy binary ran after the new layout was
 	// written (downgrade/upgrade), so the running container mounts the legacy
 	// single file and must be recreated.
+	kubeconfigDir := filepath.Join(orch.ConfigDir, "k8s-mcp")
+	require.NoError(t, os.MkdirAll(kubeconfigDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(kubeconfigDir, kube.KubeconfigFileName), []byte("apiVersion: v1\nkind: Config\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(kubeconfigDir, "kubeconfig"), []byte("legacy"), 0o644))
+
+	cfg := &config.Config{
+		Kubernetes: config.KubernetesConfig{
+			Enabled: true,
+			Image:   "k8s-mcp:latest",
+			Contexts: []config.KubeContextEntry{
+				{HostContext: "my-cluster", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+			},
+		},
+	}
+
+	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
+	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
+	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
+	mockCM.EXPECT().StartSharedService(gomock.Any(), gomock.Any()).Return("k8s-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "k8s-id", gomock.Any()).Return(nil)
+
+	err := orch.startKubernetesMCP(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// The legacy single-file kubeconfig is dropped from the mounted dir.
+	_, statErr := os.Stat(filepath.Join(kubeconfigDir, "kubeconfig"))
+	assert.True(t, os.IsNotExist(statErr))
+}
+
+// TestStartKubernetesMCP_GenerateFailureLeavesRunningContainer verifies the
+// shared server is not torn down when regenerating its kubeconfig fails: the
+// container backs every session on the host, so a bad regeneration must leave
+// the working server in place rather than take it down for everyone.
+func TestStartKubernetesMCP_GenerateFailureLeavesRunningContainer(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	// Legacy layout forces a recreate, but there is no host kubeconfig, so
+	// GenerateKubeconfig hard-fails.
 	kubeconfigDir := filepath.Join(orch.ConfigDir, "k8s-mcp")
 	require.NoError(t, os.MkdirAll(kubeconfigDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(kubeconfigDir, kube.KubeconfigFileName), []byte("apiVersion: v1\nkind: Config\n"), 0o644))
@@ -1461,42 +1532,13 @@ func TestStartKubernetesMCP_AlreadyRunning_LegacyFilePresentRecreates(t *testing
 		},
 	}
 
+	// Only network + running checks are expected: no StopContainer /
+	// RemoveContainer, because the regeneration fails before any teardown. If
+	// the code tore the container down first, the strict mock would fail on
+	// the unexpected Stop/Remove call.
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
-	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil).Times(2)
 
-	err := orch.startKubernetesMCP(context.Background(), cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to generate kubeconfig")
-}
-
-func TestStartKubernetesMCP_AlreadyRunning_LegacyLayoutRecreates(t *testing.T) {
-	ctrl := gomock.NewController(t)
-
-	mockCM := NewMockContainerManager(ctrl)
-	orch, _ := setupOrchestrator(t, mockCM)
-
-	// No tokenFile-layout kubeconfig on disk: the running container still
-	// bind-mounts the legacy single-file kubeconfig with an inline token, so
-	// it must be recreated.
-	cfg := &config.Config{
-		Kubernetes: config.KubernetesConfig{
-			Enabled: true,
-			Image:   "k8s-mcp:latest",
-			Contexts: []config.KubeContextEntry{
-				{HostContext: "ctx-1", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
-			},
-		},
-	}
-
-	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
-	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
-	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil).Times(2)
-
-	// Recreation proceeds to GenerateKubeconfig, which fails without a host
-	// kubeconfig — the recreate path was exercised.
 	err := orch.startKubernetesMCP(context.Background(), cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to generate kubeconfig")
@@ -1610,17 +1652,17 @@ kubernetes:
 `
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
 
-	// Container is currently running
+	// RestartSharedMCP stops+removes the container itself, then calls
+	// startKubernetesMCP, which hard-fails at GenerateKubeconfig (no host
+	// kubeconfig) before reaching the create-path RemoveContainer.
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(true, nil)
 	mockCM.EXPECT().StopContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
-	// startKubernetesMCP is called to restart
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 
 	err := orch.RestartSharedMCP(context.Background())
-	// Will fail at GenerateKubeconfig (no real kubectl), but exercises stop+start path
+	// Will fail at GenerateKubeconfig (no host kubeconfig), but exercises stop+start path
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to restart Kubernetes MCP")
 }
@@ -1646,11 +1688,12 @@ kubernetes:
 `
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0o644))
 
-	// Container is NOT running — skip stop, go straight to start
+	// Container is NOT running — skip stop, go straight to start, which
+	// hard-fails at GenerateKubeconfig (no host kubeconfig) before the
+	// create-path RemoveContainer.
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
 	mockCM.EXPECT().EnsureSharedNetwork(gomock.Any(), "forge-shared").Return("net-id", nil)
 	mockCM.EXPECT().IsContainerRunning(gomock.Any(), "forge-k8s-mcp").Return(false, nil)
-	mockCM.EXPECT().RemoveContainer(gomock.Any(), "forge-k8s-mcp").Return(nil)
 
 	err := orch.RestartSharedMCP(context.Background())
 	require.Error(t, err)

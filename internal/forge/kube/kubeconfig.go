@@ -63,15 +63,30 @@ type userInfo struct {
 	TokenFile string `yaml:"tokenFile,omitempty"`
 }
 
+// TokenMintError signals that the kubeconfig was written successfully but one
+// or more contexts could not mint a token. It is non-fatal: the MCP server can
+// still start and serve every context whose token minted, and the periodic
+// refresher retries the rest. Callers should downgrade it to a warning rather
+// than aborting.
+type TokenMintError struct{ Err error }
+
+func (e *TokenMintError) Error() string { return e.Err.Error() }
+func (e *TokenMintError) Unwrap() error { return e.Err }
+
 // GenerateKubeconfig reads the user's kubeconfig, extracts the specified
-// contexts, mints SA tokens via kubectl, and writes a self-contained
-// kubeconfig plus per-context token files into outputDir, which is
-// bind-mounted into the k8s-mcp container at MCPServerKubeDir.
+// contexts, writes a self-contained kubeconfig, and mints per-context SA
+// tokens into outputDir, which is bind-mounted into the k8s-mcp container at
+// MCPServerKubeDir.
 //
 // The kubeconfig references each token via tokenFile rather than embedding
 // it: client-go re-reads tokenFile credentials on its own, so rewriting the
 // token files (see RefreshTokens) rotates credentials inside the running
 // container without a restart.
+//
+// The kubeconfig is written before tokens are minted and remains on disk even
+// when some contexts fail to mint; those failures are returned as a
+// *TokenMintError so a single unreachable cluster does not block the whole
+// MCP from starting for the healthy contexts sharing it.
 func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext, outputDir string, tokenDuration time.Duration) error {
 	if err := ensureDir(outputDir); err != nil {
 		return fmt.Errorf("failed to create kubeconfig dir: %w", err)
@@ -86,12 +101,12 @@ func GenerateKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext
 		return err
 	}
 
-	if err := RefreshTokens(contexts, kubeconfigPath, outputDir, tokenDuration); err != nil {
-		return err
-	}
-
 	if err := writeFileAtomic(filepath.Join(outputDir, KubeconfigFileName), outData, 0o644); err != nil {
 		return fmt.Errorf("failed to write generated kubeconfig: %w", err)
+	}
+
+	if err := RefreshTokens(contexts, kubeconfigPath, outputDir, tokenDuration); err != nil {
+		return &TokenMintError{err}
 	}
 	return nil
 }
@@ -202,19 +217,40 @@ func RefreshTokens(contexts []ContextConfig, kubeconfigPath, outputDir string, t
 	if err != nil {
 		return err
 	}
+	keep := make(map[string]bool, len(contexts))
 	var errs []error
 	for _, ctx := range contexts {
+		name := TokenFileName(ctx.HostContext, salt)
+		keep[name] = true
 		token, err := resolveToken(ctx, kubeconfigPath, tokenDuration)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to resolve token for context %q: %w", ctx.HostContext, err))
 			continue
 		}
-		tokenPath := filepath.Join(tokensDir, TokenFileName(ctx.HostContext, salt))
-		if err := writeFileAtomic(tokenPath, []byte(token), 0o644); err != nil {
+		if err := writeFileAtomic(filepath.Join(tokensDir, name), []byte(token), 0o644); err != nil {
 			errs = append(errs, fmt.Errorf("failed to write token for context %q: %w", ctx.HostContext, err))
 		}
 	}
+	pruneStaleTokens(tokensDir, keep)
 	return errors.Join(errs...)
+}
+
+// pruneStaleTokens removes token files for contexts no longer configured, so a
+// removed context does not leave a live token lying around (same
+// no-stale-entries rule as UpdateMCPServers). Best-effort; transient temp
+// files from a concurrent writeFileAtomic are skipped.
+func pruneStaleTokens(tokensDir string, keep map[string]bool) {
+	entries, err := os.ReadDir(tokensDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if keep[name] || strings.HasPrefix(name, ".tmp-") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(tokensDir, name))
+	}
 }
 
 // TokenFileName returns a stable, filesystem-safe file name for a context's

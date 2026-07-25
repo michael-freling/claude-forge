@@ -344,6 +344,70 @@ func TestRefreshTokens_ContinuesPastFailingContext(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
+func TestGenerateKubeconfig_WritesKubeconfigDespiteTokenFailure(t *testing.T) {
+	// A token mint failure must not prevent the kubeconfig from being written:
+	// healthy contexts still work and the refresher retries the rest.
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+		if ctx.HostContext == "ctx-b" {
+			return "", fmt.Errorf("cluster unreachable")
+		}
+		return "token-" + ctx.HostContext, nil
+	})
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outDir := filepath.Join(tmpDir, "out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	contexts := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+		{HostContext: "ctx-b", ServiceAccountName: "sa-b", ServiceAccountNamespace: "ns-b"},
+	}
+
+	err := GenerateKubeconfig(contexts, srcPath, "ctx-a", outDir, time.Hour)
+
+	// The error is a TokenMintError (non-fatal), not a hard failure.
+	require.Error(t, err)
+	var mintErr *TokenMintError
+	require.ErrorAs(t, err, &mintErr)
+	assert.Contains(t, err.Error(), "ctx-b")
+
+	// The kubeconfig was still written, and the healthy context has a token.
+	_, statErr := os.Stat(filepath.Join(outDir, KubeconfigFileName))
+	require.NoError(t, statErr)
+	salt := readSalt(t, outDir)
+	data, readErr := os.ReadFile(filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a", salt)))
+	require.NoError(t, readErr)
+	assert.Equal(t, "token-ctx-a", string(data))
+}
+
+func TestRefreshTokens_PrunesRemovedContexts(t *testing.T) {
+	stubResolveToken(t, staticToken)
+
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "kubeconfig")
+	outDir := filepath.Join(tmpDir, "out")
+	require.NoError(t, os.WriteFile(srcPath, []byte(sampleKubeconfig()), 0o600))
+
+	both := []ContextConfig{
+		{HostContext: "ctx-a", ServiceAccountName: "sa-a", ServiceAccountNamespace: "ns-a"},
+		{HostContext: "ctx-b", ServiceAccountName: "sa-b", ServiceAccountNamespace: "ns-b"},
+	}
+	require.NoError(t, GenerateKubeconfig(both, srcPath, "ctx-a", outDir, time.Hour))
+	salt := readSalt(t, outDir)
+	bTokenPath := filepath.Join(outDir, TokensDirName, TokenFileName("ctx-b", salt))
+	_, err := os.Stat(bTokenPath)
+	require.NoError(t, err, "precondition: ctx-b token exists")
+
+	// Refresh with ctx-b removed: its token file must be pruned.
+	require.NoError(t, RefreshTokens(both[:1], srcPath, outDir, time.Hour))
+
+	_, err = os.Stat(bTokenPath)
+	assert.True(t, os.IsNotExist(err), "removed context's token file should be pruned")
+	_, err = os.Stat(filepath.Join(outDir, TokensDirName, TokenFileName("ctx-a", salt)))
+	assert.NoError(t, err, "remaining context's token file is kept")
+}
+
 func TestKubectlCreateToken_Timeout(t *testing.T) {
 	// A kubectl that hangs must not block indefinitely; the bounded timeout
 	// turns it into an error rather than a stuck session start. `exec` so the
