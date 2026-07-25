@@ -309,6 +309,59 @@ func TestRefreshTokens_ResolveTokenError(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to resolve token for context \"ctx-a\"")
 }
 
+func TestRefreshTokens_ContinuesPastFailingContext(t *testing.T) {
+	// One broken context must not starve refresh for the healthy contexts
+	// that share the MCP server.
+	stubResolveToken(t, func(ctx ContextConfig, kubeconfigPath string, duration time.Duration) (string, error) {
+		if ctx.HostContext == "broken" {
+			return "", fmt.Errorf("cluster unreachable")
+		}
+		return "token-" + ctx.HostContext, nil
+	})
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	require.NoError(t, ensureDir(outDir))
+	contexts := []ContextConfig{
+		{HostContext: "broken", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+		{HostContext: "healthy-a", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+		{HostContext: "healthy-b", ServiceAccountName: "sa", ServiceAccountNamespace: "ns"},
+	}
+
+	err := RefreshTokens(contexts, "unused", outDir, time.Hour)
+	// The broken context is reported...
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to resolve token for context \"broken\"")
+
+	// ...but the healthy contexts were still refreshed.
+	salt := readSalt(t, outDir)
+	for _, name := range []string{"healthy-a", "healthy-b"} {
+		data, err := os.ReadFile(filepath.Join(outDir, TokensDirName, TokenFileName(name, salt)))
+		require.NoError(t, err, "healthy context %q must be refreshed despite a broken sibling", name)
+		assert.Equal(t, "token-"+name, string(data))
+	}
+	// The broken context has no token file.
+	_, err = os.Stat(filepath.Join(outDir, TokensDirName, TokenFileName("broken", salt)))
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestKubectlCreateToken_Timeout(t *testing.T) {
+	// A kubectl that hangs must not block indefinitely; the bounded timeout
+	// turns it into an error rather than a stuck session start. `exec` so the
+	// sleep replaces the shell and the context kill terminates it directly
+	// (as it would the real kubectl), instead of leaving a child holding the
+	// stdout pipe open.
+	fakeKubectl(t, `exec sleep 5`)
+	orig := kubectlTokenTimeout
+	kubectlTokenTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { kubectlTokenTimeout = orig })
+
+	start := time.Now()
+	_, err := kubectlCreateToken([]string{"create", "token", "sa"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Less(t, time.Since(start), 3*time.Second, "should return promptly on timeout, not wait for kubectl")
+}
+
 func TestTokenFileName(t *testing.T) {
 	const salt = "test-salt"
 

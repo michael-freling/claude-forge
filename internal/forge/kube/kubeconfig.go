@@ -2,6 +2,7 @@ package kube
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
@@ -187,6 +188,11 @@ func buildKubeconfig(contexts []ContextConfig, kubeconfigPath, defaultContext, s
 // sessions can stay open for days, so this runs at every session start and
 // periodically while a session is attached. The old token stays valid until
 // its own expiry, so rotation never races in-flight requests.
+//
+// Each context is refreshed independently: one broken context (revoked RBAC,
+// unreachable cluster, stale kubeconfig entry) must not starve the healthy
+// contexts that share this MCP server, so failures are collected and joined
+// rather than aborting the loop.
 func RefreshTokens(contexts []ContextConfig, kubeconfigPath, outputDir string, tokenDuration time.Duration) error {
 	tokensDir := filepath.Join(outputDir, TokensDirName)
 	if err := ensureDir(tokensDir); err != nil {
@@ -196,17 +202,19 @@ func RefreshTokens(contexts []ContextConfig, kubeconfigPath, outputDir string, t
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, ctx := range contexts {
 		token, err := resolveToken(ctx, kubeconfigPath, tokenDuration)
 		if err != nil {
-			return fmt.Errorf("failed to resolve token for context %q: %w", ctx.HostContext, err)
+			errs = append(errs, fmt.Errorf("failed to resolve token for context %q: %w", ctx.HostContext, err))
+			continue
 		}
 		tokenPath := filepath.Join(tokensDir, TokenFileName(ctx.HostContext, salt))
 		if err := writeFileAtomic(tokenPath, []byte(token), 0o644); err != nil {
-			return fmt.Errorf("failed to write token for context %q: %w", ctx.HostContext, err)
+			errs = append(errs, fmt.Errorf("failed to write token for context %q: %w", ctx.HostContext, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // TokenFileName returns a stable, filesystem-safe file name for a context's
@@ -338,6 +346,13 @@ func ListContexts(kubeconfigPath string) ([]string, error) {
 	return names, nil
 }
 
+// kubectlTokenTimeout bounds a single `kubectl create token` call. Minting is
+// normally sub-second, but this runs synchronously on the session-start path,
+// so a hung kubectl (unreachable cluster, VPN down, an interactive auth
+// prompt) must not block the session indefinitely. A var so tests can shorten
+// it.
+var kubectlTokenTimeout = 10 * time.Second
+
 // resolveToken calls `kubectl create token` to mint an SA token. Most API
 // servers cap the requested duration at their configured maximum (managed
 // clusters commonly cap at 24-48h); for servers that reject over-maximum
@@ -361,9 +376,9 @@ var resolveToken = func(ctx ContextConfig, kubeconfigPath string, duration time.
 		return token, nil
 	}
 	// Only a kubectl that ran and was refused (ExitError) can be a
-	// duration rejection; exec failures (kubectl missing) won't improve on
-	// retry. If the fallback fails too, report the original error — it
-	// names the real problem (auth, connectivity, RBAC).
+	// duration rejection; exec failures (kubectl missing) and timeouts won't
+	// improve on retry. If the fallback fails too, report the original error
+	// — it names the real problem (auth, connectivity, RBAC).
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		return "", err
@@ -376,7 +391,14 @@ var resolveToken = func(ctx ContextConfig, kubeconfigPath string, duration time.
 }
 
 func kubectlCreateToken(args []string) (string, error) {
-	out, err := exec.Command("kubectl", args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), kubectlTokenTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "kubectl", args...).Output()
+	// A timeout kills kubectl and surfaces as an ExitError; report it as a
+	// timeout (not a duration rejection) so the caller does not retry.
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("kubectl create token timed out after %s: %w", kubectlTokenTimeout, ctx.Err())
+	}
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
