@@ -67,6 +67,9 @@ func buildRules(resources []APIResource) []PolicyRule {
 	groups := make(map[string]*groupScope)
 	coreNamespaced := make(map[string]bool)
 	coreClustered := make(map[string]bool)
+	// Discovered resources per scoped-write group (e.g. argoproj.io), used to
+	// emit narrowed rules only when the group's CRDs are installed.
+	scopedResources := make(map[string]map[string]bool)
 
 	for _, r := range resources {
 		if IsAPIGroupDenied(r.APIGroup) {
@@ -84,6 +87,19 @@ func buildRules(resources []APIResource) []PolicyRule {
 			} else {
 				coreClustered[r.Resource] = true
 			}
+			continue
+		}
+
+		// Scoped-write groups are handled separately: read-only across the
+		// group, write only on specific resources. Keep them out of the
+		// default wildcard grouping below.
+		if IsScopedWriteGroup(r.APIGroup) {
+			seen, ok := scopedResources[r.APIGroup]
+			if !ok {
+				seen = make(map[string]bool)
+				scopedResources[r.APIGroup] = seen
+			}
+			seen[r.Resource] = true
 			continue
 		}
 
@@ -195,6 +211,37 @@ func buildRules(resources []APIResource) []PolicyRule {
 			Resources: []string{"*"},
 			Verbs:     fullVerbs,
 		})
+	}
+
+	// Scoped-write groups (e.g. argoproj.io): only emitted when discovered in
+	// the cluster. Broad read across the group, with write verbs limited to
+	// the configured resources (which are themselves also read via the
+	// wildcard rule).
+	for _, sg := range ScopedWriteGroups() {
+		seen, ok := scopedResources[sg.APIGroup]
+		if !ok {
+			continue // group's CRDs are not installed in this cluster
+		}
+		rules = append(rules, PolicyRule{
+			APIGroups: []string{sg.APIGroup},
+			Resources: []string{"*"},
+			Verbs:     ReadOnlyVerbs(),
+		})
+
+		var writable []string
+		for _, res := range sg.WritableResources {
+			if seen[res] {
+				writable = append(writable, res)
+			}
+		}
+		sort.Strings(writable)
+		if len(writable) > 0 {
+			rules = append(rules, PolicyRule{
+				APIGroups: []string{sg.APIGroup},
+				Resources: writable,
+				Verbs:     FilterVerbs(sg.WriteVerbs),
+			})
+		}
 	}
 
 	return rules

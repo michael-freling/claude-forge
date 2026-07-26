@@ -43,6 +43,46 @@ func GrantedSubresources() []string {
 	}
 }
 
+// ScopedWriteGroup narrows write access for a non-core API group: the agent
+// gets read-only access to every resource in the group, but write verbs are
+// limited to an explicit set of resources. It is only applied when the group
+// is actually discovered in the target cluster (i.e. its CRDs are installed),
+// so no rule is emitted for groups the cluster does not have.
+type ScopedWriteGroup struct {
+	APIGroup          string
+	WritableResources []string
+	WriteVerbs        []string
+}
+
+// ScopedWriteGroups returns non-core API groups whose write access is narrowed
+// to specific resources. These override the default "namespaced group → full
+// verbs on all resources" behaviour for the listed groups.
+func ScopedWriteGroups() []ScopedWriteGroup {
+	return []ScopedWriteGroup{
+		{
+			// ArgoCD: broad read for inspecting Applications/AppProjects, but
+			// writes limited to ApplicationSets (e.g. patching target
+			// revisions). Only rendered when the argoproj.io CRDs are
+			// installed; the ClusterRole is cluster-wide, so this covers
+			// ApplicationSets in every namespace.
+			APIGroup:          "argoproj.io",
+			WritableResources: []string{"applicationsets"},
+			WriteVerbs:        []string{"update", "patch"},
+		},
+	}
+}
+
+// IsScopedWriteGroup reports whether a non-core API group has narrowed write
+// access and must be excluded from the default wildcard grouping.
+func IsScopedWriteGroup(group string) bool {
+	for _, sg := range ScopedWriteGroups() {
+		if group == sg.APIGroup {
+			return true
+		}
+	}
+	return false
+}
+
 // DeniedVerbs returns verbs that are filtered from all rules.
 func DeniedVerbs() []string {
 	return []string{

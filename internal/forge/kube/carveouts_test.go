@@ -35,6 +35,30 @@ func TestGrantedSubresources(t *testing.T) {
 	}
 }
 
+func TestScopedWriteGroups_ArgoApplicationSets(t *testing.T) {
+	var argo *ScopedWriteGroup
+	for i, sg := range ScopedWriteGroups() {
+		if sg.APIGroup == "argoproj.io" {
+			argo = &ScopedWriteGroups()[i]
+			break
+		}
+	}
+
+	if assert.NotNil(t, argo, "expected a scoped-write group for argoproj.io") {
+		assert.Equal(t, []string{"applicationsets"}, argo.WritableResources,
+			"writes must be limited to applicationsets")
+		assert.Contains(t, argo.WriteVerbs, "patch", "must allow patching target revisions")
+		assert.NotContains(t, argo.WriteVerbs, "delete")
+		assert.NotContains(t, argo.WriteVerbs, "create")
+	}
+}
+
+func TestIsScopedWriteGroup(t *testing.T) {
+	assert.True(t, IsScopedWriteGroup("argoproj.io"))
+	assert.False(t, IsScopedWriteGroup("apps"))
+	assert.False(t, IsScopedWriteGroup(""))
+}
+
 func TestFilterVerbs(t *testing.T) {
 	result := FilterVerbs([]string{"get", "list", "impersonate", "watch"})
 	assert.Equal(t, []string{"get", "list", "watch"}, result)

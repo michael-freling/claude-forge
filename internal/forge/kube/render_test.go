@@ -248,6 +248,101 @@ func TestRenderFromResources_GeneratesValidYAML(t *testing.T) {
 	assert.Len(t, docs, 3)
 }
 
+func TestBuildRules_ArgoScopedWhenDiscovered(t *testing.T) {
+	// When argoproj.io CRDs are installed, Argo gets read-only across the
+	// whole group plus write (update/patch) limited to applicationsets — never
+	// the default full-verb wildcard.
+	resources := []APIResource{
+		{APIGroup: "apps", Resource: "deployments", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "argoproj.io", Resource: "applications", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "argoproj.io", Resource: "applicationsets", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "argoproj.io", Resource: "appprojects", Namespaced: true, Verbs: []string{"*"}},
+	}
+
+	rules := buildRules(resources)
+
+	var argoRead, argoWrite *PolicyRule
+	for i, r := range rules {
+		if !contains(r.APIGroups, "argoproj.io") {
+			// argoproj.io must never be merged into another group's rule.
+			continue
+		}
+		switch {
+		case contains(r.Resources, "*"):
+			argoRead = &rules[i]
+		case contains(r.Resources, "applicationsets"):
+			argoWrite = &rules[i]
+		}
+	}
+
+	require.NotNil(t, argoRead, "expected a read-only wildcard rule for argoproj.io")
+	assert.Equal(t, []string{"argoproj.io"}, argoRead.APIGroups)
+	assert.Equal(t, ReadOnlyVerbs(), argoRead.Verbs)
+
+	require.NotNil(t, argoWrite, "expected an applicationsets write rule")
+	assert.Equal(t, []string{"applicationsets"}, argoWrite.Resources)
+	assert.Equal(t, []string{"update", "patch"}, argoWrite.Verbs)
+
+	// argoproj.io must not appear in any full-verb wildcard rule.
+	for _, r := range rules {
+		if contains(r.APIGroups, "argoproj.io") && contains(r.Resources, "*") {
+			assert.Equal(t, ReadOnlyVerbs(), r.Verbs,
+				"argoproj.io wildcard must be read-only, never full verbs")
+		}
+	}
+}
+
+func TestBuildRules_NoArgoRuleWhenAbsent(t *testing.T) {
+	resources := []APIResource{
+		{APIGroup: "", Resource: "pods", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "apps", Resource: "deployments", Namespaced: true, Verbs: []string{"*"}},
+	}
+
+	rules := buildRules(resources)
+
+	for _, r := range rules {
+		assert.NotContains(t, r.APIGroups, "argoproj.io",
+			"no argoproj.io rule should be emitted when Argo is not discovered")
+	}
+}
+
+func TestBuildRules_ArgoWriteOnlyWhenApplicationSetDiscovered(t *testing.T) {
+	// Argo group present but the ApplicationSet CRD is not installed: read-only
+	// on the group, but no phantom write rule for a resource that doesn't exist.
+	resources := []APIResource{
+		{APIGroup: "argoproj.io", Resource: "applications", Namespaced: true, Verbs: []string{"*"}},
+	}
+
+	rules := buildRules(resources)
+
+	var sawArgo bool
+	for _, r := range rules {
+		if contains(r.APIGroups, "argoproj.io") {
+			sawArgo = true
+			assert.NotContains(t, r.Resources, "applicationsets")
+			assert.Equal(t, ReadOnlyVerbs(), r.Verbs)
+		}
+	}
+	assert.True(t, sawArgo, "expected a read-only argoproj.io rule")
+}
+
+func TestRenderFromResources_ArgoApplicationSetGrant(t *testing.T) {
+	resources := []APIResource{
+		{APIGroup: "", Resource: "pods", Namespaced: true, Verbs: []string{"*"}},
+		{APIGroup: "argoproj.io", Resource: "applicationsets", Namespaced: true, Verbs: []string{"*"}},
+	}
+
+	output := RenderFromResources(RenderOptions{
+		ClusterRoleName:         "claude-forge-agent",
+		ServiceAccountName:      "claude-forge-agent",
+		ServiceAccountNamespace: "claude-forge",
+	}, resources)
+
+	assert.Contains(t, output, "argoproj.io")
+	assert.Contains(t, output, "applicationsets")
+	assert.Contains(t, output, "patch")
+}
+
 func TestParseAPIResources(t *testing.T) {
 	input := `bindings                                    v1                                     true         Binding                          [create]
 configmaps                       cm          v1                                     true         ConfigMap                        [create delete deletecollection get list patch update watch]
