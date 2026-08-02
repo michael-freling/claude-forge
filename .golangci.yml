@@ -12,6 +12,14 @@ linters:
     - ineffassign
     # Static analysis
     - staticcheck
+  exclusions:
+    # Skip generated code. `generated: lax` (the default) already drops files
+    # with a "// Code generated ... DO NOT EDIT." header (the protobuf/connect
+    # and mock output), but the path rule makes the intent explicit for the
+    # buf-generated tree.
+    generated: lax
+    paths:
+      - internal/gen
 
 formatters:
   enable:

@@ -1,10 +1,7 @@
-// Package dashboard implements the local web dashboard for claude-forge: a
-// read-only JSON API (and an embedded single-page UI) that surfaces each
-// project's sessions, their pull requests, and the status of the MCP server
-// containers backing running sessions and the shared global scope.
 package dashboard
 
-// Dashboard is the top-level payload returned by GET /api/dashboard.
+// Dashboard is the top-level snapshot the provider gathers; the server maps it
+// to the generated proto and serves it via the DashboardService.GetDashboard RPC.
 type Dashboard struct {
 	// GeneratedAt is when the snapshot was built, in RFC3339.
 	GeneratedAt string `json:"generatedAt"`

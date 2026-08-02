@@ -33,9 +33,18 @@ For every project under `~/.claude-forge/`:
   MCP and any custom `scope: global` container servers) with their running
   status, shown once at the top.
 
-The page reads live Docker state on each load; use **Refresh** to re-fetch. It
-serves the JSON it renders at `GET /api/dashboard` if you want to consume it
-programmatically.
+The page reads live Docker state on each load; use **Refresh** to re-fetch.
+
+The UI is a React single-page app (its source lives in `frontend/`, embedded
+into the binary at build time). It talks to the server over
+[Connect](https://connectrpc.com/) using the schema in
+`proto/dashboard/v1/dashboard.proto` — to consume the data programmatically,
+call the same RPC (Connect, gRPC, or gRPC-Web all work; JSON shown here):
+
+```bash
+curl -X POST -H 'content-type: application/json' -d '{}' \
+  http://127.0.0.1:8099/dashboard.v1.DashboardService/GetDashboard
+```
 
 ## Notes and limitations
 

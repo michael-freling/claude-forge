@@ -18,7 +18,7 @@ KUBE_MCP_IMAGE   ?= ghcr.io/containers/kubernetes-mcp-server:latest
 
 GOARCH ?= $(shell go env GOARCH)
 
-.PHONY: help test images images-no-cache \
+.PHONY: help test generate images images-no-cache \
 	agent-image gateway-image github-mcp-image gcp-mcp-image kube-mcp-image \
 	docs-serve docs-build
 
@@ -30,6 +30,14 @@ test: ## Run all Go tests (root module + github-mcp + gcp-mcp modules)
 	go test ./...
 	cd mcp/github-mcp && go test ./...
 	cd mcp/gcp-mcp && go test ./...
+
+# Regenerate the protobuf/ConnectRPC code under internal/gen from proto/. Needs
+# buf plus protoc-gen-go and protoc-gen-connect-go on PATH (installed under
+# `$(go env GOPATH)/bin`). The generated tree is committed; CI (go.yml) lints
+# the schema and fails on any drift from a fresh `buf generate`.
+generate: ## Lint the proto schema and regenerate internal/gen from it
+	buf lint
+	buf generate
 
 images: agent-image gateway-image github-mcp-image gcp-mcp-image kube-mcp-image ## Build/pull all container images
 

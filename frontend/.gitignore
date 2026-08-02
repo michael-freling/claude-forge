@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+playwright-report/
+test-results/
+dist/
+
+# Vite build output is written into ../internal/dashboard/webdist and is
+# tracked by the Go module's git, not here.
+
+# NOTE: src/gen/ is intentionally committed (generated protobuf-es client).
