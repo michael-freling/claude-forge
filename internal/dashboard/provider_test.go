@@ -528,6 +528,34 @@ func TestDecodeProjectID_HyphenatedComponents(t *testing.T) {
 	assert.Equal(t, "aninexus", repo)
 }
 
+func TestResolveProject_DeletedWorktreeFallsBackToParent(t *testing.T) {
+	root := t.TempDir()
+	// The parent project exists, but the worktree directory has been removed
+	// (the common case after a worktree branch is merged and cleaned up).
+	parent := filepath.Join(root, "home", "michael-freling", "tools", "main")
+	require.NoError(t, os.MkdirAll(parent, 0o755))
+
+	p := &dataProvider{
+		fsRoot: root,
+		identify: func(dir string) (*project.Project, error) {
+			assert.Equal(t, parent, dir, "identify must be called with the parent project dir")
+			return &project.Project{Dir: dir, Owner: "michael-freling", Repo: "tools"}, nil
+		},
+	}
+
+	resolved, dir, owner, repo := p.resolveProject(
+		"-home-michael-freling-tools-main-.claude-worktrees-eager-wishing-seahorse")
+	assert.True(t, resolved, "deleted worktree must resolve via its parent project")
+	assert.Empty(t, dir, "no working tree exists, so dir stays empty (no branch derivation)")
+	assert.Equal(t, "michael-freling", owner)
+	assert.Equal(t, "tools", repo)
+
+	// When the parent is gone too, resolution fails entirely.
+	resolved, _, _, _ = p.resolveProject(
+		"-home-gone-project-.claude-worktrees-some-worktree")
+	assert.False(t, resolved)
+}
+
 // --- default dependency impls ---
 
 func TestDefaultGitBranch(t *testing.T) {

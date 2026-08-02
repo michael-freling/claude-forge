@@ -183,7 +183,7 @@ func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
 		}
 		resolved, dir, owner, repo := p.resolveProject(projID)
 		if !resolved {
-			warnings = append(warnings, fmt.Sprintf("could not resolve host directory for project %q; listing sessions only", projID))
+			warnings = append(warnings, fmt.Sprintf("directory for project %q no longer exists (removed checkout or worktree); listing its sessions only", projID))
 		}
 		build(projID, resolved, dir, owner, repo)
 	}
@@ -210,19 +210,36 @@ func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
 	}, nil
 }
 
+// worktreeMarker is the encoded form of the "/.claude-worktrees/" path segment
+// inside a project ID whose session directory belonged to a git worktree.
+const worktreeMarker = "-.claude-worktrees-"
+
 // resolveProject reverses a project ID back to its host directory and
 // identifies it. It fails (resolved=false) only when no matching directory
 // exists on disk or the directory is not a git project.
+//
+// A worktree session dir often outlives its worktree (worktrees are removed
+// when merged). When the worktree's own directory is gone but the parent
+// project still exists, the project resolves via the parent — owner/repo are
+// recovered, dir stays empty (there is no working tree to derive a branch
+// from).
 func (p *dataProvider) resolveProject(projID string) (bool, string, string, string) {
-	dir, ok := p.decodeProjectID(projID)
-	if !ok {
-		return false, "", "", ""
+	if dir, ok := p.decodeProjectID(projID); ok {
+		proj, err := p.identify(dir)
+		if err != nil {
+			return false, "", "", ""
+		}
+		return true, proj.Dir, proj.Owner, proj.Repo
 	}
-	proj, err := p.identify(dir)
-	if err != nil {
-		return false, "", "", ""
+
+	if i := strings.Index(projID, worktreeMarker); i > 0 {
+		if parent, ok := p.decodeProjectID(projID[:i]); ok {
+			if proj, err := p.identify(parent); err == nil {
+				return true, "", proj.Owner, proj.Repo
+			}
+		}
 	}
-	return true, proj.Dir, proj.Owner, proj.Repo
+	return false, "", "", ""
 }
 
 // decodeProjectID reverses a project ID (an absolute host path with every "/"
@@ -283,7 +300,10 @@ func (p *dataProvider) buildProject(
 	if err == nil {
 		for _, s := range sessions {
 			branch := ""
-			if resolved {
+			// dir can be empty for a resolved project whose own directory is
+			// gone (a deleted worktree recovered via its parent) — no working
+			// tree means no branch to derive.
+			if resolved && dir != "" {
 				branchDir := dir
 				if s.IsWorktree() {
 					branchDir = filepath.Join(dir, ".claude-worktrees", s.WorktreeName())
