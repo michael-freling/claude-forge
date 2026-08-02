@@ -36,18 +36,3 @@ func TestEnablePluginsInSettings_InvalidJSON(t *testing.T) {
 	err := enablePluginsInSettings(dir, []string{"foo@bar"})
 	assert.Error(t, err)
 }
-
-// TestKubeRenderCmd_DiscoveryError drives the "kube render" command against a
-// bogus kubeconfig/context so resource discovery fails, exercising the command's
-// error path.
-func TestKubeRenderCmd_DiscoveryError(t *testing.T) {
-	cmd := newKubeRenderCmd()
-	cmd.SetArgs([]string{
-		"--kubeconfig", filepath.Join(t.TempDir(), "nonexistent-kubeconfig"),
-		"--context", "does-not-exist",
-	})
-	cmd.SilenceUsage = true
-	cmd.SilenceErrors = true
-	err := cmd.Execute()
-	assert.Error(t, err)
-}

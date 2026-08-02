@@ -15,12 +15,11 @@ GATEWAY_IMAGE    ?= ghcr.io/michael-freling/claude-forge-gateway:latest
 GITHUB_MCP_IMAGE ?= ghcr.io/michael-freling/claude-forge-github-mcp:latest
 GCP_MCP_IMAGE    ?= ghcr.io/michael-freling/claude-forge-gcp-mcp:latest
 K8S_MCP_IMAGE    ?= ghcr.io/michael-freling/claude-forge-k8s-mcp:latest
-KUBE_MCP_IMAGE   ?= ghcr.io/containers/kubernetes-mcp-server:latest
 
 GOARCH ?= $(shell go env GOARCH)
 
 .PHONY: help test images images-no-cache \
-	agent-image gateway-image github-mcp-image gcp-mcp-image k8s-mcp-image kube-mcp-image \
+	agent-image gateway-image github-mcp-image gcp-mcp-image k8s-mcp-image \
 	docs-serve docs-build
 
 help: ## Show this help
@@ -33,7 +32,7 @@ test: ## Run all Go tests (root module + github-mcp + gcp-mcp + k8s-mcp modules)
 	cd mcp/gcp-mcp && go test ./...
 	cd mcp/k8s-mcp && go test ./...
 
-images: agent-image gateway-image github-mcp-image gcp-mcp-image k8s-mcp-image kube-mcp-image ## Build/pull all container images
+images: agent-image gateway-image github-mcp-image gcp-mcp-image k8s-mcp-image ## Build all container images
 
 images-no-cache: ## Build all locally-built images with --no-cache
 	$(MAKE) agent-image gateway-image github-mcp-image gcp-mcp-image k8s-mcp-image DOCKER_BUILD_FLAGS=--no-cache
@@ -57,9 +56,6 @@ gcp-mcp-image: ## Build the shared, read-only GCP MCP image
 
 k8s-mcp-image: ## Build the first-party Kubernetes MCP image
 	docker build $(DOCKER_BUILD_FLAGS) -t $(K8S_MCP_IMAGE) mcp/k8s-mcp/
-
-kube-mcp-image: ## Pull the shared Kubernetes MCP image (built upstream)
-	docker pull $(KUBE_MCP_IMAGE)
 
 # Docs targets need Hugo extended >= 0.146 (https://gohugo.io/installation/).
 # `docs-serve` runs in Hugo's development environment, so it also renders the

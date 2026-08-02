@@ -5,11 +5,11 @@ import (
 	"strings"
 )
 
-// The policy reproduces the carveouts that `claude-forge kube render` bakes into
-// the generated ClusterRole, so this first-party server enforces the *same*
-// permission model at the MCP layer when it authenticates with an unrestricted
-// local credential. Keep these lists in sync with
-// internal/forge/kube/carveouts.go (they intentionally match).
+// This file is the canonical claude-forge carveout list. The server
+// authenticates with an unrestricted local credential, so these lists are the
+// permission model, enforced at the MCP layer. (They originated as the RBAC
+// carveouts the since-removed `claude-forge kube render` command baked into a
+// generated ClusterRole.)
 
 // deniedAPIGroups are API groups blocked entirely (read and write). Touching
 // RBAC or admission config is a privilege-escalation surface.

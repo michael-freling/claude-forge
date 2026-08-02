@@ -27,7 +27,7 @@ defaults:
 docker:
   enabled: false
 
-# Custom MCP servers (in addition to the built-in github/kubernetes servers)
+# Custom MCP servers (in addition to the built-in github server)
 mcp_servers:
   # Remote server (http/sse) with a static token
   - name: example
@@ -70,6 +70,19 @@ mcp_servers:
       CLOUDSDK_CONFIG: /home/user/.config/gcloud
     mounts:
       - "~/.config/gcloud:/home/user/.config/gcloud:ro"
+  # The first-party Kubernetes MCP server (a native HTTP image shipped in this
+  # repo). See the Kubernetes page for the full setup.
+  - name: kube
+    type: container
+    scope: global
+    image: ghcr.io/michael-freling/claude-forge-k8s-mcp:latest
+    port: 8080
+    path: /mcp
+    args: ["--addr=:8080", "--kubeconfig=/home/user/.kube/config"]
+    env:
+      HOME: /home/user
+    mounts:
+      - "~/.kube:/home/user/.kube:ro"
   # Per-session (isolated) native HTTP image
   - name: my-sidecar
     type: container
@@ -77,26 +90,13 @@ mcp_servers:
     image: ghcr.io/example/some-mcp:latest
     port: 8080
     path: /mcp
-
-# Optional Kubernetes MCP integration
-kubernetes:
-  enabled: false
-  image: ghcr.io/containers/kubernetes-mcp-server:latest
-  # ServiceAccount token lifetime to request (Go duration, default 24h).
-  # Tokens are re-minted at session start and refreshed while sessions run;
-  # the API server may cap the granted lifetime.
-  token_duration: 24h
-  default_context: dev
-  contexts:
-    - host_context: dev
-      service_account_name: claude-forge-agent
-      service_account_namespace: default
 ```
 
 See [Custom Servers]({{< relref "/docs/mcp-servers/custom" >}}) for the full
 `mcp_servers` reference, [Kubernetes]({{< relref "/docs/mcp-servers/kubernetes" >}})
-for the `kubernetes` section, and [Google Cloud]({{< relref "/docs/mcp-servers/gcp" >}})
-for the read-only Google Cloud MCP server (configured under `mcp_servers`).
+for the first-party Kubernetes MCP server, and
+[Google Cloud]({{< relref "/docs/mcp-servers/gcp" >}}) for the read-only Google
+Cloud MCP server (both configured under `mcp_servers`).
 
 ## Authentication
 

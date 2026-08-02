@@ -12,8 +12,8 @@ CLI or config changes but the docs don't:
   installation, quick start, and links to the docs site. No detailed command
   or config reference.
 - `docs/content/docs/*.md` — the **full user guide**, published to GitHub
-  Pages (usage, configuration, MCP servers, Kubernetes, authentication,
-  how-it-works). This is where the detailed reference lives. Ignore
+  Pages (usage, configuration, MCP servers, authentication, how-it-works).
+  This is where the detailed reference lives. Ignore
   `docs/content/docs/development/` (internal, not user-facing).
 
 This skill keeps both accurate by checking every claim against the source of
@@ -49,7 +49,7 @@ truth — never from memory.
 
 3. **Enumerate config + images.** Read `internal/forge/config/config.go`. List
    every `yaml:"..."` key under `Config`, `ImagesConfig`, `DefaultsConfig`, and
-   `KubernetesConfig`, and the `Default*Image` constant values.
+   `MCPServerConfig`, and the `Default*Image` constant values.
 
 4. **Diff against the docs.** Compare the lists to `README.md` and every page
    under `docs/content/docs/` (excluding `development/`). Flag:

@@ -4,7 +4,6 @@ package forge
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,7 +16,6 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
-	"github.com/michael-freling/claude-forge/internal/forge/kube"
 	"github.com/michael-freling/claude-forge/internal/forge/project"
 	"github.com/michael-freling/claude-forge/internal/forge/session"
 	"gopkg.in/yaml.v3"
@@ -30,10 +28,6 @@ type Orchestrator struct {
 	ConfigDir  string
 	ClaudeDir  string
 	Log        func(format string, args ...any)
-
-	// kubeRefresher is set by startKubernetesMCP so RunKubeTokenRefresher can
-	// keep the shared MCP server's SA tokens fresh while a session runs.
-	kubeRefresher *kube.TokenRefresher
 }
 
 // NewOrchestrator creates an Orchestrator with default paths derived from homeDir.
@@ -100,10 +94,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	cfg, err := config.Load(o.ConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
-
-	if cfg.Kubernetes.Enabled && len(cfg.Kubernetes.Contexts) == 0 {
-		return nil, fmt.Errorf("kubernetes is enabled but no contexts are configured; run 'claude-forge init' and configure kubernetes.contexts in %s/config.yaml", o.ConfigDir)
 	}
 
 	// Identify project
@@ -177,9 +167,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 
 	// Pull images if not present
 	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
-	if cfg.Kubernetes.Enabled {
-		imagesToPull = append(imagesToPull, cfg.Kubernetes.Image)
-	}
 	for _, img := range imagesToPull {
 		exists, err := o.Containers.ImageExists(ctx, img)
 		if err != nil {
@@ -257,17 +244,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("github-mcp failed to start: %w", err)
 	}
 
-	// Start Kubernetes MCP shared service if enabled (before writing settings
-	// so we only advertise it when the server is actually running)
-	k8sRunning := false
-	if cfg.Kubernetes.Enabled {
-		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
-			o.Log("Warning: failed to start Kubernetes MCP: %v", err)
-		} else {
-			k8sRunning = true
-		}
-	}
-
 	// Start custom "container" MCP servers (per-session or global) before
 	// writing settings, so we only advertise the ones that actually came up.
 	sidecarRegs, usedSharedMCP := o.startCustomSidecars(ctx, cfg, sess)
@@ -275,9 +251,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	// Write MCP server config to settings.json for the agent
 	mcpServers := map[string]claudecode.MCPServerConfig{
 		"github": {Type: "url", URL: "http://github-mcp:8083/mcp"},
-	}
-	if k8sRunning {
-		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:" + kube.MCPServerPort + "/mcp"}
 	}
 
 	// Merge user-configured custom MCP servers (e.g. a hosted Vercel MCP).
@@ -429,10 +402,10 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 
 	// Build extra networks for the agent (connect before start so DNS is ready).
-	// The agent joins forge-shared when any shared service is running there:
-	// the Kubernetes MCP and/or global custom MCP sidecars.
+	// The agent joins forge-shared when any global custom MCP sidecar is
+	// running there.
 	var extraNetworks []container.NetworkAttachment
-	if k8sRunning || usedSharedMCP {
+	if usedSharedMCP {
 		extraNetworks = append(extraNetworks, container.NetworkAttachment{
 			NetworkName: "forge-shared",
 		})
@@ -622,7 +595,7 @@ func expandEnvMap(m map[string]string) map[string]string {
 // startCustomSidecars starts each type:"container" MCP server as a per-session
 // sidecar on the session network and returns the HTTP registrations for the
 // ones that came up. Failures are logged and skipped so a single bad server
-// doesn't abort the session (matching the Kubernetes MCP behavior).
+// doesn't abort the session.
 func (o *Orchestrator) startCustomSidecars(ctx context.Context, cfg *config.Config, sess *Session) (map[string]claudecode.MCPServerConfig, bool) {
 	regs := map[string]claudecode.MCPServerConfig{}
 	usedShared := false
@@ -870,197 +843,6 @@ func (o *Orchestrator) warnUnauthenticatedMCP(cfg *config.Config) {
 	}
 }
 
-// startKubernetesMCP ensures the shared Kubernetes MCP service is running and
-// that the SA tokens it uses are fresh. The generated-kubeconfig directory is
-// bind-mounted into the container, and the kubeconfig references tokens via
-// tokenFile, so rewriting the token files rotates credentials inside the
-// running container without a restart.
-func (o *Orchestrator) startKubernetesMCP(ctx context.Context, cfg *config.Config) error {
-	// Ensure shared network exists
-	if _, err := o.Containers.EnsureSharedNetwork(ctx, "forge-shared"); err != nil {
-		return fmt.Errorf("failed to ensure shared network: %w", err)
-	}
-
-	k8sMCPName := "forge-k8s-mcp"
-	running, err := o.Containers.IsContainerRunning(ctx, k8sMCPName)
-	if err != nil {
-		return fmt.Errorf("failed to check k8s-mcp status: %w", err)
-	}
-
-	kubeconfigDir := filepath.Join(o.ConfigDir, "k8s-mcp")
-
-	homeKubeconfig := filepath.Join(o.HomeDir, ".kube", "config")
-	if kc := os.Getenv("KUBECONFIG"); kc != "" {
-		homeKubeconfig = kc
-	}
-
-	var contexts []kube.ContextConfig
-	for _, c := range cfg.Kubernetes.Contexts {
-		contexts = append(contexts, kube.ContextConfig{
-			HostContext:             c.HostContext,
-			ServiceAccountName:      c.ServiceAccountName,
-			ServiceAccountNamespace: c.ServiceAccountNamespace,
-		})
-	}
-
-	defaultCtx := cfg.Kubernetes.DefaultContext
-	if defaultCtx == "" && len(cfg.Kubernetes.Contexts) > 0 {
-		defaultCtx = cfg.Kubernetes.Contexts[0].HostContext
-	}
-
-	tokenDuration, err := cfg.Kubernetes.TokenDurationValue()
-	if err != nil {
-		return err
-	}
-
-	// Decide whether the running container can be reused as-is, WITHOUT tearing
-	// it down yet — the shared server backs every session on the host, so a
-	// failed regeneration must leave it in place rather than take it down for
-	// everyone.
-	reuse := running
-	recreateReason := ""
-	// A container created before the tokenFile layout existed bind-mounts a
-	// single kubeconfig with an inline (long-expired) token; refreshing token
-	// files can't reach it, so it must be recreated.
-	if reuse && !hasTokenFileLayout(kubeconfigDir) {
-		reuse, recreateReason = false, "kubeconfig layout changed"
-	}
-	// The server reads its kubeconfig only at startup, so context changes in
-	// config.yaml require a recreate: the old kubeconfig would keep referencing
-	// token files that are no longer refreshed.
-	if reuse {
-		upToDate, err := kube.KubeconfigUpToDate(contexts, homeKubeconfig, defaultCtx, kubeconfigDir)
-		switch {
-		case err != nil:
-			o.Log("Warning: could not compare Kubernetes MCP kubeconfig: %v", err)
-		case !upToDate:
-			reuse, recreateReason = false, "context configuration changed"
-		}
-	}
-
-	if reuse {
-		// Non-fatal: the running server's current tokens may still be valid,
-		// and the in-session refresher will retry.
-		if err := kube.RefreshTokens(contexts, homeKubeconfig, kubeconfigDir, tokenDuration); err != nil {
-			o.Log("Warning: some Kubernetes contexts could not refresh tokens: %v", err)
-		} else {
-			o.Log("Kubernetes MCP already running; refreshed ServiceAccount tokens")
-		}
-		o.setKubeRefresher(contexts, homeKubeconfig, kubeconfigDir, tokenDuration)
-		return nil
-	}
-
-	// (Re)create. Build the new kubeconfig and mint tokens BEFORE stopping any
-	// running container: a hard failure (e.g. an unknown context) then leaves
-	// the shared server serving other sessions instead of taking it down.
-	// Token-mint failures are non-fatal — the kubeconfig is written, healthy
-	// contexts work, and the refresher retries the rest.
-	if err := kube.GenerateKubeconfig(contexts, homeKubeconfig, defaultCtx, kubeconfigDir, tokenDuration); err != nil {
-		var mintErr *kube.TokenMintError
-		if !errors.As(err, &mintErr) {
-			return fmt.Errorf("failed to generate kubeconfig: %w", err)
-		}
-		o.Log("Warning: some Kubernetes contexts could not mint tokens (the refresher will retry): %v", err)
-	}
-	// Drop the pre-tokenFile-layout kubeconfig so the mounted directory only
-	// carries current credentials.
-	_ = os.Remove(filepath.Join(kubeconfigDir, legacyKubeconfigFile))
-
-	// The replacement is ready; now it is safe to swap the container.
-	if running {
-		o.Log("Recreating Kubernetes MCP: %s", recreateReason)
-		_ = o.Containers.StopContainer(ctx, k8sMCPName)
-	}
-	// Remove the existing container (stopped above, or a stale crashed one) so
-	// we can create a fresh one with the same name.
-	_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
-
-	cmd := kube.MCPServerArgs()
-
-	o.Log("Starting Kubernetes MCP: %s", k8sMCPName)
-	k8sID, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
-		Name:        k8sMCPName,
-		Image:       cfg.Kubernetes.Image,
-		NetworkName: "forge-shared",
-		Alias:       "k8s-mcp",
-		Cmd:         cmd,
-		Mounts: []mount.Mount{
-			{
-				Type:     mount.TypeBind,
-				Source:   kubeconfigDir,
-				Target:   kube.MCPServerKubeDir,
-				ReadOnly: true,
-			},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to start k8s-mcp: %w", err)
-	}
-
-	if err := o.Containers.WaitForReady(ctx, k8sID, 10*time.Second); err != nil {
-		return fmt.Errorf("k8s-mcp failed to start: %w", err)
-	}
-
-	o.setKubeRefresher(contexts, homeKubeconfig, kubeconfigDir, tokenDuration)
-	return nil
-}
-
-// legacyKubeconfigFile is the single-file kubeconfig (inline token) written
-// by binaries that predate the tokenFile layout.
-const legacyKubeconfigFile = "kubeconfig"
-
-// hasTokenFileLayout reports whether the running container was created with
-// the tokenFile-based directory mount, as opposed to the legacy single-file
-// mount with an inline token. Legacy binaries rewrite their single-file
-// kubeconfig whenever they create the container (and this binary removes it
-// after every create), so its presence means an old binary created the
-// running container even if the new layout also exists on disk.
-func hasTokenFileLayout(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, kube.KubeconfigFileName)); err != nil {
-		return false
-	}
-	if _, err := os.Stat(filepath.Join(dir, legacyKubeconfigFile)); err == nil {
-		return false
-	}
-	return true
-}
-
-func (o *Orchestrator) setKubeRefresher(contexts []kube.ContextConfig, kubeconfigPath, outputDir string, tokenDuration time.Duration) {
-	o.kubeRefresher = &kube.TokenRefresher{
-		Contexts:       contexts,
-		KubeconfigPath: kubeconfigPath,
-		OutputDir:      outputDir,
-		TokenDuration:  tokenDuration,
-		Log:            o.Log,
-	}
-}
-
-// RunKubeTokenRefresher blocks until ctx is cancelled, periodically
-// re-minting the SA tokens the shared Kubernetes MCP server uses. Tokens
-// expire after ~1h on most clusters while sessions can stay open for days, so
-// the CLI keeps them fresh for as long as it is attached. No-op when the
-// Kubernetes MCP was not started by this process.
-//
-// quiet routes failure warnings to stderr instead of the orchestrator's
-// stdout logger: during an interactive session `docker attach` owns
-// stdin/stdout for the Claude Code TUI, so a background printf there would
-// corrupt the screen — but stderr is safe, and dropping the warnings entirely
-// would hide a cluster going unreachable until a tool call fails hours later.
-func (o *Orchestrator) RunKubeTokenRefresher(ctx context.Context, quiet bool) {
-	if o.kubeRefresher == nil {
-		return
-	}
-	r := o.kubeRefresher
-	if quiet {
-		rc := *r
-		rc.Log = func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, format+"\n", args...)
-		}
-		r = &rc
-	}
-	r.Run(ctx)
-}
-
 // RestartSharedMCP stops all shared MCP containers and starts them again.
 func (o *Orchestrator) RestartSharedMCP(ctx context.Context) error {
 	cfg, err := config.Load(o.ConfigDir)
@@ -1075,25 +857,9 @@ func (o *Orchestrator) RestartSharedMCP(ctx context.Context) error {
 		}
 	}
 
-	if !cfg.Kubernetes.Enabled && len(globals) == 0 {
+	if len(globals) == 0 {
 		o.Log("No shared MCP servers configured.")
 		return nil
-	}
-
-	if cfg.Kubernetes.Enabled {
-		k8sMCPName := "forge-k8s-mcp"
-		running, err := o.Containers.IsContainerRunning(ctx, k8sMCPName)
-		if err != nil {
-			return fmt.Errorf("failed to check k8s-mcp status: %w", err)
-		}
-		if running {
-			o.Log("Stopping: %s", k8sMCPName)
-			_ = o.Containers.StopContainer(ctx, k8sMCPName)
-			_ = o.Containers.RemoveContainer(ctx, k8sMCPName)
-		}
-		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
-			return fmt.Errorf("failed to restart Kubernetes MCP: %w", err)
-		}
 	}
 
 	// Restart global custom MCP sidecars: stop the existing instance so
@@ -1121,9 +887,6 @@ func (o *Orchestrator) Build(ctx context.Context) error {
 	}
 
 	images := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
-	if cfg.Kubernetes.Enabled {
-		images = append(images, cfg.Kubernetes.Image)
-	}
 	images = append(images, customSidecarImages(cfg)...)
 	seen := make(map[string]bool, len(images))
 	for _, img := range images {

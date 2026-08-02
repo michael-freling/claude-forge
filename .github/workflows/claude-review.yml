@@ -44,7 +44,7 @@ jobs:
               new exported functions that lack tests.
             - Adherence to the conventions in CLAUDE.md, especially the key
               invariants for container flags and MCP settings.
-            - Security of any changes to auth, gateway, or kubeconfig/RBAC code.
+            - Security of any changes to auth, gateway, or MCP policy code.
 
             Leave concise, actionable feedback as inline review comments and a
             short summary comment. Only flag substantive issues — do not nitpick
