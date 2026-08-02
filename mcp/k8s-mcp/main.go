@@ -16,6 +16,8 @@ func main() {
 	addr := flag.String("addr", ":8080", "Listen address")
 	kubeconfig := flag.String("kubeconfig", "", "Path to kubeconfig (defaults to $KUBECONFIG, then ~/.kube/config)")
 	kubeContext := flag.String("context", "", "Kubeconfig context to use (defaults to current-context)")
+	gcpAuth := flag.Bool("gcp-auth", false,
+		"Force Google ADC auth; auto-enabled when the kubeconfig uses gke-gcloud-auth-plugin")
 	flag.Parse()
 
 	kc := *kubeconfig
@@ -28,7 +30,7 @@ func main() {
 		}
 	}
 
-	client, err := NewClient(kc, *kubeContext)
+	client, err := NewClient(kc, *kubeContext, *gcpAuth)
 	if err != nil {
 		log.Fatalf("Failed to initialize Kubernetes client: %v", err)
 	}

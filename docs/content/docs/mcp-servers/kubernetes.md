@@ -51,16 +51,28 @@ mcp_servers:
     port: 8080
     path: /mcp
     args: ["--addr=:8080", "--kubeconfig=/home/user/.kube/config"]
+    env:
+      HOME: /home/user
     mounts:
       - "~/.kube:/home/user/.kube:ro"
+      - "~/.config/gcloud:/home/user/.config/gcloud:ro" # ADC, for GKE contexts
 ```
 
-**Limitations:** it takes auth straight from the kubeconfig, so use one with a
-bearer token or embedded client certificate — exec-plugin auth (GKE/EKS/OIDC) is
-not available in the container, and a cluster served at `localhost` is not
-reachable from the container network. Because the credential is your own
-(unrestricted) one, the MCP policy is the *only* safety layer here; for
-defense-in-depth prefer the RBAC-scoped ServiceAccount flow above.
+**Auth:** taken straight from the kubeconfig (bearer token or embedded client
+certificate) — with one exception: **GKE kubeconfigs work**. When the selected
+context uses the `gke-gcloud-auth-plugin` exec plugin (or `--gcp-auth` forces
+it), the server authenticates with a Bearer token minted in-process from Google
+Application Default Credentials and auto-refreshes it, so the plugin binary is
+never needed. That path requires `gcloud auth application-default login` on the
+host and the read-only `~/.config/gcloud` mount shown above.
+
+**Limitations:** other exec plugins (EKS `aws`, OIDC helpers) remain
+unsupported. A cluster served at `localhost` is not reachable from the
+container network, and a private GKE endpoint still needs a route
+(bastion/tunnel; `--network host` when running standalone). Because the
+credential is your own (unrestricted) one, the MCP policy is the *only* safety
+layer here; for defense-in-depth prefer the RBAC-scoped ServiceAccount flow
+above.
 
 ## Token lifetime and refresh
 

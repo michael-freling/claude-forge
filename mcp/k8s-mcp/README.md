@@ -38,13 +38,23 @@ The server never offers an exec/attach tool at all.
 ## Usage
 
 ```
-k8s-mcp [--addr :8080] [--kubeconfig <path>] [--context <name>]
+k8s-mcp [--addr :8080] [--kubeconfig <path>] [--context <name>] [--gcp-auth]
 ```
 
 `--kubeconfig` defaults to `$KUBECONFIG`, then `~/.kube/config`. Auth is taken
-straight from the kubeconfig (bearer token or embedded client certificate);
-exec-plugin auth (GKE/EKS/OIDC) is not supported inside the container, and a
-cluster served at `localhost` is not reachable from the container network.
+straight from the kubeconfig (bearer token or embedded client certificate) —
+with one exception: **GKE kubeconfigs work**. When the selected context
+authenticates via the `gke-gcloud-auth-plugin` exec plugin (or `--gcp-auth`
+forces it), the server replaces that auth with a Bearer token minted in-process
+from Google Application Default Credentials, and auto-refreshes it — the plugin
+binary is never needed. This requires running
+`gcloud auth application-default login` on the host and mounting
+`~/.config/gcloud` read-only into the container.
+
+Other exec plugins (EKS `aws`, OIDC helpers) remain unsupported. Network
+reachability is separate from auth: a cluster served at `localhost` is not
+reachable from the container network, and a private GKE endpoint still needs a
+route (bastion/tunnel; `--network host` when running standalone).
 
 ## As a claude-forge MCP server
 
@@ -59,8 +69,11 @@ mcp_servers:
     port: 8080
     path: /mcp
     args: ["--addr=:8080", "--kubeconfig=/home/user/.kube/config"]
+    env:
+      HOME: /home/user
     mounts:
       - "~/.kube:/home/user/.kube:ro"
+      - "~/.config/gcloud:/home/user/.config/gcloud:ro" # ADC, for GKE contexts
 ```
 
 ## Development

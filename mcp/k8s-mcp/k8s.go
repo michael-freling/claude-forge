@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,8 +37,11 @@ type Client struct {
 
 // NewClient builds a Client from a kubeconfig file and optional context. Auth
 // (bearer token or embedded client certificate) comes straight from the
-// kubeconfig; exec-plugin auth is not supported inside the container.
-func NewClient(kubeconfigPath, kubeContext string) (*Client, error) {
+// kubeconfig. GKE kubeconfigs are the exception: their gke-gcloud-auth-plugin
+// exec plugin is not available in the container, so when the selected context
+// uses it (or gcpAuth forces it) the kubeconfig's auth is replaced with Google
+// Application Default Credentials minted and refreshed in-process.
+func NewClient(kubeconfigPath, kubeContext string, gcpAuth bool) (*Client, error) {
 	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
 	overrides := &clientcmd.ConfigOverrides{}
 	if kubeContext != "" {
@@ -47,6 +51,13 @@ func NewClient(kubeconfigPath, kubeContext string) (*Client, error) {
 	restConfig, err := cc.ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load kubeconfig %s: %w", kubeconfigPath, err)
+	}
+
+	if gcpAuth || usesGKEAuthPlugin(kubeconfigPath, kubeContext) {
+		if err := applyGCPAuth(context.Background(), restConfig); err != nil {
+			return nil, err
+		}
+		log.Printf("GKE/ADC auth active: authenticating with Google Application Default Credentials (auto-refreshing, in-process)")
 	}
 
 	dyn, err := dynamic.NewForConfig(restConfig)

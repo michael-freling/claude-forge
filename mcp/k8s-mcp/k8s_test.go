@@ -132,7 +132,7 @@ func TestNewClient(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(testKubeconfig), 0o600))
 
 	// Default context.
-	c, err := NewClient(path, "")
+	c, err := NewClient(path, "", false)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	assert.NotNil(t, c.dyn)
@@ -141,13 +141,13 @@ func TestNewClient(t *testing.T) {
 	assert.NotNil(t, c.mapper)
 
 	// Explicit context override.
-	c2, err := NewClient(path, "test")
+	c2, err := NewClient(path, "test", false)
 	require.NoError(t, err)
 	require.NotNil(t, c2)
 }
 
 func TestNewClient_LoadError(t *testing.T) {
-	_, err := NewClient(filepath.Join(t.TempDir(), "does-not-exist"), "")
+	_, err := NewClient(filepath.Join(t.TempDir(), "does-not-exist"), "", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to load kubeconfig")
 }
