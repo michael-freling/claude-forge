@@ -20,6 +20,48 @@ See the `kubernetes` section of the
 [configuration reference]({{< relref "/docs/configuration" >}}) for the
 available options.
 
+## First-party server for your own credential
+
+The built-in `kubernetes` integration above mints and rotates a ServiceAccount
+token and relies on **RBAC** as the safety layer — ideal when you can create a
+ServiceAccount in the cluster.
+
+If you'd rather not, claude-forge also ships a **first-party Kubernetes MCP
+server** (`ghcr.io/michael-freling/claude-forge-k8s-mcp`) that authenticates
+with **your own kubeconfig** and instead enforces the *same carveouts at the MCP
+layer*. Unlike the upstream server's coarse `--read-only` switch (which forbids
+all writes), it allows **read and write** on ordinary resources while denying —
+regardless of what your credential can do:
+
+- `secrets` and `serviceaccounts` (read or write),
+- the `rbac.authorization.k8s.io` and `admissionregistration.k8s.io` API groups,
+- `pods/exec`, `pods/attach`, `serviceaccounts/token`, and `impersonate`,
+- writes to cluster-scoped resources other than `nodes`.
+
+That is exactly the permission set `claude-forge kube render` grants — so you get
+the same safe operator surface without creating a ServiceAccount. Add it as a
+[custom]({{< relref "custom" >}}) global-scope container server:
+
+```yaml
+mcp_servers:
+  - name: kube                 # "kubernetes" is reserved by the built-in
+    type: container
+    scope: global
+    image: ghcr.io/michael-freling/claude-forge-k8s-mcp:latest
+    port: 8080
+    path: /mcp
+    args: ["--addr=:8080", "--kubeconfig=/home/user/.kube/config"]
+    mounts:
+      - "~/.kube:/home/user/.kube:ro"
+```
+
+**Limitations:** it takes auth straight from the kubeconfig, so use one with a
+bearer token or embedded client certificate — exec-plugin auth (GKE/EKS/OIDC) is
+not available in the container, and a cluster served at `localhost` is not
+reachable from the container network. Because the credential is your own
+(unrestricted) one, the MCP policy is the *only* safety layer here; for
+defense-in-depth prefer the RBAC-scoped ServiceAccount flow above.
+
 ## Token lifetime and refresh
 
 The MCP server authenticates to each cluster with a ServiceAccount token
