@@ -37,7 +37,13 @@ The UI is split into three pages (client-side routes; deep links work):
 - **MCP servers** (`/servers`) — the shared, host-wide servers (the Kubernetes
   MCP and any custom `scope: global` container servers) with their running
   status, plus a section per running session listing its session-scope
-  servers.
+  servers, attributed to its project and session name.
+
+A running session and its server detail cross-link both ways: a running
+session's card and its sessions-table row link to that session's section on
+the servers page, and the section's session name links back to the session's
+row — the target section or row is scrolled into view and briefly
+highlighted.
 
 PR lookup uses the same GitHub token resolution as the gateway
 (`GITHUB_TOKEN`, then `gh` credentials); if no token is available, PRs are

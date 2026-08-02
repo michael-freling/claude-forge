@@ -10,6 +10,7 @@ import { ErrorState } from "./ErrorState";
 import { Footer } from "./Footer";
 import { Header } from "./Header";
 import { LoadingState } from "./LoadingState";
+import { ScrollToAnchor } from "./ScrollToAnchor";
 import { WarningsBanner } from "./WarningsBanner";
 
 /**
@@ -26,6 +27,7 @@ export function App({ client }: { client?: DashboardClient }) {
 
   return (
     <>
+      <ScrollToAnchor />
       <Header generatedAt={generatedAt} loading={loading} onRefresh={refresh} />
       <main>
         {!data && (status === "loading" || status === "idle") ? (

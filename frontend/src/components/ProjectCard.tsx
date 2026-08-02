@@ -36,6 +36,7 @@ export function ProjectCard({
         <SessionsTable
           sessions={list}
           runningSessions={project.runningSessions}
+          projectId={project.id}
           label={title}
         />
       </div>

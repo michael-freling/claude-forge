@@ -1,6 +1,12 @@
 import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { makePR, makeRunningSession, makeSession } from "../test/fixtures";
+import {
+  makePR,
+  makeRunningSession,
+  makeServer,
+  makeSession,
+} from "../test/fixtures";
 import { SessionsTable } from "./SessionsTable";
 
 describe("SessionsTable", () => {
@@ -48,25 +54,34 @@ describe("SessionsTable", () => {
     ).toBeInTheDocument();
   });
 
-  it("marks a session as running when a running session carries its id", () => {
+  it("marks a session as running and links it to its server section", () => {
     const { container } = render(
-      <SessionsTable
-        label="octo/cat"
-        sessions={[
-          makeSession({ id: "abcdef12-3456", name: "live" }),
-          makeSession({ id: "99999999-0000", name: "idle" }),
-        ]}
-        runningSessions={[
-          makeRunningSession({
-            shortId: "11223344",
-            claudeSessionId: "abcdef12-3456",
-          }),
-        ]}
-      />,
+      <MemoryRouter>
+        <SessionsTable
+          label="octo/cat"
+          projectId="-home-p"
+          sessions={[
+            makeSession({ id: "abcdef12-3456", name: "live" }),
+            makeSession({ id: "99999999-0000", name: "idle" }),
+          ]}
+          runningSessions={[
+            makeRunningSession({
+              shortId: "11223344",
+              claudeSessionId: "abcdef12-3456",
+              mcpServers: [makeServer()],
+            }),
+          ]}
+        />
+      </MemoryRouter>,
     );
     const dots = container.querySelectorAll(".run-dot");
     expect(dots).toHaveLength(1);
     expect(dots[0].closest("td")).toHaveTextContent("live");
+    expect(
+      screen.getByRole("link", { name: "1 MCP server for session live" }),
+    ).toHaveAttribute("href", "/servers#rs--home-p-11223344");
+    // idle row: no link
+    expect(screen.getAllByRole("link")).toHaveLength(1);
   });
 
   it("renders an unnamed session in italic and em-dashes empty fields", () => {

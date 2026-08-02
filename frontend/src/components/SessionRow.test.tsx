@@ -1,15 +1,18 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { makeSession } from "../test/fixtures";
+import { makeRunningSession, makeServer, makeSession } from "../test/fixtures";
 import { SessionRow } from "./SessionRow";
 
 function inTable(node: ReactNode) {
   return render(
-    <table>
-      <tbody>{node}</tbody>
-    </table>,
+    <MemoryRouter>
+      <table>
+        <tbody>{node}</tbody>
+      </table>
+    </MemoryRouter>,
   );
 }
 
@@ -60,9 +63,21 @@ describe("SessionRow", () => {
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
+  it("anchors the row by session id (none when the id is empty)", () => {
+    const { container } = inTable(
+      <SessionRow session={makeSession({ id: "abcd-1" })} />,
+    );
+    expect(container.querySelector("tr")?.id).toBe("sess-abcd-1");
+
+    const { container: bare } = inTable(
+      <SessionRow session={makeSession({ id: "" })} />,
+    );
+    expect(bare.querySelector("tr")?.hasAttribute("id")).toBe(false);
+  });
+
   it("shows a running dot (with hidden text) only when running", () => {
     const { container } = inTable(
-      <SessionRow session={makeSession()} running />,
+      <SessionRow session={makeSession()} running={makeRunningSession()} />,
     );
     expect(container.querySelector(".run-dot")).toBeInTheDocument();
     expect(screen.getByText("running:")).toHaveClass("sr-only");
@@ -71,5 +86,42 @@ describe("SessionRow", () => {
       <SessionRow session={makeSession()} />,
     );
     expect(idle.querySelector(".run-dot")).toBeNull();
+    expect(within(idle).queryByRole("link", { name: /MCP server/ })).toBeNull();
+  });
+
+  it("links a running row to its project-scoped server section", () => {
+    inTable(
+      <SessionRow
+        session={makeSession({ name: "wire it" })}
+        projectId="-home-p"
+        running={makeRunningSession({
+          shortId: "abcdef12",
+          mcpServers: [makeServer(), makeServer({ name: "extra" })],
+        })}
+      />,
+    );
+    const link = screen.getByRole("link", {
+      name: "2 MCP servers for session wire it",
+    });
+    expect(link).toHaveAttribute("href", "/servers#rs--home-p-abcdef12");
+    expect(link).toHaveTextContent("2 servers →");
+  });
+
+  it("uses singular server wording and the (unnamed) fallback", () => {
+    inTable(
+      <SessionRow
+        session={makeSession({ name: "" })}
+        projectId="p"
+        running={makeRunningSession({
+          shortId: "feedbeef",
+          mcpServers: [makeServer()],
+        })}
+      />,
+    );
+    const link = screen.getByRole("link", {
+      name: "1 MCP server for session (unnamed)",
+    });
+    expect(link).toHaveAttribute("href", "/servers#rs-p-feedbeef");
+    expect(link).toHaveTextContent("1 server →");
   });
 });

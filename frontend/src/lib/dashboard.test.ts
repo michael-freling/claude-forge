@@ -8,11 +8,14 @@ import {
 } from "../test/fixtures";
 import {
   findRecordedSession,
+  findRunningForSession,
   isSessionRunning,
   matchesFilter,
   projectActivity,
   projectTitle,
+  runningAnchor,
   runningEntries,
+  sessionAnchor,
   sessionTime,
   sortProjects,
   sortSessions,
@@ -95,6 +98,46 @@ describe("findRecordedSession", () => {
         makeRunningSession({ claudeSessionId: "ffffffff-0000" }),
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("findRunningForSession", () => {
+  const session = makeSession({ id: "abcdef12-3456" });
+  const hit = makeRunningSession({
+    shortId: "11223344",
+    claudeSessionId: "abcdef12-3456",
+  });
+  const miss = makeRunningSession({
+    shortId: "99999999",
+    claudeSessionId: "other-id",
+  });
+
+  it("returns the running session matched by Claude session id", () => {
+    expect(findRunningForSession([miss, hit], session)).toBe(hit);
+  });
+
+  it("returns undefined when nothing matches", () => {
+    expect(findRunningForSession([miss], session)).toBeUndefined();
+    expect(findRunningForSession([], session)).toBeUndefined();
+  });
+
+  it("never matches through an empty claudeSessionId", () => {
+    const idless = makeRunningSession({ claudeSessionId: "" });
+    expect(
+      findRunningForSession([idless], makeSession({ id: "" })),
+    ).toBeUndefined();
+  });
+});
+
+describe("anchors", () => {
+  it("scopes the running-session anchor by project id", () => {
+    expect(
+      runningAnchor("-home-x", makeRunningSession({ shortId: "abcdef12" })),
+    ).toBe("rs--home-x-abcdef12");
+  });
+
+  it("builds the recorded-session anchor from the session id", () => {
+    expect(sessionAnchor("abcdef12-3456")).toBe("sess-abcdef12-3456");
   });
 });
 

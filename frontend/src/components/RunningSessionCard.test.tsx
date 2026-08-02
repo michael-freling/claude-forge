@@ -1,4 +1,6 @@
 import { render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import {
   makePR,
@@ -9,8 +11,12 @@ import {
 } from "../test/fixtures";
 import { RunningSessionCard } from "./RunningSessionCard";
 
+const renderCard = (node: ReactNode) =>
+  render(<MemoryRouter>{node}</MemoryRouter>);
+
 const project = () =>
   makeProject({
+    id: "-home-p",
     owner: "octo",
     repo: "cat",
     sessions: [
@@ -26,7 +32,7 @@ const project = () =>
 
 describe("RunningSessionCard", () => {
   it("joins the recorded session and shows name, branch, worktree, PR, pills", () => {
-    render(
+    renderCard(
       <RunningSessionCard
         project={project()}
         running={makeRunningSession({
@@ -47,6 +53,24 @@ describe("RunningSessionCard", () => {
     expect(screen.getByText("github")).toBeInTheDocument();
   });
 
+  it("links onward to this session's server section on /servers", () => {
+    renderCard(
+      <RunningSessionCard
+        project={project()}
+        running={makeRunningSession({
+          shortId: "abcdef12",
+          claudeSessionId: "abcdef12-3456-7890",
+          mcpServers: [makeServer({ name: "github" })],
+        })}
+      />,
+    );
+    const link = screen.getByRole("link", {
+      name: "1 MCP server for session wire it up",
+    });
+    expect(link).toHaveAttribute("href", "/servers#rs--home-p-abcdef12");
+    expect(link).toHaveTextContent("servers →");
+  });
+
   it("italicises an unnamed matched session", () => {
     const p = makeProject({
       sessions: [
@@ -59,22 +83,33 @@ describe("RunningSessionCard", () => {
         }),
       ],
     });
-    render(
+    renderCard(
       <RunningSessionCard
         project={p}
-        running={makeRunningSession({ shortId: "abcdef12", claudeSessionId: "abcdef12-3456" })}
+        running={makeRunningSession({
+          shortId: "abcdef12",
+          claudeSessionId: "abcdef12-3456",
+        })}
       />,
     );
     expect(screen.getByRole("heading", { name: "(unnamed)" })).toHaveClass(
       "unnamed",
     );
+    // the a11y label falls back to the same placeholder
+    expect(
+      screen.getByRole("link", { name: "0 MCP servers for session (unnamed)" }),
+    ).toBeInTheDocument();
   });
 
   it("falls back to the shortId with a hint when nothing matches", () => {
-    render(
+    renderCard(
       <RunningSessionCard
         project={project()}
-        running={makeRunningSession({ shortId: "ffffffff", mcpServers: [] })}
+        running={makeRunningSession({
+          shortId: "ffffffff",
+          claudeSessionId: "",
+          mcpServers: [],
+        })}
       />,
     );
     expect(
@@ -84,13 +119,16 @@ describe("RunningSessionCard", () => {
       screen.getByText("no recorded session matches this id"),
     ).toBeInTheDocument();
     expect(screen.getByText("no session MCP servers")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "0 MCP servers for session ffffffff" }),
+    ).toHaveAttribute("href", "/servers#rs--home-p-ffffffff");
   });
 
   it("handles a missing shortId", () => {
-    render(
+    renderCard(
       <RunningSessionCard
         project={project()}
-        running={makeRunningSession({ shortId: "" })}
+        running={makeRunningSession({ shortId: "", claudeSessionId: "" })}
       />,
     );
     expect(

@@ -1,5 +1,10 @@
+import { Link } from "react-router-dom";
 import type { Project, RunningSession } from "../gen/dashboard/v1/dashboard_pb";
-import { findRecordedSession, projectTitle } from "../lib/dashboard";
+import {
+  findRecordedSession,
+  projectTitle,
+  runningAnchor,
+} from "../lib/dashboard";
 import { McpPill } from "./McpPill";
 import { PRBadge } from "./primitives/PRBadge";
 import { WorktreeBadge } from "./primitives/WorktreeBadge";
@@ -7,8 +12,10 @@ import { WorktreeBadge } from "./primitives/WorktreeBadge";
 /**
  * RunningSessionCard renders one live session: its project, runtime shortId,
  * the joined recorded-session metadata (name, branch, worktree, PR — matched
- * by `session.id.startsWith(shortId)`), and its session-scope MCP servers as
- * status pills. Without a match, the shortId stands in for the name.
+ * by the backend-recovered Claude session id), and its session-scope MCP
+ * servers as status pills, with a "servers →" link onward to this session's
+ * section on the servers page. Without a match, the shortId stands in for the
+ * name.
  */
 export function RunningSessionCard({
   project,
@@ -19,16 +26,18 @@ export function RunningSessionCard({
 }) {
   const session = findRecordedSession(project, running);
   const named = !!session?.name.trim();
+  const sessionLabel = session
+    ? named
+      ? session.name
+      : "(unnamed)"
+    : running.shortId || "(unknown session)";
+  const serverCount = running.mcpServers.length;
 
   return (
     <section className="panel run-card">
       <div className="p-head">
         <h2 className={session && !named ? "unnamed" : undefined}>
-          {session
-            ? named
-              ? session.name
-              : "(unnamed)"
-            : running.shortId || "(unknown session)"}
+          {sessionLabel}
         </h2>
         <span className="run-proj muted" title={project.id}>
           {projectTitle(project)}
@@ -59,6 +68,15 @@ export function RunningSessionCard({
           ) : (
             <span className="faint">no session MCP servers</span>
           )}
+          <Link
+            className="srv-link"
+            to={`/servers#${runningAnchor(project.id, running)}`}
+            aria-label={`${serverCount} MCP ${
+              serverCount === 1 ? "server" : "servers"
+            } for session ${sessionLabel}`}
+          >
+            servers →
+          </Link>
         </div>
       </div>
     </section>

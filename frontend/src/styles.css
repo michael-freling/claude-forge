@@ -94,7 +94,7 @@ a {
   white-space: nowrap;
   border: 0;
 }
-:is(.btn, .sid, .tab, .x, a.pr, .filter, .mcp-strip, .table-wrap):focus-visible {
+:is(.btn, .sid, .tab, .x, a.pr, .filter, .mcp-strip, .table-wrap, .srv-link, .sess-link):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -359,6 +359,60 @@ section.project {
   font-size: 12.5px;
   font-weight: 700;
   color: var(--muted);
+}
+.sess-srv h3 .sess-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-radius: 4px;
+}
+.sess-srv h3 .sess-link:hover {
+  text-decoration: underline;
+}
+.sess-srv h3 .sess-link.unnamed {
+  font-style: italic;
+  font-weight: 500;
+}
+
+/* session ↔ servers cross-links */
+.srv-link {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+  border-radius: 4px;
+}
+.srv-link:hover {
+  text-decoration: underline;
+}
+td .srv-link {
+  margin-top: 2px;
+}
+.pills .srv-link {
+  align-self: center;
+}
+
+/* anchor targets: clear the sticky header, pulse briefly on arrival */
+.sess-srv[id],
+tr[id] {
+  scroll-margin-top: 76px;
+}
+.anchor-flash {
+  animation: anchor-pulse 1.4s ease-out;
+}
+.anchor-flash > td {
+  /* rows: paint the cells so the pulse survives border-collapse quirks */
+  animation: anchor-pulse 1.4s ease-out;
+}
+@keyframes anchor-pulse {
+  0%,
+  40% {
+    background-color: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
 
 /* badges + pills */
@@ -856,5 +910,10 @@ a.pr:hover {
 @media (prefers-reduced-motion: reduce) {
   .spinner {
     animation: none;
+  }
+  .anchor-flash,
+  .anchor-flash > td {
+    animation: none;
+    background-color: color-mix(in srgb, var(--accent) 12%, transparent);
   }
 }

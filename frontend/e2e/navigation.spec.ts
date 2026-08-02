@@ -42,7 +42,7 @@ test("lands on Running, navigates to Sessions and Servers via the tabs", async (
   ).toBeVisible();
   await expect(page.getByText("kubernetes", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: /octo\/cat · abcdef12/ }),
+    page.getByRole("heading", { name: /octo\/cat · wire up dashboard/ }),
   ).toBeVisible();
 });
 

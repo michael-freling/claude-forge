@@ -1,15 +1,21 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen } from "@testing-library/react";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import {
   makeDashboard,
   makeProject,
   makeRunningSession,
+  makeServer,
   makeSession,
 } from "../test/fixtures";
 import { SessionsPage } from "./SessionsPage";
 
 const at = (iso: string) => timestampFromDate(new Date(iso));
+
+const render = (node: ReactNode) =>
+  rtlRender(<MemoryRouter>{node}</MemoryRouter>);
 
 const data = () =>
   makeDashboard({
@@ -49,6 +55,7 @@ const data = () =>
           makeRunningSession({
             shortId: "bbbb1111",
             claudeSessionId: "bbbb1111-1",
+            mcpServers: [makeServer({ name: "github" })],
           }),
         ],
       }),
@@ -69,11 +76,18 @@ describe("SessionsPage", () => {
     expect(names).toEqual(["running thing", "new work", "old work"]);
   });
 
-  it("marks the running session row with a dot", () => {
+  it("marks the running session row with a dot and a servers link", () => {
     const { container } = render(<SessionsPage data={data()} />);
     const dots = container.querySelectorAll(".run-dot");
     expect(dots).toHaveLength(1);
     expect(dots[0].closest("td")).toHaveTextContent("running thing");
+    // the row is anchored and links to its server section on /servers
+    expect(container.querySelector("#sess-bbbb1111-1")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "1 MCP server for session running thing",
+      }),
+    ).toHaveAttribute("href", "/servers#rs-p-live-bbbb1111");
   });
 
   it("shows the projects/sessions tally", () => {

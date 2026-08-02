@@ -54,14 +54,44 @@ export function findRecordedSession(
   return project.sessions.find((s) => s.id === running.claudeSessionId);
 }
 
+/**
+ * findRunningForSession is the reverse join of {@link findRecordedSession}: it
+ * returns the running session whose backend-recovered Claude session id
+ * matches `session`, if any. An id-less recorded session never matches (an
+ * empty claudeSessionId means the backend could not recover one).
+ */
+export function findRunningForSession(
+  running: RunningSession[],
+  session: Session,
+): RunningSession | undefined {
+  return running.find(
+    (rs) => rs.claudeSessionId !== "" && rs.claudeSessionId === session.id,
+  );
+}
+
 /** isSessionRunning reports whether `session` is one of the `running` set. */
 export function isSessionRunning(
   running: RunningSession[],
   session: Session,
 ): boolean {
-  return running.some(
-    (rs) => rs.claudeSessionId !== "" && rs.claudeSessionId === session.id,
-  );
+  return findRunningForSession(running, session) !== undefined;
+}
+
+/**
+ * runningAnchor is the /servers page anchor id for one running session's
+ * server section. It is project-scoped: container shortIds are only unique
+ * per Docker host and could collide across projects.
+ */
+export function runningAnchor(
+  projectId: string,
+  running: RunningSession,
+): string {
+  return `rs-${projectId}-${running.shortId}`;
+}
+
+/** sessionAnchor is the /sessions page anchor id for one recorded session. */
+export function sessionAnchor(sessionId: string): string {
+  return `sess-${sessionId}`;
 }
 
 /**
