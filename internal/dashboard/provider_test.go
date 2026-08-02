@@ -494,6 +494,40 @@ func TestResolveProject_Unresolved(t *testing.T) {
 	assert.False(t, resolved)
 }
 
+func TestDecodeProjectID_HyphenatedComponents(t *testing.T) {
+	root := t.TempDir()
+	// A host path whose components themselves contain hyphens — the case the
+	// old string-reverse decoder could never resolve.
+	realDir := filepath.Join(root, "home", "michael-freling", "aninexus-main")
+	require.NoError(t, os.MkdirAll(realDir, 0o755))
+	// A sibling that would tempt a wrong split (home/michael) must not win.
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "home", "michael"), 0o755))
+
+	p := &dataProvider{fsRoot: root}
+
+	got, ok := p.decodeProjectID("-home-michael-freling-aninexus-main")
+	require.True(t, ok)
+	assert.Equal(t, realDir, got)
+
+	// Not a project ID (no leading "-") → skipped.
+	_, ok = p.decodeProjectID("caches")
+	assert.False(t, ok)
+
+	// No matching directory on disk.
+	_, ok = p.decodeProjectID("-home-nope-nope")
+	assert.False(t, ok)
+
+	// End to end through resolveProject with an injected identify.
+	p.identify = func(dir string) (*project.Project, error) {
+		return &project.Project{Dir: dir, Owner: "michael-freling", Repo: "aninexus"}, nil
+	}
+	resolved, dir, owner, repo := p.resolveProject("-home-michael-freling-aninexus-main")
+	assert.True(t, resolved)
+	assert.Equal(t, realDir, dir)
+	assert.Equal(t, "michael-freling", owner)
+	assert.Equal(t, "aninexus", repo)
+}
+
 // --- default dependency impls ---
 
 func TestDefaultGitBranch(t *testing.T) {

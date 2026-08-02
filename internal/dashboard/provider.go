@@ -34,6 +34,9 @@ type dataProvider struct {
 	homeDir    string
 	configDir  string
 	cwd        string
+	// fsRoot roots the project-ID → directory decoder. Empty means "/"; tests
+	// set it to a temp dir so the decoder can walk fabricated paths.
+	fsRoot string
 
 	// gitBranch resolves the current branch of a git working tree.
 	gitBranch func(dir string) (string, error)
@@ -123,7 +126,10 @@ func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
 	var subdirs []string
 	if entries, err := os.ReadDir(forgeDir); err == nil {
 		for _, e := range entries {
-			if e.IsDir() && e.Name() != "plugins" {
+			// A project ID is an encoded absolute path, so it always begins with
+			// "-" (the leading "/"). This skips claude-forge's own bookkeeping
+			// dirs (plugins, caches, …), which are not projects.
+			if e.IsDir() && strings.HasPrefix(e.Name(), "-") {
 				subdirs = append(subdirs, e.Name())
 			}
 		}
@@ -204,20 +210,54 @@ func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
 	}, nil
 }
 
-// resolveProject best-effort reverses a project ID back to its host directory
-// and identifies it. It fails (resolved=false) when the encoding is lossy (a
-// path component contained a hyphen) or the directory is not a git project.
+// resolveProject reverses a project ID back to its host directory and
+// identifies it. It fails (resolved=false) only when no matching directory
+// exists on disk or the directory is not a git project.
 func (p *dataProvider) resolveProject(projID string) (bool, string, string, string) {
-	candidate := strings.ReplaceAll(projID, "-", "/")
-	info, err := os.Stat(candidate)
-	if err != nil || !info.IsDir() {
+	dir, ok := p.decodeProjectID(projID)
+	if !ok {
 		return false, "", "", ""
 	}
-	proj, err := p.identify(candidate)
+	proj, err := p.identify(dir)
 	if err != nil {
 		return false, "", "", ""
 	}
 	return true, proj.Dir, proj.Owner, proj.Repo
+}
+
+// decodeProjectID reverses a project ID (an absolute host path with every "/"
+// replaced by "-") back to a directory that exists on disk. Because a path
+// component may itself contain "-", the reversal is ambiguous by string alone,
+// so it walks the filesystem: each component must be an existing directory.
+// Longer components are tried first, so a real hyphenated name (e.g.
+// "michael-freling") is preferred over a coincidental "michael/freling" split.
+//
+// The decoder is rooted at p.fsRoot (default "/"), which tests override to a
+// temp dir. It returns the decoded absolute path and whether one was found.
+func (p *dataProvider) decodeProjectID(projID string) (string, bool) {
+	if !strings.HasPrefix(projID, "-") {
+		return "", false
+	}
+	root := p.fsRoot
+	if root == "" {
+		root = "/"
+	}
+	return p.decodeTokens(root, strings.Split(projID[1:], "-"))
+}
+
+func (p *dataProvider) decodeTokens(base string, tokens []string) (string, bool) {
+	if len(tokens) == 0 {
+		return base, true
+	}
+	for k := len(tokens); k >= 1; k-- {
+		cand := filepath.Join(base, strings.Join(tokens[:k], "-"))
+		if info, err := os.Stat(cand); err == nil && info.IsDir() {
+			if res, ok := p.decodeTokens(cand, tokens[k:]); ok {
+				return res, true
+			}
+		}
+	}
+	return "", false
 }
 
 // buildProject assembles one Project's sessions (with branches and PRs) and
