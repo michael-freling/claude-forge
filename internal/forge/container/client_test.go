@@ -77,6 +77,112 @@ func TestCreateNetwork(t *testing.T) {
 	}
 }
 
+// errPoolExhausted mimics the daemon error when every subnet in Docker's
+// default-address-pools is already allocated.
+var errPoolExhausted = fmt.Errorf("all predefined address pools have been fully subnetted")
+
+func bridgeOpts() network.CreateOptions { return network.CreateOptions{Driver: "bridge"} }
+
+func TestIsAddressPoolExhaustedErr(t *testing.T) {
+	assert.True(t, isAddressPoolExhaustedErr(errPoolExhausted))
+	assert.True(t, isAddressPoolExhaustedErr(fmt.Errorf(
+		"could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network")))
+	assert.False(t, isAddressPoolExhaustedErr(fmt.Errorf("network already exists")))
+	assert.False(t, isAddressPoolExhaustedErr(nil))
+}
+
+func TestCreateNetwork_PoolExhausted_PrunesAndRetries(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := NewMockDockerAPI(ctrl)
+
+	old := time.Now().Add(-time.Hour)
+	gomock.InOrder(
+		m.EXPECT().NetworkCreate(gomock.Any(), "forge_net_x", bridgeOpts()).
+			Return(network.CreateResponse{}, errPoolExhausted),
+		m.EXPECT().NetworkList(gomock.Any(), gomock.Any()).Return([]network.Inspect{
+			{Name: "forge_net_dead1", ID: "n1", Created: old},
+			{Name: "forge_net_dead2", ID: "n2", Created: old},
+		}, nil),
+		m.EXPECT().NetworkRemove(gomock.Any(), "n1").Return(nil),
+		m.EXPECT().NetworkRemove(gomock.Any(), "n2").Return(nil),
+		m.EXPECT().NetworkCreate(gomock.Any(), "forge_net_x", bridgeOpts()).
+			Return(network.CreateResponse{ID: "new-net"}, nil),
+	)
+
+	id, err := newClientWithAPI(m).CreateNetwork(context.Background(), "forge_net_x")
+	require.NoError(t, err)
+	assert.Equal(t, "new-net", id)
+}
+
+func TestCreateNetwork_PoolExhausted_RetryStillFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := NewMockDockerAPI(ctrl)
+
+	old := time.Now().Add(-time.Hour)
+	gomock.InOrder(
+		m.EXPECT().NetworkCreate(gomock.Any(), "forge_net_x", bridgeOpts()).
+			Return(network.CreateResponse{}, errPoolExhausted),
+		m.EXPECT().NetworkList(gomock.Any(), gomock.Any()).Return([]network.Inspect{
+			{Name: "forge_net_dead", ID: "n1", Created: old},
+		}, nil),
+		m.EXPECT().NetworkRemove(gomock.Any(), "n1").Return(nil),
+		m.EXPECT().NetworkCreate(gomock.Any(), "forge_net_x", bridgeOpts()).
+			Return(network.CreateResponse{}, errPoolExhausted),
+	)
+
+	_, err := newClientWithAPI(m).CreateNetwork(context.Background(), "forge_net_x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "address pool is exhausted")
+	assert.Contains(t, err.Error(), "pruned 1")
+	assert.Contains(t, err.Error(), "docker network prune")
+}
+
+func TestCreateNetwork_PoolExhausted_NothingToPrune(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := NewMockDockerAPI(ctrl)
+
+	// Empty list => nothing pruned => no retry NetworkCreate.
+	gomock.InOrder(
+		m.EXPECT().NetworkCreate(gomock.Any(), "forge_net_x", bridgeOpts()).
+			Return(network.CreateResponse{}, errPoolExhausted),
+		m.EXPECT().NetworkList(gomock.Any(), gomock.Any()).Return(nil, nil),
+	)
+
+	_, err := newClientWithAPI(m).CreateNetwork(context.Background(), "forge_net_x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pruned 0")
+}
+
+func TestPruneDanglingForgeNetworks_SkipsRecentAndNonForge(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := NewMockDockerAPI(ctrl)
+
+	m.EXPECT().NetworkList(gomock.Any(), gomock.Any()).Return([]network.Inspect{
+		{Name: "forge_net_recent", ID: "recent", Created: time.Now()},               // too new — skip
+		{Name: "not-a-forge-net", ID: "other", Created: time.Now().Add(-time.Hour)}, // wrong prefix — skip
+		{Name: "forge_net_old", ID: "old", Created: time.Now().Add(-time.Hour)},     // eligible
+	}, nil)
+	// Only the old forge network is removed.
+	m.EXPECT().NetworkRemove(gomock.Any(), "old").Return(nil)
+
+	removed := newClientWithAPI(m).pruneDanglingForgeNetworks(context.Background())
+	assert.Equal(t, 1, removed)
+}
+
+func TestPruneDanglingForgeNetworks_ListError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := NewMockDockerAPI(ctrl)
+
+	m.EXPECT().NetworkList(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("boom"))
+	removed := newClientWithAPI(m).pruneDanglingForgeNetworks(context.Background())
+	assert.Equal(t, 0, removed)
+}
+
 func TestRemoveNetwork(t *testing.T) {
 	tests := []struct {
 		name        string

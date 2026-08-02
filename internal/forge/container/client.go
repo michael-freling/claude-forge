@@ -152,16 +152,103 @@ func (c *Client) Close() error {
 	return c.docker.Close()
 }
 
-// CreateNetwork creates a Docker network with the given name.
+const (
+	// forgeNetworkPrefix is the name prefix of a per-session network
+	// (forge_net_<project>_<session>).
+	forgeNetworkPrefix = "forge_net_"
+
+	// danglingNetworkMinAge is how old an empty forge network must be before it
+	// is eligible for pruning. It protects a concurrently-created network that
+	// is briefly empty in the window between CreateNetwork and its containers
+	// attaching.
+	danglingNetworkMinAge = time.Minute
+)
+
+// CreateNetwork creates a bridge Docker network with the given name.
+//
+// If Docker's address pool is exhausted — which happens when sessions that
+// crashed or were killed before Cleanup leave their per-session networks
+// behind, each holding a subnet — it prunes orphaned (container-less) forge
+// networks and retries once, then returns an actionable error if that still
+// fails.
 func (c *Client) CreateNetwork(ctx context.Context, name string) (string, error) {
-	resp, err := c.docker.NetworkCreate(ctx, name, network.CreateOptions{
-		Driver: "bridge",
-	})
-	if err != nil {
+	id, err := c.createBridgeNetwork(ctx, name)
+	if err == nil {
+		return id, nil
+	}
+	if !isAddressPoolExhaustedErr(err) {
 		return "", fmt.Errorf("failed to create network %s: %w", name, err)
 	}
 
+	// Reclaim subnets held by orphaned forge networks and try once more.
+	pruned := c.pruneDanglingForgeNetworks(ctx)
+	if pruned > 0 {
+		id, retryErr := c.createBridgeNetwork(ctx, name)
+		if retryErr == nil {
+			return id, nil
+		}
+		err = retryErr
+	}
+	return "", fmt.Errorf("failed to create network %s: %w; Docker's address pool is exhausted "+
+		"(pruned %d orphaned forge network(s), still no free subnet). Free more with `docker network prune`, "+
+		"or widen Docker's default-address-pools in the daemon configuration", name, err, pruned)
+}
+
+// createBridgeNetwork creates a bridge network and returns its ID.
+func (c *Client) createBridgeNetwork(ctx context.Context, name string) (string, error) {
+	resp, err := c.docker.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge"})
+	if err != nil {
+		return "", err
+	}
 	return resp.ID, nil
+}
+
+// isAddressPoolExhaustedErr reports whether err is Docker's "no subnet
+// available" failure, emitted when every subnet in the configured
+// default-address-pools is already allocated to a network.
+func isAddressPoolExhaustedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "predefined address pools have been fully subnetted") ||
+		strings.Contains(msg, "non-overlapping IPv4 address pool")
+}
+
+// pruneDanglingForgeNetworks removes per-session forge networks that have no
+// containers attached (orphaned by a session that never ran Cleanup) and
+// returns how many were removed.
+//
+// It is deliberately conservative:
+//   - only networks named forge_net_* are considered (never forge-shared or a
+//     user's own networks);
+//   - networks younger than danglingNetworkMinAge are skipped, so a concurrent
+//     session's just-created (still empty) network is not reclaimed;
+//   - Docker refuses to remove a network with active endpoints, which is a
+//     final backstop against removing a live session's network even if the
+//     dangling filter is not honored by an old daemon.
+func (c *Client) pruneDanglingForgeNetworks(ctx context.Context) int {
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("dangling", "true")
+	filterArgs.Add("name", forgeNetworkPrefix)
+	networks, err := c.docker.NetworkList(ctx, network.ListOptions{Filters: filterArgs})
+	if err != nil {
+		return 0
+	}
+
+	removed := 0
+	for _, n := range networks {
+		if !strings.HasPrefix(n.Name, forgeNetworkPrefix) {
+			continue
+		}
+		if !n.Created.IsZero() && time.Since(n.Created) < danglingNetworkMinAge {
+			continue
+		}
+		if err := c.docker.NetworkRemove(ctx, n.ID); err == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 // RemoveNetwork removes a Docker network by name.
