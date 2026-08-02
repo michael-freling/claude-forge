@@ -26,6 +26,21 @@ describe("ServerCard", () => {
     expect(screen.getByText("ghcr.io/x/kube:latest")).toBeInTheDocument();
   });
 
+  it("joins image and container in the tooltip when both exist", () => {
+    const { container } = render(
+      <ServerCard
+        server={makeServer({
+          image: "ghcr.io/x/kube:latest",
+          container: "forge-kube",
+        })}
+      />,
+    );
+    expect(container.querySelector(".srv-img")).toHaveAttribute(
+      "title",
+      "ghcr.io/x/kube:latest · forge-kube",
+    );
+  });
+
   it("derives status/label for a stopped, unnamed, imageless server", () => {
     const { container } = render(
       <ServerCard
@@ -44,7 +59,7 @@ describe("ServerCard", () => {
     expect(container.querySelector(".srv-img")).toBeNull();
   });
 
-  it("falls back to the container name and 'running' status", () => {
+  it("falls back to the container name without a dangling separator", () => {
     const { container } = render(
       <ServerCard
         server={makeServer({
@@ -57,7 +72,7 @@ describe("ServerCard", () => {
     );
     const img = container.querySelector(".srv-img");
     expect(img).toHaveTextContent("forge-mcp-abc");
-    expect(img).toHaveAttribute("title", " · forge-mcp-abc");
+    expect(img).toHaveAttribute("title", "forge-mcp-abc");
     expect(screen.getAllByText("running").length).toBeGreaterThan(0);
   });
 });

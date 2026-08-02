@@ -12,7 +12,8 @@ test("never renders a navigable link for a javascript: PR url", async ({
     }),
   );
 
-  await page.goto("/");
+  // The hostile PR belongs to a recorded session: it lives on /sessions.
+  await page.goto("/sessions");
 
   // The PR chip still renders...
   await expect(page.getByText("#66")).toBeVisible();

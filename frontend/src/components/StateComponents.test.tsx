@@ -14,10 +14,16 @@ describe("LoadingState", () => {
 });
 
 describe("ErrorState", () => {
-  it("shows the error message and retries on click", () => {
+  it("leads with the likely cause, keeps the raw error as detail, retries", () => {
     const onRetry = vi.fn();
     render(<ErrorState error={new Error("kaboom")} onRetry={onRetry} />);
-    expect(screen.getByText("kaboom")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Can’t reach claude-forge/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/claude-forge dashboard/, { selector: "code" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("kaboom")).toHaveClass("err-detail");
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
@@ -29,10 +35,16 @@ describe("ErrorState", () => {
 });
 
 describe("NoProjectsState", () => {
-  it("explains that no projects were found", () => {
+  it("explains that no projects were found and offers the start command", () => {
     render(<NoProjectsState />);
     expect(
       screen.getByText("No claude-forge projects found."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("claude-forge start <name>", { selector: "code" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Copy command/ }),
     ).toBeInTheDocument();
   });
 });

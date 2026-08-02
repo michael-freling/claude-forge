@@ -1,17 +1,18 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { makePR, makeSession } from "../test/fixtures";
+import { makePR, makeRunningSession, makeSession } from "../test/fixtures";
 import { SessionsTable } from "./SessionsTable";
 
 describe("SessionsTable", () => {
   it("shows an empty note when there are no sessions", () => {
-    render(<SessionsTable sessions={[]} />);
+    render(<SessionsTable sessions={[]} label="octo/cat" />);
     expect(screen.getByText("No sessions.")).toBeInTheDocument();
   });
 
-  it("renders a populated row with all columns", () => {
+  it("renders a populated row with all columns in a named, focusable region", () => {
     render(
       <SessionsTable
+        label="octo/cat"
         sessions={[
           makeSession({
             name: "wire it up",
@@ -30,13 +31,43 @@ describe("SessionsTable", () => {
     expect(screen.getByText("Do the thing")).toBeInTheDocument();
     expect(screen.getByText("abcdef12")).toBeInTheDocument(); // short id
     expect(screen.getByRole("link", { name: /#7/ })).toBeInTheDocument();
-    // the seven column headers
-    expect(screen.getAllByRole("columnheader")).toHaveLength(7);
+    // the seven column headers, all scoped
+    const headers = screen.getAllByRole("columnheader");
+    expect(headers).toHaveLength(7);
+    expect(headers.map((h) => h.getAttribute("scope"))).toEqual(
+      Array(7).fill("col"),
+    );
+    expect(screen.getByText("Last active")).toBeInTheDocument();
+    // the horizontal scroll container is keyboard-reachable and named
+    const region = screen.getByRole("region", {
+      name: "Sessions for octo/cat",
+    });
+    expect(region).toHaveAttribute("tabindex", "0");
+    expect(
+      screen.getByRole("table", { name: "Sessions for octo/cat" }),
+    ).toBeInTheDocument();
+  });
+
+  it("marks a session as running when a shortId prefix-matches its id", () => {
+    const { container } = render(
+      <SessionsTable
+        label="octo/cat"
+        sessions={[
+          makeSession({ id: "abcdef12-3456", name: "live" }),
+          makeSession({ id: "99999999-0000", name: "idle" }),
+        ]}
+        runningSessions={[makeRunningSession({ shortId: "abcdef12" })]}
+      />,
+    );
+    const dots = container.querySelectorAll(".run-dot");
+    expect(dots).toHaveLength(1);
+    expect(dots[0].closest("td")).toHaveTextContent("live");
   });
 
   it("renders an unnamed session in italic and em-dashes empty fields", () => {
     render(
       <SessionsTable
+        label="octo/cat"
         sessions={[
           makeSession({
             name: "",
@@ -58,9 +89,8 @@ describe("SessionsTable", () => {
   it("renders a hostile session name as literal text (no HTML injection)", () => {
     render(
       <SessionsTable
-        sessions={[
-          makeSession({ name: '<img src=x onerror="alert(1)">' }),
-        ]}
+        label="octo/cat"
+        sessions={[makeSession({ name: '<img src=x onerror="alert(1)">' })]}
       />,
     );
     expect(

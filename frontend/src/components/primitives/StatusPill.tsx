@@ -1,6 +1,8 @@
 /**
  * StatusPill renders a running/stopped status pill. Colour is never the sole
- * signal — a dot plus a text label always convey the state.
+ * signal: the dot is hollow for stopped servers, and when a custom label (e.g.
+ * a server name) replaces the state word, a visually-hidden state suffix keeps
+ * the running/stopped distinction available to screen readers.
  */
 export function StatusPill({
   running,
@@ -11,7 +13,8 @@ export function StatusPill({
   label?: string;
   title?: string;
 }) {
-  const text = label ?? (running ? "running" : "stopped");
+  const state = running ? "running" : "stopped";
+  const text = label ?? state;
   return (
     <span
       className={"pill " + (running ? "pill-ok" : "pill-off")}
@@ -19,6 +22,7 @@ export function StatusPill({
     >
       <span className="dot" aria-hidden="true" />
       <span className="lbl">{text}</span>
+      {text !== state && <span className="sr-only">: {state}</span>}
     </span>
   );
 }

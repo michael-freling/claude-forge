@@ -22,12 +22,19 @@ test("shows an ErrorState with retry when the RPC fails, then recovers", async (
 
   await page.goto("/");
 
-  await expect(page.getByText(/Couldn.t load the dashboard/)).toBeVisible();
+  // The copy leads with the likely cause; the raw error is secondary detail.
+  await expect(page.getByText(/Can.t reach claude-forge/)).toBeVisible();
+  await expect(
+    page.locator("code", { hasText: "claude-forge dashboard" }),
+  ).toBeVisible();
+  await expect(page.locator(".err-detail")).toContainText("boom");
   const retry = page.getByRole("button", { name: "Try again" });
   await expect(retry).toBeVisible();
 
-  // Retrying after the backend recovers renders the dashboard.
+  // Retrying after the backend recovers renders the Running home page.
   mode = "ok";
   await retry.click();
-  await expect(page.getByRole("heading", { name: "octo/cat" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "wire up dashboard" }),
+  ).toBeVisible();
 });

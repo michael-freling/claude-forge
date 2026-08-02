@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { connectJson, RPC_PATH, richDashboard } from "./fixtures";
 
-test("renders projects, sessions, the PR link and MCP pills", async ({
+test("renders the running session, session history, the PR link and MCP pills", async ({
   page,
 }) => {
   await page.route(RPC_PATH, (route) =>
@@ -14,7 +14,22 @@ test("renders projects, sessions, the PR link and MCP pills", async ({
 
   await page.goto("/");
 
-  // Project title + session.
+  // Home: the running session card, joined to its recorded session.
+  await expect(
+    page.getByRole("heading", { name: "wire up dashboard" }),
+  ).toBeVisible();
+  // Running-session MCP pill + global strip.
+  await expect(page.getByText("github", { exact: true })).toBeVisible();
+  await expect(page.getByText("kubernetes", { exact: true })).toBeVisible();
+
+  // Warnings render as an amber status note, not an alert.
+  await expect(
+    page.getByRole("status").filter({ hasText: "Warning" }),
+  ).toContainText("Warning");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+
+  // History lives on /sessions.
+  await page.getByRole("link", { name: "Sessions", exact: true }).click();
   await expect(page.getByRole("heading", { name: "octo/cat" })).toBeVisible();
   await expect(page.getByText("wire up dashboard")).toBeVisible();
 
@@ -27,11 +42,4 @@ test("renders projects, sessions, the PR link and MCP pills", async ({
   );
   await expect(pr).toHaveAttribute("target", "_blank");
   await expect(pr).toHaveClass(/pr-open/);
-
-  // Global MCP server card + running-session MCP pill.
-  await expect(page.getByText("kubernetes", { exact: true })).toBeVisible();
-  await expect(page.getByText("github", { exact: true })).toBeVisible();
-
-  // Warnings banner.
-  await expect(page.getByRole("alert")).toContainText("Warning");
 });

@@ -7,6 +7,9 @@ import { StatusPill } from "./primitives/StatusPill";
 export function ServerCard({ server }: { server: McpServer }) {
   const status = server.status || (server.running ? "running" : "not running");
   const imageOrContainer = server.image || server.container;
+  const imageTitle = [server.image, server.container]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div className="srv">
@@ -28,12 +31,7 @@ export function ServerCard({ server }: { server: McpServer }) {
         {status}
       </div>
       {imageOrContainer && (
-        <div
-          className="srv-sub srv-img mono"
-          title={
-            server.image + (server.container ? " · " + server.container : "")
-          }
-        >
+        <div className="srv-sub srv-img mono" title={imageTitle}>
           {imageOrContainer}
         </div>
       )}

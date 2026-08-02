@@ -2,6 +2,7 @@ import { create } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import {
   DashboardSchema,
+  GlobalMcpSchema,
   McpKind,
   McpScope,
   McpServerSchema,
@@ -11,6 +12,7 @@ import {
   RunningSessionSchema,
   SessionSchema,
   type Dashboard,
+  type GlobalMcp,
   type McpServer,
   type Project,
   type PullRequest,
@@ -78,6 +80,10 @@ export function makeProject(partial: Init<Project> = {}): Project {
     runningSessions: [],
     ...partial,
   });
+}
+
+export function makeGlobal(servers: McpServer[] = []): GlobalMcp {
+  return create(GlobalMcpSchema, { servers });
 }
 
 export function makeDashboard(partial: Init<Dashboard> = {}): Dashboard {

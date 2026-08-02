@@ -1,7 +1,8 @@
 /**
  * copyToClipboard writes `text` to the system clipboard. It prefers the async
  * Clipboard API (available in secure contexts) and falls back to a hidden
- * `<textarea>` + `document.execCommand("copy")` otherwise.
+ * `<textarea>` + `document.execCommand("copy")` otherwise. The fallback
+ * rejects when the copy command reports failure so callers can surface it.
  */
 export function copyToClipboard(text: string): Promise<void> {
   if (navigator.clipboard && window.isSecureContext) {
@@ -16,9 +17,13 @@ export function copyToClipboard(text: string): Promise<void> {
       ta.style.opacity = "0";
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand("copy");
+      const ok = document.execCommand("copy");
       document.body.removeChild(ta);
-      resolve();
+      if (ok) {
+        resolve();
+      } else {
+        reject(new Error("the copy command was rejected"));
+      }
     } catch (e) {
       reject(e instanceof Error ? e : new Error(String(e)));
     }

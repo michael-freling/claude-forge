@@ -1,23 +1,24 @@
-/** SummaryStats renders the row of summary chips at the top of the dashboard. */
+/**
+ * SummaryStats renders the quiet projects/sessions tally above the session
+ * history. Plain text, deliberately not button-like: these are labels, not
+ * actions.
+ */
 export function SummaryStats({
   projectCount,
   sessionCount,
-  runningCount,
-  serverCount,
 }: {
   projectCount: number;
   sessionCount: number;
-  runningCount: number;
-  serverCount: number;
 }) {
   return (
     <div className="summary">
-      <Stat n={projectCount} label={projectCount === 1 ? "project" : "projects"} />
-      <Stat n={sessionCount} label={sessionCount === 1 ? "session" : "sessions"} />
-      <Stat n={runningCount} label="running" />
       <Stat
-        n={serverCount}
-        label={serverCount === 1 ? "global server" : "global servers"}
+        n={projectCount}
+        label={projectCount === 1 ? "project" : "projects"}
+      />
+      <Stat
+        n={sessionCount}
+        label={sessionCount === 1 ? "session" : "sessions"}
       />
     </div>
   );

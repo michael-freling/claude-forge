@@ -54,6 +54,18 @@ describe("copyToClipboard", () => {
     expect(exec).toHaveBeenCalledWith("copy");
   });
 
+  it("rejects when execCommand reports failure (returns false)", async () => {
+    setClipboard(undefined);
+    setSecure(false);
+    setExecCommand(() => false);
+
+    await expect(copyToClipboard("x")).rejects.toThrow(
+      "the copy command was rejected",
+    );
+    // the temporary textarea is still cleaned up
+    expect(document.querySelector("textarea")).toBeNull();
+  });
+
   it("rejects with an Error when execCommand throws an Error", async () => {
     setClipboard(undefined);
     setSecure(false);

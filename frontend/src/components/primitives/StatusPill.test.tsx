@@ -10,6 +10,8 @@ describe("StatusPill", () => {
     expect(pill).toHaveAttribute("title", "running");
     expect(screen.getByText("running")).toBeInTheDocument();
     expect(container.querySelector(".dot")).toBeInTheDocument();
+    // the label already is the state — no hidden duplicate
+    expect(container.querySelector(".sr-only")).toBeNull();
   });
 
   it("renders a grey stopped pill", () => {
@@ -27,5 +29,16 @@ describe("StatusPill", () => {
       "Up 2 minutes",
     );
     expect(screen.getByText("github")).toBeInTheDocument();
+  });
+
+  it("appends visually-hidden state text when the label hides the state", () => {
+    const { container } = render(
+      <StatusPill running={false} label="github" />,
+    );
+    const hidden = container.querySelector(".sr-only");
+    expect(hidden).toHaveTextContent(": stopped");
+
+    const { container: up } = render(<StatusPill running label="github" />);
+    expect(up.querySelector(".sr-only")).toHaveTextContent(": running");
   });
 });

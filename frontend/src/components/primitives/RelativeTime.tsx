@@ -18,14 +18,17 @@ export function RelativeTime({
 }) {
   const [, setTick] = useState(0);
   const valid = value != null && !Number.isNaN(value.getTime());
+  // Depend on the instant, not the Date object: parents re-creating an equal
+  // Date each render must not tear down and recreate the interval.
+  const ms = valid ? value.getTime() : undefined;
 
   useEffect(() => {
-    if (!valid) {
+    if (ms === undefined) {
       return;
     }
     const id = setInterval(() => setTick((t) => t + 1), 30000);
     return () => clearInterval(id);
-  }, [valid, value]);
+  }, [ms]);
 
   if (!valid) {
     return <span className="time">{empty}</span>;

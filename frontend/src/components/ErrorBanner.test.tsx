@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import { ErrorBanner } from "./ErrorBanner";
 
 describe("ErrorBanner", () => {
-  it("shows the failure message as an alert", () => {
+  it("shows the failure message as a red alert", () => {
     render(<ErrorBanner error={new Error("network down")} />);
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("Refresh failed");
     expect(alert).toHaveTextContent("network down");
+    expect(alert).toHaveClass("banner-error");
   });
 
   it("can be dismissed", () => {

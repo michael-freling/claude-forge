@@ -2,7 +2,9 @@ import { defineConfig, configDefaults } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  base: "./",
+  // Absolute base: assets must resolve from the site root so deep links like
+  // /sessions (served via the index.html fallback) still load the bundle.
+  base: "/",
   plugins: [react()],
   build: {
     outDir: "../internal/dashboard/webdist",

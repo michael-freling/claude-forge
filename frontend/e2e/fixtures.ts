@@ -92,6 +92,17 @@ export function richDashboard(): Dashboard {
   };
 }
 
+/**
+ * A dashboard whose running session has no recorded-session match: the
+ * shortId prefix-matches nothing, so the join must fall back.
+ */
+export function unjoinedDashboard(): Dashboard {
+  const d = richDashboard();
+  d.warnings = [];
+  d.projects[0].runningSessions[0].shortId = "ffffffff";
+  return d;
+}
+
 /** A dashboard whose only session carries a hostile javascript: PR url. */
 export function hostilePrDashboard(): Dashboard {
   const d = richDashboard();

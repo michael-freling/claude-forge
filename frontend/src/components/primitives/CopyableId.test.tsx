@@ -24,9 +24,12 @@ async function flush() {
 }
 
 describe("CopyableId", () => {
-  it("renders the first 8 characters", () => {
+  it("renders the first 8 characters as a real button", () => {
     render(<CopyableId id={FULL} />);
-    expect(screen.getByRole("button")).toHaveTextContent("abcdef12");
+    const el = screen.getByRole("button");
+    expect(el.tagName).toBe("BUTTON");
+    expect(el).toHaveAttribute("type", "button");
+    expect(el).toHaveTextContent("abcdef12");
   });
 
   it("copies on click, flashes 'copied', then reverts after 900ms", async () => {
@@ -47,18 +50,6 @@ describe("CopyableId", () => {
     expect(el).not.toHaveClass("copied");
   });
 
-  it("copies on Enter and Space but ignores other keys", async () => {
-    render(<CopyableId id={FULL} />);
-    const el = screen.getByRole("button");
-
-    fireEvent.keyDown(el, { key: "Enter" });
-    fireEvent.keyDown(el, { key: " " });
-    fireEvent.keyDown(el, { key: "a" });
-    await flush();
-
-    expect(mockedCopy).toHaveBeenCalledTimes(2);
-  });
-
   it("clears a pending flash timer when copied again", async () => {
     render(<CopyableId id={FULL} />);
     const el = screen.getByRole("button");
@@ -73,7 +64,7 @@ describe("CopyableId", () => {
     expect(mockedCopy).toHaveBeenCalledTimes(2);
   });
 
-  it("does not throw when the copy fails", async () => {
+  it("flashes 'copy failed' when the copy is rejected, then reverts", async () => {
     mockedCopy.mockRejectedValueOnce(new Error("denied"));
     render(<CopyableId id={FULL} />);
     const el = screen.getByRole("button");
@@ -81,6 +72,13 @@ describe("CopyableId", () => {
     fireEvent.click(el);
     await flush();
 
+    expect(el).toHaveTextContent("copy failed");
+    expect(el).toHaveClass("failed");
+
+    act(() => {
+      vi.advanceTimersByTime(900);
+    });
     expect(el).toHaveTextContent("abcdef12");
+    expect(el).not.toHaveClass("failed");
   });
 });
