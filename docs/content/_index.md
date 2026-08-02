@@ -32,7 +32,7 @@ layout: hextra-home
   >}}
   {{< hextra/feature-card
     title="Your tools keep working"
-    subtitle="Sandboxing usually breaks an agent's tooling. Here GitHub operations work out of the box via a repo-scoped MCP server, Kubernetes is available behind RBAC you control, and your own MCP servers plug in via config."
+    subtitle="Sandboxing usually breaks an agent's tooling. Here GitHub operations work out of the box via a repo-scoped MCP server, first-party Kubernetes and Google Cloud servers ship in the repo, and your own MCP servers plug in via config."
   >}}
   {{< hextra/feature-card
     title="Docker-in-Docker, opt-in"

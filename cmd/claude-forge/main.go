@@ -19,7 +19,6 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/auth"
 	forgeconfig "github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
-	"github.com/michael-freling/claude-forge/internal/forge/kube"
 	"github.com/michael-freling/claude-forge/internal/forge/project"
 	"github.com/michael-freling/claude-forge/internal/forge/session"
 	"github.com/michael-freling/claude-forge/internal/gateway"
@@ -66,7 +65,6 @@ containers, Docker networks, and session state.`,
 		newPluginsCmd(),
 		newVersionCmd(),
 		newGatewayCmd(),
-		newKubeCmd(),
 		newMcpCmd(),
 		newDashboardCmd(),
 	)
@@ -127,14 +125,6 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 		return err
 	}
 
-	// The Kubernetes MCP server's SA tokens expire after ~1h on most clusters
-	// while a session can stay open for days; keep re-minting them for as
-	// long as this process is attached to the session. Quiet in interactive
-	// mode: stdout belongs to the attached TTY there.
-	refreshCtx, stopRefresh := context.WithCancel(ctx)
-	defer stopRefresh()
-	go orch.RunKubeTokenRefresher(refreshCtx, interactive)
-
 	if interactive {
 		// Attach to the agent container's TTY using docker attach.
 		fmt.Println("Claude Code is ready. Attaching to session...")
@@ -178,8 +168,7 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create a default config file",
-		Long: `Write a config.yaml to ~/.config/claude-forge/ with detected settings.
-Kubernetes contexts are auto-detected from your kubeconfig.
+		Long: `Write a config.yaml to ~/.config/claude-forge/ with default settings.
 If the file already exists, use --force to overwrite it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			homeDir, err := os.UserHomeDir()
@@ -195,7 +184,7 @@ If the file already exists, use --force to overwrite it.`,
 				}
 			}
 
-			content := buildConfigTemplate(homeDir)
+			content := buildConfigTemplate()
 
 			if err := os.MkdirAll(configDir, 0o755); err != nil {
 				return fmt.Errorf("failed to create config directory: %w", err)
@@ -213,9 +202,8 @@ If the file already exists, use --force to overwrite it.`,
 	return cmd
 }
 
-// buildConfigTemplate generates the config.yaml content, auto-detecting
-// Kubernetes contexts from the user's kubeconfig.
-func buildConfigTemplate(homeDir string) string {
+// buildConfigTemplate generates the config.yaml content.
+func buildConfigTemplate() string {
 	var b strings.Builder
 
 	b.WriteString(`# claude-forge configuration
@@ -242,9 +230,8 @@ docker:
   enabled: false
 
 # Custom MCP servers exposed to the agent, in addition to the built-in
-# github (and optional kubernetes) servers. ${VAR} references in string
-# fields are expanded from the host environment at session start, so tokens
-# stay out of this file.
+# github server. ${VAR} references in string fields are expanded from the
+# host environment at session start, so tokens stay out of this file.
 #
 # Each entry is one of:
 #   type: http|sse   remote server reached over the network (url [+ headers])
@@ -292,50 +279,7 @@ docker:
 #     image: ghcr.io/example/some-mcp:latest
 #     port: 8080
 #     path: /mcp
-
-# Kubernetes MCP server integration.
-# When enabled, a shared MCP server container gives agents access to your
-# clusters via ServiceAccount tokens that claude-forge mints at session start
-# and keeps refreshing while sessions run. token_duration sets the requested
-# token lifetime (default 24h; the API server may cap it lower).
-#
-# Prerequisites:
-#   1. Create RBAC resources:  claude-forge kube render --context <ctx> | kubectl apply -f -
-#   2. Uncomment the section below.
 `)
-
-	kubeconfigPath := os.Getenv("KUBECONFIG")
-	if kubeconfigPath == "" {
-		kubeconfigPath = filepath.Join(homeDir, ".kube", "config")
-	}
-
-	contexts, err := kube.ListContexts(kubeconfigPath)
-	if err != nil || len(contexts) == 0 {
-		b.WriteString(`#
-# kubernetes:
-#   enabled: true
-#   image: ` + forgeconfig.DefaultKubernetesMCPImage + `
-#   token_duration: 24h
-#   default_context: my-cluster
-#   contexts:
-#     - host_context: my-cluster
-#       service_account_name: claude-forge-agent
-#       service_account_namespace: default
-`)
-		return b.String()
-	}
-
-	b.WriteString("# kubernetes:\n")
-	b.WriteString("#   enabled: true\n")
-	b.WriteString("#   image: " + forgeconfig.DefaultKubernetesMCPImage + "\n")
-	b.WriteString("#   token_duration: 24h\n")
-	b.WriteString("#   default_context: " + contexts[0] + "\n")
-	b.WriteString("#   contexts:\n")
-	for _, ctx := range contexts {
-		b.WriteString("#     - host_context: " + ctx + "\n")
-		b.WriteString("#       service_account_name: claude-forge-agent\n")
-		b.WriteString("#       service_account_namespace: default\n")
-	}
 
 	return b.String()
 }
@@ -1119,63 +1063,6 @@ func extractGitHubRepo(path string) string {
 		return ""
 	}
 	return parts[0] + "/" + parts[1]
-}
-
-// newKubeCmd creates the "kube" subcommand group for Kubernetes integration.
-func newKubeCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "kube",
-		Short: "Kubernetes integration commands",
-	}
-	cmd.AddCommand(newKubeRenderCmd())
-	return cmd
-}
-
-// newKubeRenderCmd creates the "kube render" subcommand that generates RBAC
-// manifests for the Kubernetes MCP server's service account.
-func newKubeRenderCmd() *cobra.Command {
-	var (
-		clusterRoleName         string
-		serviceAccountName      string
-		serviceAccountNamespace string
-		kubeconfig              string
-		kubeContext             string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "render",
-		Short: "Generate RBAC manifests for Kubernetes MCP access",
-		Long: `Discovers API resources from the target cluster and generates
-ServiceAccount, ClusterRole, and ClusterRoleBinding YAML manifests with
-safe carveouts (no secrets, no exec, no RBAC tampering).
-
-The output can be piped directly to kubectl apply:
-
-  claude-forge kube render --context dev | kubectl apply -f -`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			output, err := kube.Render(kube.RenderOptions{
-				ClusterRoleName:         clusterRoleName,
-				ServiceAccountName:      serviceAccountName,
-				ServiceAccountNamespace: serviceAccountNamespace,
-				Kubeconfig:              kubeconfig,
-				Context:                 kubeContext,
-			})
-			if err != nil {
-				return err
-			}
-			fmt.Print(output)
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&clusterRoleName, "cluster-role-name", "claude-forge-agent",
-		"Name for the generated ClusterRole and ClusterRoleBinding")
-	cmd.Flags().StringVar(&serviceAccountName, "service-account-name", "claude-forge-agent", "Name for the generated ServiceAccount")
-	cmd.Flags().StringVar(&serviceAccountNamespace, "service-account-namespace", "default", "Namespace for the ServiceAccount")
-	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (defaults to $KUBECONFIG or ~/.kube/config)")
-	cmd.Flags().StringVar(&kubeContext, "context", "", "Kubeconfig context to use for API discovery")
-
-	return cmd
 }
 
 func newMcpCmd() *cobra.Command {

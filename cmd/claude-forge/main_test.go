@@ -27,7 +27,7 @@ func TestNewRootCmd(t *testing.T) {
 
 	expectedSubcommands := []string{
 		"init", "start", "resume", "list", "prune", "stop", "status",
-		"build", "auth", "plugins", "version", "gateway", "kube", "mcp",
+		"build", "auth", "plugins", "version", "gateway", "mcp",
 		"dashboard",
 	}
 
@@ -1382,79 +1382,15 @@ func TestEnablePluginsInSettings(t *testing.T) {
 }
 
 func TestBuildConfigTemplate(t *testing.T) {
-	t.Run("without kubeconfig", func(t *testing.T) {
-		homeDir := t.TempDir()
-		content := buildConfigTemplate(homeDir)
+	content := buildConfigTemplate()
 
-		assert.Contains(t, content, "images:")
-		assert.Contains(t, content, "defaults:")
-		assert.Contains(t, content, "# kubernetes:")
-		assert.Contains(t, content, "#   default_context: my-cluster")
-	})
-
-	t.Run("with kubeconfig", func(t *testing.T) {
-		homeDir := t.TempDir()
-		kubeDir := filepath.Join(homeDir, ".kube")
-		require.NoError(t, os.MkdirAll(kubeDir, 0o755))
-		kubeconfig := `apiVersion: v1
-kind: Config
-clusters:
-  - name: prod-cluster
-    cluster:
-      server: https://prod.example.com
-  - name: dev-cluster
-    cluster:
-      server: https://dev.example.com
-contexts:
-  - name: prod
-    context:
-      cluster: prod-cluster
-      user: admin
-  - name: dev
-    context:
-      cluster: dev-cluster
-      user: admin
-current-context: prod
-users:
-  - name: admin
-    user:
-      token: fake
-`
-		require.NoError(t, os.WriteFile(filepath.Join(kubeDir, "config"), []byte(kubeconfig), 0o644))
-
-		content := buildConfigTemplate(homeDir)
-
-		assert.Contains(t, content, "#   default_context: prod")
-		assert.Contains(t, content, "#     - host_context: prod")
-		assert.Contains(t, content, "#     - host_context: dev")
-		assert.Contains(t, content, "#       service_account_name: claude-forge-agent")
-	})
-
-	t.Run("respects KUBECONFIG env", func(t *testing.T) {
-		homeDir := t.TempDir()
-		customPath := filepath.Join(homeDir, "custom-kubeconfig")
-		kubeconfig := `apiVersion: v1
-kind: Config
-contexts:
-  - name: custom-ctx
-    context:
-      cluster: c
-      user: u
-clusters:
-  - name: c
-    cluster:
-      server: https://custom.example.com
-users:
-  - name: u
-    user:
-      token: t
-`
-		require.NoError(t, os.WriteFile(customPath, []byte(kubeconfig), 0o644))
-		t.Setenv("KUBECONFIG", customPath)
-
-		content := buildConfigTemplate(homeDir)
-		assert.Contains(t, content, "#     - host_context: custom-ctx")
-	})
+	assert.Contains(t, content, "images:")
+	assert.Contains(t, content, "defaults:")
+	assert.Contains(t, content, "docker:")
+	assert.Contains(t, content, "# mcp_servers:")
+	// The built-in Kubernetes integration was removed; the template must not
+	// resurrect its config section.
+	assert.NotContains(t, content, "kubernetes:")
 }
 
 func TestInitCmd(t *testing.T) {

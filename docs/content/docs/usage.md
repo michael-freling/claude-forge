@@ -106,7 +106,7 @@ claude-forge auth
 # (this also runs automatically at the start of every session)
 claude-forge plugins sync
 
-# Restart the shared MCP server containers (e.g. Kubernetes MCP)
+# Restart the shared (scope: global) MCP server containers
 claude-forge mcp restart
 
 # Show version

@@ -18,8 +18,6 @@ go test -tags=forge_e2e -v -race -timeout 15m ./test/e2e/forge/...
 
 Key tests:
 - `TestForgeStart` — full start-to-finish session with Claude Code
-- `TestKubernetesMCPServer_Starts` — verifies the k8s MCP image starts with
-  our flags (shared via `kube.MCPServerArgs()` — no manual sync needed)
 - `TestAgentDockerInDocker` — verifies the agent's opt-in DinD (`docker.enabled`):
   the in-container dockerd works and cannot see host containers
 
@@ -35,11 +33,12 @@ The project uses these container images (configured in `internal/forge/config/co
 - **Agent**: runs Claude Code
 - **Gateway**: git proxy for GitHub access
 - **GitHub MCP**: per-session MCP sidecar scoped to one repo
-- **Kubernetes MCP**: shared singleton for cluster access (`ghcr.io/containers/kubernetes-mcp-server`)
+
+First-party MCP server images (`mcp/k8s-mcp/`, `mcp/gcp-mcp/`) are not built
+in: users run them as generic `mcp_servers` container entries.
 
 When changing flags passed to any container image, check the image's `--help`
-output to verify the flags exist. The kubernetes-mcp-server in particular has
-changed its CLI interface across versions.
+output to verify the flags exist.
 
 ## Documentation
 
@@ -59,17 +58,14 @@ changed its CLI interface across versions.
 ## Architecture
 
 - `cmd/claude-forge/main.go` — CLI commands (start, resume, init, etc.)
-- `internal/forge/orchestrator.go` — container lifecycle (Start, Cleanup, startKubernetesMCP)
+- `internal/forge/orchestrator.go` — container lifecycle (Start, Cleanup, sidecars)
 - `internal/forge/container/client.go` — Docker API wrapper
 - `internal/forge/session/` — session listing and JSONL parsing
-- `internal/forge/kube/` — kubeconfig generation and RBAC rendering
 
 ## Key invariants
 
-- Kubernetes MCP runs without `--read-only` or `--disable-destructive` (RBAC is the safety layer)
-- The k8s MCP kubeconfig references SA tokens via `tokenFile` in a mounted
-  directory; rotating credentials means rewriting the token files (at session
-  start and periodically while attached), never restarting the container
+- `mcp/k8s-mcp/policy.go` is the canonical carveout list for Kubernetes access
+  (the policy is enforced at the MCP layer, not via RBAC)
 - MCP servers are only written to `settings.json` when actually running
 - `UpdateMCPServers` replaces the map entirely (no stale entries from prior sessions)
 - The host Docker socket is never mounted into the agent; the agent runs

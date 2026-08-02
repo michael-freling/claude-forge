@@ -9,7 +9,7 @@
 - Runs Claude Code in Docker with `--dangerously-skip-permissions` by default
 - Gateway proxy mediates all GitHub traffic (git + API) with per-repo write restrictions
 - Per-session **GitHub MCP** sidecar scoped to the current repository
-- Optional shared **Kubernetes MCP** server for cluster access, gated by generated RBAC
+- A first-party **Kubernetes MCP** server (`mcp/k8s-mcp/`, added as a custom container server) with your own kubeconfig and policy-enforced carveouts — no secrets, no exec, no RBAC
 - Custom **MCP servers** (remote http/sse or stdio) configurable per install
 - A ready-made read-only, multi-project **Google Cloud MCP** server (added as a custom container server)
 - Optional **Docker-in-Docker**: sessions get their own isolated Docker daemon, unable to see or touch host or other sessions' containers
@@ -62,7 +62,7 @@ The full user guide lives on the [documentation site](https://michael-freling.gi
 - [Getting Started](https://michael-freling.github.io/claude-forge/docs/getting-started/) — install and run your first session
 - [Usage](https://michael-freling.github.io/claude-forge/docs/usage/) — the full CLI command reference
 - [Configuration](https://michael-freling.github.io/claude-forge/docs/configuration/) — the `config.yaml` reference and credential detection
-- [MCP Servers](https://michael-freling.github.io/claude-forge/docs/mcp-servers/) — the built-in GitHub and Kubernetes servers, and adding custom ones
+- [MCP Servers](https://michael-freling.github.io/claude-forge/docs/mcp-servers/) — the built-in GitHub server, the first-party Kubernetes and Google Cloud servers, and adding custom ones
 - [How It Works](https://michael-freling.github.io/claude-forge/docs/how-it-works/) — what happens when a session starts
 
 ## License

@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,73 +19,27 @@ func TestDefaultConfig(t *testing.T) {
 	assert.False(t, cfg.Docker.Enabled)
 }
 
-func TestKubernetesConfig_TokenDurationValue(t *testing.T) {
-	t.Run("defaults when unset", func(t *testing.T) {
-		d, err := KubernetesConfig{}.TokenDurationValue()
-		require.NoError(t, err)
-		assert.Equal(t, DefaultKubeTokenDuration, d)
-	})
-
-	t.Run("parses a valid duration", func(t *testing.T) {
-		d, err := KubernetesConfig{TokenDuration: "1h"}.TokenDurationValue()
-		require.NoError(t, err)
-		assert.Equal(t, time.Hour, d)
-	})
-
-	t.Run("rejects an unparseable duration", func(t *testing.T) {
-		_, err := KubernetesConfig{TokenDuration: "one hour"}.TokenDurationValue()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid kubernetes.token_duration")
-	})
-
-	t.Run("rejects durations below the TokenRequest minimum", func(t *testing.T) {
-		_, err := KubernetesConfig{TokenDuration: "5m"}.TokenDurationValue()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "minimum")
-	})
-}
-
-func TestLoad_KubernetesTokenDuration(t *testing.T) {
-	t.Run("valid value is kept", func(t *testing.T) {
-		dir := t.TempDir()
-		configYAML := `kubernetes:
+// TestLoad_LeftoverKubernetesSectionIgnored covers migration from the removed
+// built-in Kubernetes integration: a config.yaml that still carries a
+// kubernetes: block must load fine — yaml.Unmarshal is not strict, so unknown
+// top-level keys are simply ignored.
+func TestLoad_LeftoverKubernetesSectionIgnored(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `kubernetes:
   enabled: true
+  image: ghcr.io/containers/kubernetes-mcp-server:latest
   token_duration: 48h
+  default_context: dev
+  contexts:
+    - host_context: dev
+      service_account_name: claude-forge-agent
+      service_account_namespace: default
 `
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
 
-		cfg, err := Load(dir)
-		require.NoError(t, err)
-		assert.Equal(t, "48h", cfg.Kubernetes.TokenDuration)
-		d, err := cfg.Kubernetes.TokenDurationValue()
-		require.NoError(t, err)
-		assert.Equal(t, 48*time.Hour, d)
-	})
-
-	t.Run("invalid value fails at load when enabled", func(t *testing.T) {
-		dir := t.TempDir()
-		configYAML := `kubernetes:
-  enabled: true
-  token_duration: nope
-`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
-
-		_, err := Load(dir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token_duration")
-	})
-
-	t.Run("invalid value is ignored when kubernetes is disabled", func(t *testing.T) {
-		dir := t.TempDir()
-		configYAML := `kubernetes:
-  enabled: false
-  token_duration: nope
-`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
-
-		_, err := Load(dir)
-		require.NoError(t, err, "a bad value in a disabled section must not break unrelated commands")
-	})
+	cfg, err := Load(dir)
+	require.NoError(t, err, "a leftover kubernetes: block must not break config loading")
+	assert.Equal(t, DefaultConfig(), cfg)
 }
 
 func TestLoad_DockerEnabled(t *testing.T) {
@@ -129,9 +82,6 @@ defaults:
 					SkipPermissions: true,
 					Worktree:        true,
 				},
-				Kubernetes: KubernetesConfig{
-					Image: DefaultKubernetesMCPImage,
-				},
 			},
 		},
 		{
@@ -149,9 +99,6 @@ defaults:
 					SkipPermissions: true,
 					Worktree:        false,
 				},
-				Kubernetes: KubernetesConfig{
-					Image: DefaultKubernetesMCPImage,
-				},
 			},
 		},
 		{
@@ -164,9 +111,6 @@ defaults:
 					Agent:     "my-agent:latest",
 					Gateway:   DefaultGatewayImage,
 					GitHubMCP: DefaultGitHubMCPImage,
-				},
-				Kubernetes: KubernetesConfig{
-					Image: DefaultKubernetesMCPImage,
 				},
 			},
 		},
@@ -237,13 +181,11 @@ func TestLoad_UnreadableFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to read config file")
 }
 
-func TestLoad_ExplicitEmptyGitHubMCPAndKubeImage(t *testing.T) {
+func TestLoad_ExplicitEmptyGitHubMCPImage(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	configYAML := `images:
   github_mcp: ""
-kubernetes:
-  image: ""
 `
 	err := os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configYAML), 0o644)
 	require.NoError(t, err)
@@ -254,7 +196,6 @@ kubernetes:
 	assert.Equal(t, DefaultAgentImage, got.Images.Agent)
 	assert.Equal(t, DefaultGatewayImage, got.Images.Gateway)
 	assert.Equal(t, DefaultGitHubMCPImage, got.Images.GitHubMCP)
-	assert.Equal(t, DefaultKubernetesMCPImage, got.Kubernetes.Image)
 }
 
 func TestLoad_PartialGatewayOnly(t *testing.T) {
@@ -303,6 +244,26 @@ func TestLoad_MCPServers(t *testing.T) {
 	assert.Equal(t, "local", got.MCPServers[1].Name)
 	assert.True(t, got.MCPServers[1].IsStdio())
 	assert.Equal(t, []string{"--flag"}, got.MCPServers[1].Args)
+}
+
+// TestLoad_MCPServers_KubernetesNameAllowed verifies "kubernetes" is no longer
+// reserved: the built-in integration that owned the name was removed, so users
+// may name a custom server (e.g. the first-party k8s-mcp image) "kubernetes".
+func TestLoad_MCPServers_KubernetesNameAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	configYAML := `mcp_servers:
+  - name: kubernetes
+    type: container
+    scope: global
+    image: ghcr.io/michael-freling/claude-forge-k8s-mcp:latest
+    port: 8080
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configYAML), 0o644))
+
+	got, err := Load(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, got.MCPServers, 1)
+	assert.Equal(t, "kubernetes", got.MCPServers[0].Name)
 }
 
 func TestLoad_MCPServers_ValidationErrors(t *testing.T) {
