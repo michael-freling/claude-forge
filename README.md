@@ -11,6 +11,7 @@
 - Per-session **GitHub MCP** sidecar scoped to the current repository
 - Optional shared **Kubernetes MCP** server for cluster access, gated by generated RBAC
 - Custom **MCP servers** (remote http/sse or stdio) configurable per install
+- A ready-made read-only, multi-project **Google Cloud MCP** server (added as a custom container server)
 - Optional **Docker-in-Docker**: sessions get their own isolated Docker daemon, unable to see or touch host or other sessions' containers
 - Multiple instances can run in parallel across different projects
 - Named sessions with persistence — resume previous sessions by ID or name

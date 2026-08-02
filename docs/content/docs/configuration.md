@@ -48,13 +48,28 @@ mcp_servers:
     env:
       API_KEY: "${MY_TOOL_API_KEY}"
   # Container server — claude-forge runs it as a sidecar. scope defaults to
-  # global (one shared instance reused across all sessions).
-  - name: gcloud
+  # global (one shared instance reused across all sessions). Wrapped stdio
+  # commands are bridged to HTTP automatically.
+  - name: my-container-mcp
     type: container
     command: npx           # wrapped stdio (bridged to HTTP)
-    args: ["-y", "@google-cloud/gcloud-mcp"]
+    args: ["-y", "some-mcp-server"]
     mounts:
-      - "~/.config/gcloud:/root/.config/gcloud:ro"
+      - "~/.config/some-tool:/home/node/.config/some-tool:ro"
+  # The read-only Google Cloud MCP server (a native HTTP image shipped in this
+  # repo). See the Google Cloud page for the full setup.
+  - name: gcp
+    type: container
+    scope: global
+    image: ghcr.io/michael-freling/claude-forge-gcp-mcp:latest
+    port: 8084
+    path: /mcp
+    args: ["--project", "my-project"]     # optional default; omit for multi-project
+    env:
+      HOME: /home/user
+      CLOUDSDK_CONFIG: /home/user/.config/gcloud
+    mounts:
+      - "~/.config/gcloud:/home/user/.config/gcloud:ro"
   # Per-session (isolated) native HTTP image
   - name: my-sidecar
     type: container
@@ -79,8 +94,9 @@ kubernetes:
 ```
 
 See [Custom Servers]({{< relref "/docs/mcp-servers/custom" >}}) for the full
-`mcp_servers` reference and [Kubernetes]({{< relref "/docs/mcp-servers/kubernetes" >}})
-for the `kubernetes` section.
+`mcp_servers` reference, [Kubernetes]({{< relref "/docs/mcp-servers/kubernetes" >}})
+for the `kubernetes` section, and [Google Cloud]({{< relref "/docs/mcp-servers/gcp" >}})
+for the read-only Google Cloud MCP server (configured under `mcp_servers`).
 
 ## Authentication
 
