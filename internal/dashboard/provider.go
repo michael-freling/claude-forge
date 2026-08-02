@@ -433,19 +433,12 @@ func (p *dataProvider) globalServers(
 ) []MCPServer {
 	servers := []MCPServer{}
 
-	switch {
-	case k8sInfo != nil:
+	// The legacy built-in Kubernetes MCP singleton is surfaced only when its
+	// container actually exists. It is intentionally not derived from config:
+	// the built-in kubernetes integration is being removed, and a
+	// config-independent check keeps this code working before and after.
+	if k8sInfo != nil {
 		servers = append(servers, mcpServerFromContainer("kubernetes", "global", *k8sInfo))
-	case cfg.Kubernetes.Enabled:
-		servers = append(servers, MCPServer{
-			Name:      "kubernetes",
-			Scope:     "global",
-			Kind:      "container",
-			Container: "forge-k8s-mcp",
-			Image:     cfg.Kubernetes.Image,
-			Status:    "not running",
-			Running:   false,
-		})
 	}
 
 	handled := map[string]bool{}

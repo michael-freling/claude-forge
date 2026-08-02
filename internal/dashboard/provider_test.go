@@ -419,10 +419,13 @@ func TestBuild_ConfigLoadError(t *testing.T) {
 	assert.True(t, hasWarning(dash.Warnings, "failed to load config"))
 }
 
-func TestBuild_KubernetesEnabledNotRunning(t *testing.T) {
+func TestBuild_KubernetesSurfacedOnlyFromContainer(t *testing.T) {
 	homeDir := t.TempDir()
 	configDir := filepath.Join(homeDir, ".config", "claude-forge")
 	require.NoError(t, os.MkdirAll(configDir, 0o755))
+	// A legacy kubernetes: config block must NOT produce a kubernetes entry by
+	// itself — the built-in integration is removed, so the dashboard surfaces
+	// the singleton only when its container actually exists.
 	configYAML := `kubernetes:
   enabled: true
   image: img/k8s:latest
@@ -435,11 +438,22 @@ func TestBuild_KubernetesEnabledNotRunning(t *testing.T) {
 
 	dash, err := p.Build(context.Background())
 	require.NoError(t, err)
-	k8s, ok := findServer(dash.Global.Servers, "kubernetes")
+	_, ok := findServer(dash.Global.Servers, "kubernetes")
+	assert.False(t, ok, "no container, no kubernetes entry — regardless of config")
+
+	// With a (legacy) forge-k8s-mcp container present, it is surfaced.
+	p2 := NewProvider(&fakeContainerManager{containers: []container.ContainerInfo{
+		{Name: "forge-k8s-mcp", Image: "k8s:latest", Status: "Up 2 hours"},
+	}}, homeDir, configDir, "/tmp/none").(*dataProvider)
+	p2.identify = func(string) (*project.Project, error) { return nil, fmt.Errorf("no repo") }
+	p2.githubToken = func() (string, error) { return "test-token", nil }
+
+	dash2, err := p2.Build(context.Background())
+	require.NoError(t, err)
+	k8s, ok := findServer(dash2.Global.Servers, "kubernetes")
 	require.True(t, ok)
-	assert.False(t, k8s.Running)
-	assert.Equal(t, "not running", k8s.Status)
-	assert.Equal(t, "img/k8s:latest", k8s.Image)
+	assert.True(t, k8s.Running)
+	assert.Equal(t, "global", k8s.Scope)
 }
 
 func TestBuild_UnknownProjectRunningSession(t *testing.T) {
