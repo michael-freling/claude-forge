@@ -88,7 +88,7 @@ func toProtoPR(pr *PR) *dashboardv1.PullRequest {
 
 // toProtoRunningSession maps a live session and its session-scope MCP servers.
 func toProtoRunningSession(rs RunningSession) *dashboardv1.RunningSession {
-	prs := &dashboardv1.RunningSession{ShortId: rs.ShortID}
+	prs := &dashboardv1.RunningSession{ShortId: rs.ShortID, ClaudeSessionId: rs.ClaudeSessionID}
 	for _, s := range rs.MCPServers {
 		prs.McpServers = append(prs.McpServers, toProtoMCPServer(s))
 	}

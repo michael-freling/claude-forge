@@ -30,14 +30,24 @@ describe("RunningPage", () => {
             owner: "octo",
             repo: "cat",
             sessions: [makeSession({ id: "abcdef12-1", name: "one" })],
-            runningSessions: [makeRunningSession({ shortId: "abcdef12" })],
+            runningSessions: [
+              makeRunningSession({
+                shortId: "abcdef12",
+                claudeSessionId: "abcdef12-1",
+              }),
+            ],
           }),
           makeProject({
             id: "p2",
             owner: "octo",
             repo: "dog",
             sessions: [makeSession({ id: "beadfeed-1", name: "two" })],
-            runningSessions: [makeRunningSession({ shortId: "beadfeed" })],
+            runningSessions: [
+              makeRunningSession({
+                shortId: "beadfeed",
+                claudeSessionId: "beadfeed-1",
+              }),
+            ],
           }),
         ],
       }),

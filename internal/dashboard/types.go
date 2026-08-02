@@ -66,6 +66,12 @@ type PR struct {
 type RunningSession struct {
 	ShortID    string      `json:"shortId"`
 	MCPServers []MCPServer `json:"mcpServers"`
+	// ClaudeSessionID is the Claude session UUID recovered from the agent
+	// container's command line (--session-id or --resume). Empty when the
+	// session was started with --continue or the args were not inspectable.
+	// It is the join key to Session.ID: the container short id and the Claude
+	// session id are independent random values.
+	ClaudeSessionID string `json:"claudeSessionId"`
 }
 
 // MCPServer describes one MCP server's identity and runtime status.

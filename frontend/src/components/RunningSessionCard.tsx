@@ -17,7 +17,7 @@ export function RunningSessionCard({
   project: Project;
   running: RunningSession;
 }) {
-  const session = findRecordedSession(project, running.shortId);
+  const session = findRecordedSession(project, running);
   const named = !!session?.name.trim();
 
   return (

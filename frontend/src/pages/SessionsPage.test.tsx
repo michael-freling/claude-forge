@@ -45,7 +45,12 @@ const data = () =>
             lastActive: at("2026-07-01T00:00:00Z"),
           }),
         ],
-        runningSessions: [makeRunningSession({ shortId: "bbbb1111" })],
+        runningSessions: [
+          makeRunningSession({
+            shortId: "bbbb1111",
+            claudeSessionId: "bbbb1111-1",
+          }),
+        ],
       }),
     ],
   });

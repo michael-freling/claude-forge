@@ -77,28 +77,48 @@ describe("findRecordedSession", () => {
     sessions: [makeSession({ id: "abcdef12-3456", name: "hit" })],
   });
 
-  it("joins by id prefix", () => {
-    expect(findRecordedSession(project, "abcdef12")?.name).toBe("hit");
+  it("joins by the backend-recovered Claude session id", () => {
+    const rs = makeRunningSession({
+      shortId: "11223344",
+      claudeSessionId: "abcdef12-3456",
+    });
+    expect(findRecordedSession(project, rs)?.name).toBe("hit");
   });
 
-  it("returns undefined for no match and for an empty shortId", () => {
-    expect(findRecordedSession(project, "ffffffff")).toBeUndefined();
-    expect(findRecordedSession(project, "")).toBeUndefined();
+  it("returns undefined without a claudeSessionId or on a non-matching id", () => {
+    expect(
+      findRecordedSession(project, makeRunningSession({ shortId: "abcdef12" })),
+    ).toBeUndefined();
+    expect(
+      findRecordedSession(
+        project,
+        makeRunningSession({ claudeSessionId: "ffffffff-0000" }),
+      ),
+    ).toBeUndefined();
   });
 });
 
 describe("isSessionRunning", () => {
   const session = makeSession({ id: "abcdef12-3456" });
 
-  it("matches on shortId prefix", () => {
+  it("matches on the Claude session id", () => {
     expect(
-      isSessionRunning([makeRunningSession({ shortId: "abcdef12" })], session),
+      isSessionRunning(
+        [makeRunningSession({ claudeSessionId: "abcdef12-3456" })],
+        session,
+      ),
     ).toBe(true);
   });
 
-  it("never matches an empty shortId", () => {
+  it("never matches an empty or different claudeSessionId", () => {
     expect(
-      isSessionRunning([makeRunningSession({ shortId: "" })], session),
+      isSessionRunning([makeRunningSession({ shortId: "abcdef12" })], session),
+    ).toBe(false);
+    expect(
+      isSessionRunning(
+        [makeRunningSession({ claudeSessionId: "other-id" })],
+        session,
+      ),
     ).toBe(false);
     expect(isSessionRunning([], session)).toBe(false);
   });

@@ -145,6 +145,7 @@ func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
 	}
 
 	global, running := p.classifyContainers(containers, cfg, knownIDs)
+	p.attachClaudeSessionIDs(ctx, running)
 
 	// A per-Build PR cache keyed by (owner, repo, branch) avoids duplicate
 	// lookups when several sessions share a branch.
@@ -181,10 +182,10 @@ func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
 		if seen[projID] {
 			continue
 		}
+		// A project whose directory no longer exists (removed checkout or
+		// deleted worktree) is normal lifecycle, not a problem: it renders
+		// inline as unresolved rather than raising a warning.
 		resolved, dir, owner, repo := p.resolveProject(projID)
-		if !resolved {
-			warnings = append(warnings, fmt.Sprintf("directory for project %q no longer exists (removed checkout or worktree); listing its sessions only", projID))
-		}
 		build(projID, resolved, dir, owner, repo)
 	}
 
@@ -645,4 +646,53 @@ func (p *dataProvider) defaultLookupPR(owner, repo, branch string) (*PR, error) 
 		URL:    first.HTMLURL,
 		Draft:  first.Draft,
 	}, nil
+}
+
+// attachClaudeSessionIDs recovers each running session's Claude session UUID
+// from its agent container's command line. The container short id and the
+// Claude session id are independent random values with no derivable
+// relationship, so inspecting the agent's --session-id / --resume argument is
+// the only way to join a running container to its recorded session.
+// Best-effort: on any error the id stays empty and the UI falls back to the
+// bare short id.
+func (p *dataProvider) attachClaudeSessionIDs(ctx context.Context, running map[string]map[string]*RunningSession) {
+	for projID, byShort := range running {
+		for short, rs := range byShort {
+			args, err := p.containers.ContainerCommand(ctx, "forge-agent-"+projID+"-"+short)
+			if err != nil {
+				continue
+			}
+			rs.ClaudeSessionID = claudeSessionIDFromArgs(args)
+		}
+	}
+}
+
+// claudeSessionIDFromArgs extracts the Claude session id from an agent
+// container's command arguments: `--session-id <uuid>` on fresh sessions, or
+// `--resume <id-or-jsonl-path>` on resumed ones. `--continue` carries no id.
+func claudeSessionIDFromArgs(args []string) string {
+	for i, a := range args {
+		switch {
+		case a == "--session-id" && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(a, "--session-id="):
+			return strings.TrimPrefix(a, "--session-id=")
+		case a == "--resume" && i+1 < len(args):
+			return sessionIDFromResumeRef(args[i+1])
+		case strings.HasPrefix(a, "--resume="):
+			return sessionIDFromResumeRef(strings.TrimPrefix(a, "--resume="))
+		}
+	}
+	return ""
+}
+
+// sessionIDFromResumeRef normalizes a --resume argument, which is either a bare
+// session id or a transcript path like
+// /home/user/.claude/projects/<subdir>/<id>.jsonl.
+func sessionIDFromResumeRef(ref string) string {
+	base := ref
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	return strings.TrimSuffix(base, ".jsonl")
 }

@@ -38,27 +38,29 @@ export function sortSessions(sessions: Session[]): Session[] {
 }
 
 /**
- * findRecordedSession joins a running session to its recorded session: the one
- * in the same project whose full Claude id starts with the runtime `shortId`.
- * An empty shortId never matches.
+ * findRecordedSession joins a running session to its recorded session by the
+ * Claude session id the backend recovered from the agent container's command
+ * line. The container shortId and the Claude session id are independent random
+ * values, so an id-less running session (started with --continue, or whose
+ * container could not be inspected) simply has no join.
  */
 export function findRecordedSession(
   project: Project,
-  shortId: string,
+  running: RunningSession,
 ): Session | undefined {
-  if (!shortId) {
+  if (!running.claudeSessionId) {
     return undefined;
   }
-  return project.sessions.find((s) => s.id.startsWith(shortId));
+  return project.sessions.find((s) => s.id === running.claudeSessionId);
 }
 
-/** isSessionRunning reports whether one of `running` prefix-matches `session`. */
+/** isSessionRunning reports whether `session` is one of the `running` set. */
 export function isSessionRunning(
   running: RunningSession[],
   session: Session,
 ): boolean {
   return running.some(
-    (rs) => rs.shortId !== "" && session.id.startsWith(rs.shortId),
+    (rs) => rs.claudeSessionId !== "" && rs.claudeSessionId === session.id,
   );
 }
 

@@ -48,7 +48,7 @@ describe("SessionsTable", () => {
     ).toBeInTheDocument();
   });
 
-  it("marks a session as running when a shortId prefix-matches its id", () => {
+  it("marks a session as running when a running session carries its id", () => {
     const { container } = render(
       <SessionsTable
         label="octo/cat"
@@ -56,7 +56,12 @@ describe("SessionsTable", () => {
           makeSession({ id: "abcdef12-3456", name: "live" }),
           makeSession({ id: "99999999-0000", name: "idle" }),
         ]}
-        runningSessions={[makeRunningSession({ shortId: "abcdef12" })]}
+        runningSessions={[
+          makeRunningSession({
+            shortId: "11223344",
+            claudeSessionId: "abcdef12-3456",
+          }),
+        ]}
       />,
     );
     const dots = container.querySelectorAll(".run-dot");

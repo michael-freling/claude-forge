@@ -651,11 +651,17 @@ func (x *PullRequest) GetDraft() bool {
 // RunningSession is a live session identified by its 8-hex short id, with the
 // status of its session-scope MCP servers.
 type RunningSession struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ShortId       string                 `protobuf:"bytes,1,opt,name=short_id,json=shortId,proto3" json:"short_id,omitempty"`
-	McpServers    []*McpServer           `protobuf:"bytes,2,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	ShortId    string                 `protobuf:"bytes,1,opt,name=short_id,json=shortId,proto3" json:"short_id,omitempty"`
+	McpServers []*McpServer           `protobuf:"bytes,2,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
+	// Claude session id (UUID) recovered from the running agent container's
+	// command line (--session-id or --resume). Empty when the container was
+	// started with --continue or its args could not be inspected. This is the
+	// join key to Session.id: the container short id and the Claude session id
+	// are independent random values with no derivable relationship.
+	ClaudeSessionId string `protobuf:"bytes,3,opt,name=claude_session_id,json=claudeSessionId,proto3" json:"claude_session_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RunningSession) Reset() {
@@ -700,6 +706,13 @@ func (x *RunningSession) GetMcpServers() []*McpServer {
 		return x.McpServers
 	}
 	return nil
+}
+
+func (x *RunningSession) GetClaudeSessionId() string {
+	if x != nil {
+		return x.ClaudeSessionId
+	}
+	return ""
 }
 
 type McpServer struct {
@@ -836,11 +849,12 @@ const file_dashboard_v1_dashboard_proto_rawDesc = "" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x124\n" +
 	"\x05state\x18\x03 \x01(\x0e2\x1e.dashboard.v1.PullRequestStateR\x05state\x12\x10\n" +
 	"\x03url\x18\x04 \x01(\tR\x03url\x12\x14\n" +
-	"\x05draft\x18\x05 \x01(\bR\x05draft\"e\n" +
+	"\x05draft\x18\x05 \x01(\bR\x05draft\"\x91\x01\n" +
 	"\x0eRunningSession\x12\x19\n" +
 	"\bshort_id\x18\x01 \x01(\tR\ashortId\x128\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2\x17.dashboard.v1.McpServerR\n" +
-	"mcpServers\"\xde\x01\n" +
+	"mcpServers\x12*\n" +
+	"\x11claude_session_id\x18\x03 \x01(\tR\x0fclaudeSessionId\"\xde\x01\n" +
 	"\tMcpServer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\x05scope\x18\x02 \x01(\x0e2\x16.dashboard.v1.McpScopeR\x05scope\x12)\n" +

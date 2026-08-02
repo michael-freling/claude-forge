@@ -83,6 +83,12 @@ enum PullRequestState {
 message RunningSession {
   string short_id = 1;
   repeated McpServer mcp_servers = 2;
+  // Claude session id (UUID) recovered from the running agent container's
+  // command line (--session-id or --resume). Empty when the container was
+  // started with --continue or its args could not be inspected. This is the
+  // join key to Session.id: the container short id and the Claude session id
+  // are independent random values with no derivable relationship.
+  string claude_session_id = 3;
 }
 
 message McpServer {

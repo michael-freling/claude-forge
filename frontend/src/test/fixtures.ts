@@ -64,6 +64,9 @@ export function makeRunningSession(
 ): RunningSession {
   return create(RunningSessionSchema, {
     shortId: "abcdef12",
+    // Matches makeSession's default id so default fixtures join. The shortId
+    // itself never joins anything: the ids are independent in production.
+    claudeSessionId: "abcdef12-3456-7890-abcd-ef1234567890",
     mcpServers: [],
     ...partial,
   });

@@ -73,6 +73,7 @@ export function richDashboard(): Dashboard {
           {
             $typeName: "dashboard.v1.RunningSession",
             shortId: "abcdef12",
+            claudeSessionId: "abcdef12-3456-7890-abcd-ef1234567890",
             mcpServers: [
               {
                 $typeName: "dashboard.v1.McpServer",
@@ -100,6 +101,7 @@ export function unjoinedDashboard(): Dashboard {
   const d = richDashboard();
   d.warnings = [];
   d.projects[0].runningSessions[0].shortId = "ffffffff";
+  d.projects[0].runningSessions[0].claudeSessionId = "";
   return d;
 }
 

@@ -31,6 +31,7 @@ describe("RunningSessionCard", () => {
         project={project()}
         running={makeRunningSession({
           shortId: "abcdef12",
+          claudeSessionId: "abcdef12-3456-7890",
           mcpServers: [makeServer({ name: "github" })],
         })}
       />,
@@ -61,7 +62,7 @@ describe("RunningSessionCard", () => {
     render(
       <RunningSessionCard
         project={p}
-        running={makeRunningSession({ shortId: "abcdef12" })}
+        running={makeRunningSession({ shortId: "abcdef12", claudeSessionId: "abcdef12-3456" })}
       />,
     );
     expect(screen.getByRole("heading", { name: "(unnamed)" })).toHaveClass(

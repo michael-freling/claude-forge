@@ -23,6 +23,8 @@ import (
 // --- fakeContainerManager implements container.ContainerManager for tests ---
 
 type fakeContainerManager struct {
+	// commands maps container name -> command args for ContainerCommand.
+	commands   map[string][]string
 	containers []container.ContainerInfo
 	listErr    error
 }
@@ -52,6 +54,13 @@ func (f *fakeContainerManager) StartGitHubMCP(_ context.Context, _ container.Git
 func (f *fakeContainerManager) StartSharedService(_ context.Context, _ container.SharedServiceOptions) (string, error) {
 	return "", nil
 }
+func (f *fakeContainerManager) ContainerCommand(_ context.Context, name string) ([]string, error) {
+	if args, ok := f.commands[name]; ok {
+		return args, nil
+	}
+	return nil, fmt.Errorf("no such container: %s", name)
+}
+
 func (f *fakeContainerManager) IsContainerRunning(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -184,6 +193,12 @@ func TestBuild_Full(t *testing.T) {
 		"55555555-5555-4555-8555-555555555555", "2025-01-15T08:00:00Z", "orphan", "orphan")
 
 	short := "abcd1234"
+	agentCommands := map[string][]string{
+		"forge-agent-" + cwdID + "-" + short: {
+			"--dangerously-skip-permissions",
+			"--session-id", "11111111-1111-4111-8111-111111111111",
+		},
+	}
 	containers := []container.ContainerInfo{
 		{Name: "forge-agent-" + cwdID + "-" + short, Image: "agent:latest", Status: "Up 3 minutes"},
 		{Name: "forge-gateway-" + cwdID + "-" + short, Image: "gateway:latest", Status: "Up 3 minutes"},
@@ -193,7 +208,7 @@ func TestBuild_Full(t *testing.T) {
 		{Name: "forge-mcp-global-foo", Image: "img/foo:latest", Status: "Up 10 minutes"},
 		{Name: "forge-mcp-global-orphan", Image: "img/orphan:latest", Status: "Up 1 minute"},
 	}
-	fakeCM := &fakeContainerManager{containers: containers}
+	fakeCM := &fakeContainerManager{containers: containers, commands: agentCommands}
 
 	var prCalls int32
 	lookupPR := func(owner, repo, branch string) (*PR, error) {
@@ -312,6 +327,9 @@ func TestBuild_Full(t *testing.T) {
 	require.Len(t, cwdProj.RunningSessions, 1)
 	rs := cwdProj.RunningSessions[0]
 	assert.Equal(t, short, rs.ShortID)
+	// The Claude session id is recovered from the agent container's args and
+	// joins the running container to its recorded session.
+	assert.Equal(t, "11111111-1111-4111-8111-111111111111", rs.ClaudeSessionID)
 	gh, ok := findServer(rs.MCPServers, "github")
 	require.True(t, ok)
 	assert.Equal(t, "session", gh.Scope)
@@ -337,7 +355,9 @@ func TestBuild_Full(t *testing.T) {
 	require.Len(t, up.Sessions, 1)
 	assert.Empty(t, up.Sessions[0].Branch)
 	assert.Nil(t, up.Sessions[0].PR)
-	assert.True(t, hasWarning(dash.Warnings, unresolvedID))
+	// Missing directories are normal lifecycle: inline unresolved state, no
+	// warning banner entry.
+	assert.False(t, hasWarning(dash.Warnings, unresolvedID))
 }
 
 func TestBuild_TokenFailureWarning(t *testing.T) {
@@ -652,4 +672,36 @@ func TestNewProvider_DefaultTokenFromEnv(t *testing.T) {
 	// The default gitBranch and identify are wired.
 	require.NotNil(t, p.gitBranch)
 	require.NotNil(t, p.identify)
+}
+
+func TestClaudeSessionIDFromArgs(t *testing.T) {
+	uuid := "11111111-1111-4111-8111-111111111111"
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"fresh session", []string{"--dangerously-skip-permissions", "--session-id", uuid}, uuid},
+		{"session-id equals form", []string{"--session-id=" + uuid}, uuid},
+		{"resume with transcript path", []string{"--resume", "/home/user/.claude/projects/-work/" + uuid + ".jsonl"}, uuid},
+		{"resume with bare id", []string{"--resume", uuid}, uuid},
+		{"resume equals form", []string{"--resume=" + uuid}, uuid},
+		{"continue has no id", []string{"--continue"}, ""},
+		{"empty args", nil, ""},
+		{"dangling flag", []string{"--session-id"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, claudeSessionIDFromArgs(tt.args))
+		})
+	}
+}
+
+func TestAttachClaudeSessionIDs_InspectErrorLeavesEmpty(t *testing.T) {
+	p := &dataProvider{containers: &fakeContainerManager{}} // no commands → error
+	running := map[string]map[string]*RunningSession{
+		"-proj": {"aaaa1111": {ShortID: "aaaa1111"}},
+	}
+	p.attachClaudeSessionIDs(context.Background(), running)
+	assert.Empty(t, running["-proj"]["aaaa1111"].ClaudeSessionID)
 }

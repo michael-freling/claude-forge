@@ -22,7 +22,7 @@ export function ProjectCard({
     <section className="project">
       <div className="p-head">
         <h2 title={project.id}>{title}</h2>
-        {!project.resolved && <span className="unresolved">(unresolved)</span>}
+        {!project.resolved && <span className="unresolved">(directory removed)</span>}
         {project.resolved && project.dir && (
           <span className="mono faint clip" title={project.dir}>
             {project.dir}

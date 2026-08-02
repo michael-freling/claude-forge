@@ -2074,3 +2074,30 @@ func TestContainerLogs(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerCommand(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := NewMockDockerAPI(ctrl)
+
+	m.EXPECT().ContainerInspect(gomock.Any(), "forge-agent-x").Return(container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{},
+		Config:            &container.Config{Cmd: []string{"--session-id", "uuid-1"}},
+	}, nil)
+	cmd, err := newClientWithAPI(m).ContainerCommand(context.Background(), "forge-agent-x")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"--session-id", "uuid-1"}, cmd)
+
+	// nil Config → nil args, no error.
+	m.EXPECT().ContainerInspect(gomock.Any(), "bare").Return(container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{},
+	}, nil)
+	cmd, err = newClientWithAPI(m).ContainerCommand(context.Background(), "bare")
+	require.NoError(t, err)
+	assert.Nil(t, cmd)
+
+	// inspect error propagates.
+	m.EXPECT().ContainerInspect(gomock.Any(), "gone").Return(container.InspectResponse{}, fmt.Errorf("no such container"))
+	_, err = newClientWithAPI(m).ContainerCommand(context.Background(), "gone")
+	require.Error(t, err)
+}

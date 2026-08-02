@@ -24,10 +24,10 @@ describe("ProjectCard", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("/home/user/cat")).toBeInTheDocument();
     expect(screen.getByText("1 session")).toBeInTheDocument();
-    expect(screen.queryByText("(unresolved)")).toBeNull();
+    expect(screen.queryByText("(directory removed)")).toBeNull();
   });
 
-  it("falls back to the id with an '(unresolved)' hint, hides the dir, pluralises", () => {
+  it("falls back to the id with a '(directory removed)' hint, hides the dir, pluralises", () => {
     render(
       <ProjectCard
         project={makeProject({
@@ -43,7 +43,7 @@ describe("ProjectCard", () => {
     expect(
       screen.getByRole("heading", { name: "-home-user-cat" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("(unresolved)")).toBeInTheDocument();
+    expect(screen.getByText("(directory removed)")).toBeInTheDocument();
     expect(screen.queryByText("/home/user/cat")).toBeNull();
     expect(screen.getByText("2 sessions")).toBeInTheDocument();
   });

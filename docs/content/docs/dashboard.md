@@ -22,8 +22,8 @@ The UI is split into three pages (client-side routes; deep links work):
 - **Running** (`/`, the landing page) — only what is currently live. Each
   running session appears as a card with its project, container short ID, and
   the metadata of its recorded session — name, branch, worktree, and pull
-  request — joined by matching the container short ID against the Claude
-  session ID prefix. The card also shows the session-scope MCP servers (the
+  request — joined via the Claude session ID recovered from the agent
+  container's command line. The card also shows the session-scope MCP servers (the
   per-session GitHub MCP sidecar and any custom `scope: session` container
   servers) as status pills. A one-line strip at the top summarizes global MCP
   health and links to the servers page.
@@ -62,11 +62,13 @@ curl -X POST -H 'content-type: application/json' -d '{}' \
 
 - The dashboard is read-only; it observes state and never starts, stops, or
   modifies sessions or containers.
-- The running↔session join is a prefix match: a running container's short ID
-  is matched against the start of each recorded Claude session ID in the same
-  project. A running session whose ID matches no recorded session is still
-  shown, with its short ID standing in for the name.
+- The running↔session join uses the Claude session ID recovered from the
+  agent container's `--session-id`/`--resume` arguments (the container short
+  ID and the Claude session ID are unrelated values). A session started with
+  `--continue`, or whose container cannot be inspected, still appears — with
+  its short ID standing in for the name.
 - A project's git branch and pull request are only resolvable when its host
   directory can be located; projects whose directory cannot be resolved are
-  still listed (with their sessions, marked "unresolved") and noted in a
-  warning.
+  still listed with their sessions and marked "directory removed" inline — a
+  removed checkout or deleted worktree is normal lifecycle, so it does not
+  raise a warning.

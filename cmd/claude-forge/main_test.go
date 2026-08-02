@@ -471,6 +471,9 @@ func (s *stubContainerManager) CreateNetwork(_ context.Context, _ string) (strin
 	return "net-id", nil
 }
 func (s *stubContainerManager) RemoveNetwork(_ context.Context, _ string) error { return nil }
+func (s *stubContainerManager) ContainerCommand(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
 func (s *stubContainerManager) StartAgent(_ context.Context, _ container.AgentOptions) (string, error) {
 	return "agent-id", nil
 }
