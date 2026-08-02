@@ -14,6 +14,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/michael-freling/claude-forge/internal/dashboard"
 	"github.com/michael-freling/claude-forge/internal/forge"
 	"github.com/michael-freling/claude-forge/internal/forge/auth"
 	forgeconfig "github.com/michael-freling/claude-forge/internal/forge/config"
@@ -67,6 +68,7 @@ containers, Docker networks, and session state.`,
 		newGatewayCmd(),
 		newKubeCmd(),
 		newMcpCmd(),
+		newDashboardCmd(),
 	)
 
 	return rootCmd
@@ -1199,4 +1201,40 @@ func newMcpRestartCmd() *cobra.Command {
 			return orch.RestartSharedMCP(context.Background())
 		},
 	}
+}
+
+// newDashboardCmd creates the "dashboard" subcommand, which serves a local web
+// UI summarizing claude-forge projects, sessions, PRs, and MCP server status.
+func newDashboardCmd() *cobra.Command {
+	var addr string
+
+	cmd := &cobra.Command{
+		Use:   "dashboard",
+		Short: "Serve a local web dashboard of projects, sessions, and MCP status",
+		Long: `Dashboard starts a local web server that shows, for each claude-forge
+project, its sessions (with pull request and git branch), the MCP servers
+backing each running session, and the shared global-scope MCP servers.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			orch, cleanup, err := createOrchestrator()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("failed to get working directory: %w", err)
+			}
+
+			provider := dashboard.NewProvider(orch.Containers, orch.HomeDir, orch.ConfigDir, cwd)
+			srv := dashboard.NewServer(provider)
+
+			fmt.Printf("Dashboard starting on http://%s\n", addr)
+			return srv.Run(addr)
+		},
+	}
+
+	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:8099", "Address to serve the dashboard on")
+
+	return cmd
 }
