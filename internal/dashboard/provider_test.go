@@ -719,3 +719,87 @@ func TestAttachClaudeSessionIDs_InspectErrorLeavesEmpty(t *testing.T) {
 	p.attachClaudeSessionIDs(context.Background(), running)
 	assert.Empty(t, running["-proj"]["aaaa1111"].ClaudeSessionID)
 }
+
+func TestDefaultLookupPR_EscapesBranchCharacters(t *testing.T) {
+	var gotHead, gotState, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotHead = r.URL.Query().Get("head")
+		gotState = r.URL.Query().Get("state")
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	p := &dataProvider{
+		githubToken: func() (string, error) { return "tok", nil },
+	}
+	origBase := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	t.Cleanup(func() { githubAPIBaseURL = origBase })
+
+	// A branch with #, &, and = would previously truncate the URL at the
+	// fragment and inject query parameters.
+	_, err := p.defaultLookupPR("octo", "cat", "feature#123&injected=1")
+	require.NoError(t, err)
+	assert.Equal(t, "/repos/octo/cat/pulls", gotPath)
+	assert.Equal(t, "octo:feature#123&injected=1", gotHead, "branch must arrive intact, not truncated or split")
+	assert.Equal(t, "all", gotState, "state must survive a # in the branch")
+}
+
+func TestNewTokenResolver_RetriesFailuresCachesSuccess(t *testing.T) {
+	calls := 0
+	fail := true
+	resolve := newTokenResolver(func() (string, error) {
+		calls++
+		if fail {
+			return "", fmt.Errorf("no credentials yet")
+		}
+		return "tok-1", nil
+	})
+
+	// Failures are returned but NOT cached.
+	_, err := resolve()
+	require.Error(t, err)
+	_, err = resolve()
+	require.Error(t, err)
+	assert.Equal(t, 2, calls, "each failed call must retry")
+
+	// Once credentials appear, the success is cached.
+	fail = false
+	tok, err := resolve()
+	require.NoError(t, err)
+	assert.Equal(t, "tok-1", tok)
+	tok, err = resolve()
+	require.NoError(t, err)
+	assert.Equal(t, "tok-1", tok)
+	assert.Equal(t, 3, calls, "success must be cached, not re-resolved")
+}
+
+func TestBuild_WarnsOnUnmatchedSidecarAndUnlistableSessions(t *testing.T) {
+	homeDir := t.TempDir()
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+
+	// A project dir that exists but cannot be read -> session.List fails.
+	forgeDir := filepath.Join(homeDir, ".claude-forge")
+	badProj := filepath.Join(forgeDir, "-locked-project")
+	require.NoError(t, os.MkdirAll(badProj, 0o755))
+	require.NoError(t, os.Chmod(badProj, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(badProj, 0o755) })
+
+	// A leaked custom sidecar whose project id matches nothing known.
+	containers := []container.ContainerInfo{
+		{Name: "forge-mcp-ghost--no-such-proj-aaaa1111", Image: "ghost:latest", Status: "Up 1 hour"},
+	}
+
+	p := NewProvider(&fakeContainerManager{containers: containers}, homeDir, configDir, "/tmp/none").(*dataProvider)
+	p.identify = func(string) (*project.Project, error) { return nil, fmt.Errorf("no repo") }
+	p.githubToken = func() (string, error) { return "tok", nil }
+
+	dash, err := p.Build(context.Background())
+	require.NoError(t, err)
+	assert.True(t, hasWarning(dash.Warnings, "does not match any known project"),
+		"a leaked sidecar must be surfaced, not silently dropped")
+	assert.True(t, hasWarning(dash.Warnings, "failed to list sessions"),
+		"an unreadable project session dir must be surfaced")
+}

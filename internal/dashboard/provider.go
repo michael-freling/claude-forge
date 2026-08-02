@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,22 +65,17 @@ func NewProvider(containers container.ContainerManager, homeDir, configDir, cwd 
 		identify:   project.Identify,
 	}
 
-	// Resolve the GitHub token at most once, lazily, and reuse the result for
-	// both the PR gate and every PR lookup.
-	var once sync.Once
-	var tok string
-	var tokErr error
-	p.githubToken = func() (string, error) {
-		once.Do(func() {
-			auth, err := gateway.NewGitHubAuth()
-			if err != nil {
-				tokErr = err
-				return
-			}
-			tok = auth.Token()
-		})
-		return tok, tokErr
-	}
+	// Resolve the GitHub token lazily; cache a SUCCESS for the process
+	// lifetime but retry failures on later calls. The dashboard is long-running
+	// with periodic refresh, so a user who sets up credentials after starting
+	// it gets PR data on the next refresh instead of never.
+	p.githubToken = newTokenResolver(func() (string, error) {
+		auth, err := gateway.NewGitHubAuth()
+		if err != nil {
+			return "", err
+		}
+		return auth.Token(), nil
+	})
 	p.lookupPR = p.defaultLookupPR
 
 	return p
@@ -144,7 +140,10 @@ func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
 		knownIDs[cwdProj.ID] = true
 	}
 
-	global, running := p.classifyContainers(containers, cfg, knownIDs)
+	global, running, unmatchedSidecars := p.classifyContainers(containers, cfg, knownIDs)
+	for _, name := range unmatchedSidecars {
+		warnings = append(warnings, fmt.Sprintf("MCP sidecar container %q does not match any known project; not shown", name))
+	}
 	p.attachClaudeSessionIDs(ctx, running)
 
 	// A per-Build PR cache keyed by (owner, repo, branch) avoids duplicate
@@ -172,6 +171,7 @@ func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
 		projects = append(projects, p.buildProject(
 			forgeDir, projID, resolved, dir, owner, repo,
 			running[projID], prEnabled, lookupWithCache,
+			func(w string) { warnings = append(warnings, w) },
 		))
 	}
 
@@ -286,6 +286,7 @@ func (p *dataProvider) buildProject(
 	runningByShort map[string]*RunningSession,
 	prEnabled bool,
 	lookupPR func(owner, repo, branch string) *PR,
+	warn func(string),
 ) Project {
 	proj := Project{
 		ID:              projID,
@@ -298,6 +299,9 @@ func (p *dataProvider) buildProject(
 	}
 
 	sessions, err := session.List(filepath.Join(forgeDir, projID))
+	if err != nil {
+		warn(fmt.Sprintf("failed to list sessions for project %q: %v", projID, err))
+	}
 	if err == nil {
 		for _, s := range sessions {
 			branch := ""
@@ -356,7 +360,7 @@ func (p *dataProvider) classifyContainers(
 	containers []container.ContainerInfo,
 	cfg *config.Config,
 	knownIDs map[string]bool,
-) (GlobalMCP, map[string]map[string]*RunningSession) {
+) (GlobalMCP, map[string]map[string]*RunningSession, []string) {
 	running := map[string]map[string]*RunningSession{}
 	ensureRS := func(projID, short string) *RunningSession {
 		if running[projID] == nil {
@@ -414,14 +418,21 @@ func (p *dataProvider) classifyContainers(
 	for pid := range pidSet {
 		pids = append(pids, pid)
 	}
+	var unmatched []string
 	for _, c := range customSidecars {
 		if serverName, pid, short, ok := splitCustom(c.Name[len("forge-mcp-"):], pids); ok {
 			rs := ensureRS(pid, short)
 			rs.MCPServers = append(rs.MCPServers, mcpServerFromContainer(serverName, "session", c))
+		} else {
+			// A sidecar whose project can no longer be determined (e.g. the
+			// project's session dir was pruned but the container leaked) —
+			// surface it rather than dropping it silently, matching every
+			// other best-effort path.
+			unmatched = append(unmatched, c.Name)
 		}
 	}
 
-	return GlobalMCP{Servers: p.globalServers(cfg, k8sInfo, globalContainers)}, running
+	return GlobalMCP{Servers: p.globalServers(cfg, k8sInfo, globalContainers)}, running, unmatched
 }
 
 // globalServers reconciles the declared global MCP config against the running
@@ -592,9 +603,15 @@ func (p *dataProvider) defaultLookupPR(owner, repo, branch string) (*PR, error) 
 		return nil, nil
 	}
 
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls?head=%s:%s&state=all",
-		githubAPIBaseURL, owner, repo, owner, branch)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	// Branch names may legally contain URL-significant characters (#, &, %, +,
+	// =): build the query with proper escaping so such a branch cannot truncate
+	// the URL or inject parameters.
+	q := neturl.Values{}
+	q.Set("head", owner+":"+branch)
+	q.Set("state", "all")
+	reqURL := fmt.Sprintf("%s/repos/%s/%s/pulls?%s",
+		githubAPIBaseURL, neturl.PathEscape(owner), neturl.PathEscape(repo), q.Encode())
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -688,4 +705,26 @@ func sessionIDFromResumeRef(ref string) string {
 		base = base[i+1:]
 	}
 	return strings.TrimSuffix(base, ".jsonl")
+}
+
+// newTokenResolver wraps resolve so a successful resolution is cached forever
+// while failures are retried on each call — credentials configured after the
+// dashboard starts are picked up by a later refresh.
+func newTokenResolver(resolve func() (string, error)) func() (string, error) {
+	var mu sync.Mutex
+	var tok string
+	var resolved bool
+	return func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if resolved {
+			return tok, nil
+		}
+		t, err := resolve()
+		if err != nil {
+			return "", err
+		}
+		tok, resolved = t, true
+		return tok, nil
+	}
 }
