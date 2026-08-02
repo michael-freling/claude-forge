@@ -1,0 +1,730 @@
+package dashboard
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	neturl "net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/michael-freling/claude-forge/internal/forge/config"
+	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/project"
+	"github.com/michael-freling/claude-forge/internal/forge/session"
+	"github.com/michael-freling/claude-forge/internal/gateway"
+)
+
+// Provider builds a Dashboard snapshot from the host's claude-forge state.
+type Provider interface {
+	Build(ctx context.Context) (*Dashboard, error)
+}
+
+// dataProvider is the default Provider. Its git, GitHub, and project-identify
+// dependencies are function fields so tests can inject fakes and do no real
+// git/Docker/GitHub I/O.
+type dataProvider struct {
+	containers container.ContainerManager
+	homeDir    string
+	configDir  string
+	cwd        string
+	// fsRoot roots the project-ID → directory decoder. Empty means "/"; tests
+	// set it to a temp dir so the decoder can walk fabricated paths.
+	fsRoot string
+
+	// gitBranch resolves the current branch of a git working tree.
+	gitBranch func(dir string) (string, error)
+	// lookupPR fetches the pull request for a branch, or nil if none.
+	lookupPR func(owner, repo, branch string) (*PR, error)
+	// identify resolves a host directory into project metadata (execs git by
+	// default); injectable so tests avoid real git.
+	identify func(dir string) (*project.Project, error)
+	// githubToken resolves the GitHub token once (memoized in the default).
+	githubToken func() (string, error)
+}
+
+var _ Provider = (*dataProvider)(nil)
+
+// NewProvider returns the production Provider wired to real git, GitHub, and
+// Docker dependencies. cwd is the dashboard process's working directory, used
+// to fully resolve the current project even when its encoded path is lossy.
+func NewProvider(containers container.ContainerManager, homeDir, configDir, cwd string) Provider {
+	p := &dataProvider{
+		containers: containers,
+		homeDir:    homeDir,
+		configDir:  configDir,
+		cwd:        cwd,
+		gitBranch:  defaultGitBranch,
+		identify:   project.Identify,
+	}
+
+	// Resolve the GitHub token lazily; cache a SUCCESS for the process
+	// lifetime but retry failures on later calls. The dashboard is long-running
+	// with periodic refresh, so a user who sets up credentials after starting
+	// it gets PR data on the next refresh instead of never.
+	p.githubToken = newTokenResolver(func() (string, error) {
+		auth, err := gateway.NewGitHubAuth()
+		if err != nil {
+			return "", err
+		}
+		return auth.Token(), nil
+	})
+	p.lookupPR = p.defaultLookupPR
+
+	return p
+}
+
+// Build gathers projects, sessions, PRs, and MCP server status into a snapshot.
+// It never fails on best-effort data sources: problems become warnings so the
+// dashboard still renders what it could collect.
+func (p *dataProvider) Build(ctx context.Context) (*Dashboard, error) {
+	warnings := []string{}
+
+	cfg, err := config.Load(p.configDir)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to load config: %v", err))
+		cfg = config.DefaultConfig()
+	}
+
+	containers, err := p.containers.ListForgeContainers(ctx)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to list containers: %v", err))
+		containers = nil
+	}
+
+	// Resolve the GitHub token once to decide whether PR lookups are possible.
+	token, tokErr := p.githubToken()
+	prEnabled := false
+	switch {
+	case tokErr != nil:
+		warnings = append(warnings, fmt.Sprintf("PR lookups disabled: %v", tokErr))
+	case token == "":
+		// No token available; skip PRs quietly.
+	default:
+		prEnabled = true
+	}
+
+	// Fully resolve the dashboard's own project so the current one is complete
+	// even if its encoded ID cannot be reversed unambiguously.
+	var cwdProj *project.Project
+	if cp, err := p.identify(p.cwd); err == nil {
+		cwdProj = cp
+	}
+
+	forgeDir := filepath.Join(p.homeDir, ".claude-forge")
+	var subdirs []string
+	if entries, err := os.ReadDir(forgeDir); err == nil {
+		for _, e := range entries {
+			// A project ID is an encoded absolute path, so it always begins with
+			// "-" (the leading "/"). This skips claude-forge's own bookkeeping
+			// dirs (plugins, caches, …), which are not projects.
+			if e.IsDir() && strings.HasPrefix(e.Name(), "-") {
+				subdirs = append(subdirs, e.Name())
+			}
+		}
+	}
+	sort.Strings(subdirs)
+
+	knownIDs := map[string]bool{}
+	for _, id := range subdirs {
+		knownIDs[id] = true
+	}
+	if cwdProj != nil {
+		knownIDs[cwdProj.ID] = true
+	}
+
+	global, running, unmatchedSidecars := p.classifyContainers(containers, cfg, knownIDs)
+	for _, name := range unmatchedSidecars {
+		warnings = append(warnings, fmt.Sprintf("MCP sidecar container %q does not match any known project; not shown", name))
+	}
+	p.attachClaudeSessionIDs(ctx, running)
+
+	// A per-Build PR cache keyed by (owner, repo, branch) avoids duplicate
+	// lookups when several sessions share a branch.
+	prCache := map[string]*PR{}
+	lookupWithCache := func(owner, repo, branch string) *PR {
+		key := owner + "\x00" + repo + "\x00" + branch
+		if pr, ok := prCache[key]; ok {
+			return pr
+		}
+		pr, err := p.lookupPR(owner, repo, branch)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("PR lookup failed for %s/%s@%s: %v", owner, repo, branch, err))
+			prCache[key] = nil
+			return nil
+		}
+		prCache[key] = pr
+		return pr
+	}
+
+	projects := []Project{}
+	seen := map[string]bool{}
+	build := func(projID string, resolved bool, dir, owner, repo string) {
+		seen[projID] = true
+		projects = append(projects, p.buildProject(
+			forgeDir, projID, resolved, dir, owner, repo,
+			running[projID], prEnabled, lookupWithCache,
+			func(w string) { warnings = append(warnings, w) },
+		))
+	}
+
+	if cwdProj != nil {
+		build(cwdProj.ID, true, cwdProj.Dir, cwdProj.Owner, cwdProj.Repo)
+	}
+	for _, projID := range subdirs {
+		if seen[projID] {
+			continue
+		}
+		// A project whose directory no longer exists (removed checkout or
+		// deleted worktree) is normal lifecycle, not a problem: it renders
+		// inline as unresolved rather than raising a warning.
+		resolved, dir, owner, repo := p.resolveProject(projID)
+		build(projID, resolved, dir, owner, repo)
+	}
+
+	// Running sessions whose project was neither scanned nor the cwd still get
+	// surfaced under a synthetic unresolved project.
+	var leftover []string
+	for projID := range running {
+		if !seen[projID] {
+			leftover = append(leftover, projID)
+		}
+	}
+	sort.Strings(leftover)
+	for _, projID := range leftover {
+		warnings = append(warnings, fmt.Sprintf("running session found for unknown project %q", projID))
+		build(projID, false, "", "", "")
+	}
+
+	return &Dashboard{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Warnings:    warnings,
+		Global:      global,
+		Projects:    projects,
+	}, nil
+}
+
+// worktreeMarker is the encoded form of the "/.claude-worktrees/" path segment
+// inside a project ID whose session directory belonged to a git worktree.
+const worktreeMarker = "-.claude-worktrees-"
+
+// resolveProject reverses a project ID back to its host directory and
+// identifies it. It fails (resolved=false) only when no matching directory
+// exists on disk or the directory is not a git project.
+//
+// A worktree session dir often outlives its worktree (worktrees are removed
+// when merged). When the worktree's own directory is gone but the parent
+// project still exists, the project resolves via the parent — owner/repo are
+// recovered, dir stays empty (there is no working tree to derive a branch
+// from).
+func (p *dataProvider) resolveProject(projID string) (bool, string, string, string) {
+	if dir, ok := p.decodeProjectID(projID); ok {
+		proj, err := p.identify(dir)
+		if err != nil {
+			return false, "", "", ""
+		}
+		return true, proj.Dir, proj.Owner, proj.Repo
+	}
+
+	if i := strings.Index(projID, worktreeMarker); i > 0 {
+		if parent, ok := p.decodeProjectID(projID[:i]); ok {
+			if proj, err := p.identify(parent); err == nil {
+				return true, "", proj.Owner, proj.Repo
+			}
+		}
+	}
+	return false, "", "", ""
+}
+
+// decodeProjectID reverses a project ID (an absolute host path with every "/"
+// replaced by "-") back to a directory that exists on disk. Because a path
+// component may itself contain "-", the reversal is ambiguous by string alone,
+// so it walks the filesystem: each component must be an existing directory.
+// Longer components are tried first, so a real hyphenated name (e.g.
+// "michael-freling") is preferred over a coincidental "michael/freling" split.
+//
+// The decoder is rooted at p.fsRoot (default "/"), which tests override to a
+// temp dir. It returns the decoded absolute path and whether one was found.
+func (p *dataProvider) decodeProjectID(projID string) (string, bool) {
+	if !strings.HasPrefix(projID, "-") {
+		return "", false
+	}
+	root := p.fsRoot
+	if root == "" {
+		root = "/"
+	}
+	return p.decodeTokens(root, strings.Split(projID[1:], "-"))
+}
+
+func (p *dataProvider) decodeTokens(base string, tokens []string) (string, bool) {
+	if len(tokens) == 0 {
+		return base, true
+	}
+	for k := len(tokens); k >= 1; k-- {
+		cand := filepath.Join(base, strings.Join(tokens[:k], "-"))
+		if info, err := os.Stat(cand); err == nil && info.IsDir() {
+			if res, ok := p.decodeTokens(cand, tokens[k:]); ok {
+				return res, true
+			}
+		}
+	}
+	return "", false
+}
+
+// buildProject assembles one Project's sessions (with branches and PRs) and
+// running sessions.
+func (p *dataProvider) buildProject(
+	forgeDir, projID string,
+	resolved bool, dir, owner, repo string,
+	runningByShort map[string]*RunningSession,
+	prEnabled bool,
+	lookupPR func(owner, repo, branch string) *PR,
+	warn func(string),
+) Project {
+	proj := Project{
+		ID:              projID,
+		Dir:             dir,
+		Owner:           owner,
+		Repo:            repo,
+		Resolved:        resolved,
+		Sessions:        []Session{},
+		RunningSessions: []RunningSession{},
+	}
+
+	sessions, err := session.List(filepath.Join(forgeDir, projID))
+	if err != nil {
+		warn(fmt.Sprintf("failed to list sessions for project %q: %v", projID, err))
+	}
+	if err == nil {
+		for _, s := range sessions {
+			branch := ""
+			// dir can be empty for a resolved project whose own directory is
+			// gone (a deleted worktree recovered via its parent) — no working
+			// tree means no branch to derive.
+			if resolved && dir != "" {
+				branchDir := dir
+				if s.IsWorktree() {
+					branchDir = filepath.Join(dir, ".claude-worktrees", s.WorktreeName())
+				}
+				if b, berr := p.gitBranch(branchDir); berr == nil {
+					branch = b
+				}
+			}
+
+			var pr *PR
+			if prEnabled && resolved && branch != "" {
+				pr = lookupPR(owner, repo, branch)
+			}
+
+			proj.Sessions = append(proj.Sessions, Session{
+				ID:           s.ID,
+				Name:         s.Name,
+				Worktree:     s.WorktreeName(),
+				Branch:       branch,
+				CreatedAt:    s.CreatedAt.Format(time.RFC3339),
+				LastActive:   s.LastActive.Format(time.RFC3339),
+				FirstMessage: s.FirstMsg,
+				PR:           pr,
+			})
+		}
+	}
+
+	if runningByShort != nil {
+		shorts := make([]string, 0, len(runningByShort))
+		for sh := range runningByShort {
+			shorts = append(shorts, sh)
+		}
+		sort.Strings(shorts)
+		for _, sh := range shorts {
+			rs := runningByShort[sh]
+			sort.Slice(rs.MCPServers, func(i, j int) bool {
+				return rs.MCPServers[i].Name < rs.MCPServers[j].Name
+			})
+			proj.RunningSessions = append(proj.RunningSessions, *rs)
+		}
+	}
+
+	return proj
+}
+
+// classifyContainers partitions the forge container list into the global MCP
+// panel and per-project running sessions with their session-scope MCP servers.
+func (p *dataProvider) classifyContainers(
+	containers []container.ContainerInfo,
+	cfg *config.Config,
+	knownIDs map[string]bool,
+) (GlobalMCP, map[string]map[string]*RunningSession, []string) {
+	running := map[string]map[string]*RunningSession{}
+	ensureRS := func(projID, short string) *RunningSession {
+		if running[projID] == nil {
+			running[projID] = map[string]*RunningSession{}
+		}
+		rs := running[projID][short]
+		if rs == nil {
+			rs = &RunningSession{ShortID: short, MCPServers: []MCPServer{}}
+			running[projID][short] = rs
+		}
+		return rs
+	}
+
+	var k8sInfo *container.ContainerInfo
+	globalContainers := map[string]container.ContainerInfo{}
+	var customSidecars []container.ContainerInfo
+
+	for _, c := range containers {
+		name := c.Name
+		switch {
+		case name == "forge-k8s-mcp":
+			ci := c
+			k8sInfo = &ci
+		case strings.HasPrefix(name, "forge-mcp-global-"):
+			globalContainers[name] = c
+		case strings.HasPrefix(name, "forge-agent-"):
+			if pid, short, ok := splitProjShort(name[len("forge-agent-"):]); ok {
+				ensureRS(pid, short)
+			}
+		case strings.HasPrefix(name, "forge-gateway-"):
+			if pid, short, ok := splitProjShort(name[len("forge-gateway-"):]); ok {
+				ensureRS(pid, short)
+			}
+		case strings.HasPrefix(name, "forge-github-mcp-"):
+			if pid, short, ok := splitProjShort(name[len("forge-github-mcp-"):]); ok {
+				rs := ensureRS(pid, short)
+				rs.MCPServers = append(rs.MCPServers, mcpServerFromContainer("github", "session", c))
+			}
+		case strings.HasPrefix(name, "forge-mcp-"):
+			// Deferred: splitting <name>-<projID> needs the full projID set.
+			customSidecars = append(customSidecars, c)
+		}
+	}
+
+	// The projID set for custom sidecars is the known projects plus any project
+	// that already has a running session (its agent registered it above).
+	pidSet := map[string]bool{}
+	for id := range knownIDs {
+		pidSet[id] = true
+	}
+	for pid := range running {
+		pidSet[pid] = true
+	}
+	pids := make([]string, 0, len(pidSet))
+	for pid := range pidSet {
+		pids = append(pids, pid)
+	}
+	var unmatched []string
+	for _, c := range customSidecars {
+		if serverName, pid, short, ok := splitCustom(c.Name[len("forge-mcp-"):], pids); ok {
+			rs := ensureRS(pid, short)
+			rs.MCPServers = append(rs.MCPServers, mcpServerFromContainer(serverName, "session", c))
+		} else {
+			// A sidecar whose project can no longer be determined (e.g. the
+			// project's session dir was pruned but the container leaked) —
+			// surface it rather than dropping it silently, matching every
+			// other best-effort path.
+			unmatched = append(unmatched, c.Name)
+		}
+	}
+
+	return GlobalMCP{Servers: p.globalServers(cfg, k8sInfo, globalContainers)}, running, unmatched
+}
+
+// globalServers reconciles the declared global MCP config against the running
+// global containers (k8s built-in, custom global sidecars, stdio/remote).
+func (p *dataProvider) globalServers(
+	cfg *config.Config,
+	k8sInfo *container.ContainerInfo,
+	globalContainers map[string]container.ContainerInfo,
+) []MCPServer {
+	servers := []MCPServer{}
+
+	// The legacy built-in Kubernetes MCP singleton is surfaced only when its
+	// container actually exists. It is intentionally not derived from config:
+	// the built-in kubernetes integration is being removed, and a
+	// config-independent check keeps this code working before and after.
+	if k8sInfo != nil {
+		servers = append(servers, mcpServerFromContainer("kubernetes", "global", *k8sInfo))
+	}
+
+	handled := map[string]bool{}
+	for _, s := range cfg.MCPServers {
+		switch {
+		case s.IsContainer() && s.Scope == "session":
+			// Session-scoped sidecars appear under their running session, not here.
+			continue
+		case s.IsGlobal():
+			cname := "forge-mcp-global-" + s.Name
+			handled[cname] = true
+			if ci, ok := globalContainers[cname]; ok {
+				servers = append(servers, mcpServerFromContainer(s.Name, "global", ci))
+			} else {
+				servers = append(servers, MCPServer{
+					Name:      s.Name,
+					Scope:     "global",
+					Kind:      "container",
+					Container: cname,
+					Image:     s.Image,
+					Status:    "not running",
+					Running:   false,
+				})
+			}
+		case s.IsStdio():
+			servers = append(servers, MCPServer{
+				Name: s.Name, Scope: "global", Kind: "stdio", Status: "n/a",
+			})
+		default:
+			servers = append(servers, MCPServer{
+				Name: s.Name, Scope: "global", Kind: "remote", Status: "n/a",
+			})
+		}
+	}
+
+	// Global sidecars running without a matching config entry are still shown.
+	var extra []string
+	for name := range globalContainers {
+		if !handled[name] {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(extra)
+	for _, name := range extra {
+		ci := globalContainers[name]
+		servers = append(servers, mcpServerFromContainer(strings.TrimPrefix(name, "forge-mcp-global-"), "global", ci))
+	}
+
+	return servers
+}
+
+// mcpServerFromContainer builds a container-backed MCPServer from live info.
+func mcpServerFromContainer(name, scope string, c container.ContainerInfo) MCPServer {
+	return MCPServer{
+		Name:      name,
+		Scope:     scope,
+		Kind:      "container",
+		Container: c.Name,
+		Image:     c.Image,
+		Status:    c.Status,
+		Running:   isRunning(c.Status),
+	}
+}
+
+// isRunning reports whether a Docker status string denotes a running container.
+func isRunning(status string) bool {
+	return strings.HasPrefix(status, "Up")
+}
+
+// isShortID reports whether s is an 8-character lowercase-hex session short ID.
+func isShortID(s string) bool {
+	if len(s) != 8 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// splitProjShort parses "<projID>-<short>" where short is an 8-hex suffix.
+func splitProjShort(rest string) (projID, short string, ok bool) {
+	if len(rest) < 9 || rest[len(rest)-9] != '-' {
+		return "", "", false
+	}
+	short = rest[len(rest)-8:]
+	if !isShortID(short) {
+		return "", "", false
+	}
+	return rest[:len(rest)-9], short, true
+}
+
+// splitCustom parses "<name>-<projID>-<short>" for a custom session sidecar,
+// choosing the longest known projID that fits so a hyphenated server name and a
+// hyphenated project path can be told apart.
+func splitCustom(rest string, projIDs []string) (name, projID, short string, ok bool) {
+	if len(rest) < 9 || rest[len(rest)-9] != '-' {
+		return "", "", "", false
+	}
+	short = rest[len(rest)-8:]
+	if !isShortID(short) {
+		return "", "", "", false
+	}
+	middle := rest[:len(rest)-9] // <name>-<projID>
+
+	best := ""
+	for _, pid := range projIDs {
+		if pid == "" {
+			continue
+		}
+		if strings.HasSuffix(middle, "-"+pid) && len(pid) > len(best) {
+			best = pid
+		}
+	}
+	if best == "" {
+		return "", "", "", false
+	}
+	name = strings.TrimSuffix(middle, "-"+best)
+	if name == "" {
+		return "", "", "", false
+	}
+	return name, best, short, true
+}
+
+// --- default (production) dependency implementations ---
+
+// defaultGitBranch returns the current branch of the git working tree at dir.
+func defaultGitBranch(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve branch for %s: %w", dir, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// githubAPIBaseURL is the GitHub REST API base; overridable in tests.
+var githubAPIBaseURL = "https://api.github.com"
+
+// prHTTPClient bounds PR lookups so a slow API cannot stall a Build.
+var prHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+// defaultLookupPR fetches the first pull request opened from owner:branch.
+func (p *dataProvider) defaultLookupPR(owner, repo, branch string) (*PR, error) {
+	token, err := p.githubToken()
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		return nil, nil
+	}
+
+	// Branch names may legally contain URL-significant characters (#, &, %, +,
+	// =): build the query with proper escaping so such a branch cannot truncate
+	// the URL or inject parameters.
+	q := neturl.Values{}
+	q.Set("head", owner+":"+branch)
+	q.Set("state", "all")
+	reqURL := fmt.Sprintf("%s/repos/%s/%s/pulls?%s",
+		githubAPIBaseURL, neturl.PathEscape(owner), neturl.PathEscape(repo), q.Encode())
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := prHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("github api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var prs []struct {
+		Number   int     `json:"number"`
+		Title    string  `json:"title"`
+		State    string  `json:"state"`
+		HTMLURL  string  `json:"html_url"`
+		Draft    bool    `json:"draft"`
+		MergedAt *string `json:"merged_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&prs); err != nil {
+		return nil, err
+	}
+	if len(prs) == 0 {
+		return nil, nil
+	}
+
+	first := prs[0]
+	state := first.State
+	if first.MergedAt != nil && *first.MergedAt != "" {
+		state = "merged"
+	}
+	return &PR{
+		Number: first.Number,
+		Title:  first.Title,
+		State:  state,
+		URL:    first.HTMLURL,
+		Draft:  first.Draft,
+	}, nil
+}
+
+// attachClaudeSessionIDs recovers each running session's Claude session UUID
+// from its agent container's command line. The container short id and the
+// Claude session id are independent random values with no derivable
+// relationship, so inspecting the agent's --session-id / --resume argument is
+// the only way to join a running container to its recorded session.
+// Best-effort: on any error the id stays empty and the UI falls back to the
+// bare short id.
+func (p *dataProvider) attachClaudeSessionIDs(ctx context.Context, running map[string]map[string]*RunningSession) {
+	for projID, byShort := range running {
+		for short, rs := range byShort {
+			args, err := p.containers.ContainerCommand(ctx, "forge-agent-"+projID+"-"+short)
+			if err != nil {
+				continue
+			}
+			rs.ClaudeSessionID = claudeSessionIDFromArgs(args)
+		}
+	}
+}
+
+// claudeSessionIDFromArgs extracts the Claude session id from an agent
+// container's command arguments: `--session-id <uuid>` on fresh sessions, or
+// `--resume <id-or-jsonl-path>` on resumed ones. `--continue` carries no id.
+func claudeSessionIDFromArgs(args []string) string {
+	for i, a := range args {
+		switch {
+		case a == "--session-id" && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(a, "--session-id="):
+			return strings.TrimPrefix(a, "--session-id=")
+		case a == "--resume" && i+1 < len(args):
+			return sessionIDFromResumeRef(args[i+1])
+		case strings.HasPrefix(a, "--resume="):
+			return sessionIDFromResumeRef(strings.TrimPrefix(a, "--resume="))
+		}
+	}
+	return ""
+}
+
+// sessionIDFromResumeRef normalizes a --resume argument, which is either a bare
+// session id or a transcript path like
+// /home/user/.claude/projects/<subdir>/<id>.jsonl.
+func sessionIDFromResumeRef(ref string) string {
+	base := ref
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	return strings.TrimSuffix(base, ".jsonl")
+}
+
+// newTokenResolver wraps resolve so a successful resolution is cached forever
+// while failures are retried on each call — credentials configured after the
+// dashboard starts are picked up by a later refresh.
+func newTokenResolver(resolve func() (string, error)) func() (string, error) {
+	var mu sync.Mutex
+	var tok string
+	var resolved bool
+	return func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if resolved {
+			return tok, nil
+		}
+		t, err := resolve()
+		if err != nil {
+			return "", err
+		}
+		tok, resolved = t, true
+		return tok, nil
+	}
+}

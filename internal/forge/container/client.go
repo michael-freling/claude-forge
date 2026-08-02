@@ -34,6 +34,7 @@ type ContainerManager interface {
 	StopContainer(ctx context.Context, name string) error
 	RemoveContainer(ctx context.Context, name string) error
 	ListForgeContainers(ctx context.Context) ([]ContainerInfo, error)
+	ContainerCommand(ctx context.Context, name string) ([]string, error)
 	PullImage(ctx context.Context, image string) error
 	ImageExists(ctx context.Context, image string) (bool, error)
 	ContainerLogs(ctx context.Context, containerID string) (string, error)
@@ -612,6 +613,20 @@ func (c *Client) IsContainerRunning(ctx context.Context, name string) (bool, err
 		return false, fmt.Errorf("failed to inspect container %s: %w", name, err)
 	}
 	return info.State != nil && info.State.Running, nil
+}
+
+// ContainerCommand returns the command (args) a container was created with.
+// Used by the dashboard to recover a session's Claude session id from the
+// agent container's --session-id / --resume arguments.
+func (c *Client) ContainerCommand(ctx context.Context, name string) ([]string, error) {
+	info, err := c.docker.ContainerInspect(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect container %s: %w", name, err)
+	}
+	if info.Config == nil {
+		return nil, nil
+	}
+	return info.Config.Cmd, nil
 }
 
 // WaitForReady polls the container state until it is running or exits.

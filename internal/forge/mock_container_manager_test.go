@@ -70,6 +70,21 @@ func (mr *MockContainerManagerMockRecorder) ConnectNetwork(ctx, networkName, con
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ConnectNetwork", reflect.TypeOf((*MockContainerManager)(nil).ConnectNetwork), ctx, networkName, containerName, aliases)
 }
 
+// ContainerCommand mocks base method.
+func (m *MockContainerManager) ContainerCommand(ctx context.Context, name string) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ContainerCommand", ctx, name)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ContainerCommand indicates an expected call of ContainerCommand.
+func (mr *MockContainerManagerMockRecorder) ContainerCommand(ctx, name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerCommand", reflect.TypeOf((*MockContainerManager)(nil).ContainerCommand), ctx, name)
+}
+
 // ContainerLogs mocks base method.
 func (m *MockContainerManager) ContainerLogs(ctx context.Context, containerID string) (string, error) {
 	m.ctrl.T.Helper()

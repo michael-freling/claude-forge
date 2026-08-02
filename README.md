@@ -15,6 +15,7 @@
 - Optional **Docker-in-Docker**: sessions get their own isolated Docker daemon, unable to see or touch host or other sessions' containers
 - Multiple instances can run in parallel across different projects
 - Named sessions with persistence — resume previous sessions by ID or name
+- Local web **dashboard** (`claude-forge dashboard`) showing each project's sessions, their pull requests, and session- and global-scope MCP server status
 - Automatic auth detection from `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or `~/.claude/.credentials.json`
 - Dependency caching for Go, npm, pnpm, and pip
 - Host git identity, Claude Code configuration, and plugins carried into the container

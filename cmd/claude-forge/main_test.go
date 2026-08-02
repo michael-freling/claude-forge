@@ -28,6 +28,7 @@ func TestNewRootCmd(t *testing.T) {
 	expectedSubcommands := []string{
 		"init", "start", "resume", "list", "prune", "stop", "status",
 		"build", "auth", "plugins", "version", "gateway", "mcp",
+		"dashboard",
 	}
 
 	subcommandNames := make(map[string]bool)
@@ -470,6 +471,9 @@ func (s *stubContainerManager) CreateNetwork(_ context.Context, _ string) (strin
 	return "net-id", nil
 }
 func (s *stubContainerManager) RemoveNetwork(_ context.Context, _ string) error { return nil }
+func (s *stubContainerManager) ContainerCommand(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
 func (s *stubContainerManager) StartAgent(_ context.Context, _ container.AgentOptions) (string, error) {
 	return "agent-id", nil
 }
@@ -952,6 +956,31 @@ func TestMcpRestartCmd_OrchestratorError(t *testing.T) {
 
 	cmd := newMcpCmd()
 	cmd.SetArgs([]string{"restart"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "test orchestrator error")
+}
+
+func TestNewDashboardCmd(t *testing.T) {
+	cmd := newDashboardCmd()
+
+	assert.Equal(t, "dashboard", cmd.Use)
+
+	addrFlag := cmd.Flags().Lookup("addr")
+	require.NotNil(t, addrFlag)
+	assert.Equal(t, "127.0.0.1:8099", addrFlag.DefValue)
+}
+
+func TestDashboardCmd_OrchestratorError(t *testing.T) {
+	original := createOrchestrator
+	createOrchestrator = func() (*forge.Orchestrator, func(), error) {
+		return nil, nil, fmt.Errorf("test orchestrator error")
+	}
+	t.Cleanup(func() { createOrchestrator = original })
+
+	cmd := newDashboardCmd()
+	cmd.SetArgs([]string{})
 
 	err := cmd.Execute()
 	require.Error(t, err)

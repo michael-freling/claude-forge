@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package dashboard.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/michael-freling/claude-forge/internal/gen/dashboard/v1;dashboardv1";
+
+// DashboardService serves a read-only snapshot of claude-forge activity across
+// all projects: their sessions (with pull requests) and the status of the MCP
+// servers backing each running session, plus the shared global-scope servers.
+service DashboardService {
+  // GetDashboard returns the current snapshot. It never fails on best-effort
+  // data sources; problems are reported in Dashboard.warnings.
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
+}
+
+message GetDashboardRequest {}
+
+message GetDashboardResponse {
+  Dashboard dashboard = 1;
+}
+
+message Dashboard {
+  // When the snapshot was gathered.
+  google.protobuf.Timestamp generated_at = 1;
+  // Non-fatal problems encountered while gathering (e.g. no GitHub token).
+  repeated string warnings = 2;
+  // Shared, host-wide MCP servers.
+  GlobalMcp global = 3;
+  // One entry per claude-forge project under ~/.claude-forge/.
+  repeated Project projects = 4;
+}
+
+message GlobalMcp {
+  repeated McpServer servers = 1;
+}
+
+message Project {
+  // Encoded project id (the host directory path with '/' replaced by '-').
+  string id = 1;
+  // Resolved host directory, or empty when it could not be located.
+  string dir = 2;
+  string owner = 3;
+  string repo = 4;
+  // Whether dir/owner/repo were resolved.
+  bool resolved = 5;
+  repeated Session sessions = 6;
+  repeated RunningSession running_sessions = 7;
+}
+
+message Session {
+  // Claude session id (a UUID).
+  string id = 1;
+  string name = 2;
+  // Worktree name, empty for a non-worktree session.
+  string worktree = 3;
+  string branch = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp last_active = 6;
+  string first_message = 7;
+  // The pull request for this session's branch, if any.
+  PullRequest pr = 8;
+}
+
+message PullRequest {
+  int32 number = 1;
+  string title = 2;
+  PullRequestState state = 3;
+  string url = 4;
+  bool draft = 5;
+}
+
+enum PullRequestState {
+  PULL_REQUEST_STATE_UNSPECIFIED = 0;
+  PULL_REQUEST_STATE_OPEN = 1;
+  PULL_REQUEST_STATE_CLOSED = 2;
+  PULL_REQUEST_STATE_MERGED = 3;
+}
+
+// RunningSession is a live session identified by its 8-hex short id, with the
+// status of its session-scope MCP servers.
+message RunningSession {
+  string short_id = 1;
+  repeated McpServer mcp_servers = 2;
+  // Claude session id (UUID) recovered from the running agent container's
+  // command line (--session-id or --resume). Empty when the container was
+  // started with --continue or its args could not be inspected. This is the
+  // join key to Session.id: the container short id and the Claude session id
+  // are independent random values with no derivable relationship.
+  string claude_session_id = 3;
+}
+
+message McpServer {
+  // Server name, e.g. "github", "kubernetes", or a custom name.
+  string name = 1;
+  McpScope scope = 2;
+  McpKind kind = 3;
+  // Container name, empty for non-container (stdio/remote) servers.
+  string container = 4;
+  string image = 5;
+  // Docker status string, or "not running".
+  string status = 6;
+  bool running = 7;
+}
+
+enum McpScope {
+  MCP_SCOPE_UNSPECIFIED = 0;
+  MCP_SCOPE_SESSION = 1;
+  MCP_SCOPE_GLOBAL = 2;
+  MCP_SCOPE_BUILTIN = 3;
+}
+
+enum McpKind {
+  MCP_KIND_UNSPECIFIED = 0;
+  MCP_KIND_CONTAINER = 1;
+  MCP_KIND_STDIO = 2;
+  MCP_KIND_REMOTE = 3;
+}

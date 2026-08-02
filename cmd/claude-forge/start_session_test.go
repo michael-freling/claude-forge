@@ -55,6 +55,9 @@ func (fakeContainerManager) ContainerLogs(context.Context, string) (string, erro
 	return "", nil
 }
 func (fakeContainerManager) Close() error { return nil }
+func (fakeContainerManager) ContainerCommand(context.Context, string) ([]string, error) {
+	return nil, nil
+}
 
 // TestStartSession_NonInteractive runs startSession against a fake container
 // manager from inside a temporary git project. The agent container does not
