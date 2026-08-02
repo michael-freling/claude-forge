@@ -55,12 +55,21 @@ func defaultEndpoints() endpoints {
 // Bearer access token minted from Application Default Credentials (optionally
 // impersonating a service account); tokens are refreshed in-process so the
 // server survives sessions far longer than a single token's lifetime.
+//
+// The client is not bound to one project: project is only a default for calls
+// that omit their own "project" argument, so a single credential can target any
+// project it can access.
 type Client struct {
-	httpClient   *http.Client
-	tokenSource  oauth2.TokenSource
+	httpClient  *http.Client
+	tokenSource oauth2.TokenSource
+	// project is the default project for calls that omit a "project" argument.
+	// May be empty, in which case such calls must pass one explicitly.
+	project string
+	// quotaProject, when set, fixes the x-goog-user-project billing project for
+	// every call. When empty, each call bills the project it targets (see
+	// executeTool), which is what makes cross-project use bill correctly.
+	quotaProject string
 	endpoints    endpoints
-	project      string
-	quotaProject string // sent as x-goog-user-project for per-project quota/billing
 }
 
 // NewClient creates a Client with the production endpoints.
@@ -75,9 +84,11 @@ func NewClient(ts oauth2.TokenSource, project, quotaProject string) *Client {
 }
 
 // do issues an authenticated request to fullURL and returns the response body
-// and status code. A non-2xx status is not an error here — the caller inspects
-// the status and surfaces the body (which carries Google's structured error).
-func (c *Client) do(ctx context.Context, method, fullURL string, body io.Reader) ([]byte, int, error) {
+// and status code. quotaProject, when non-empty, is sent as x-goog-user-project
+// (the project billed for quota). A non-2xx status is not an error here — the
+// caller inspects the status and surfaces the body (which carries Google's
+// structured error).
+func (c *Client) do(ctx context.Context, method, fullURL string, body io.Reader, quotaProject string) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
@@ -89,8 +100,8 @@ func (c *Client) do(ctx context.Context, method, fullURL string, body io.Reader)
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	req.Header.Set("Accept", "application/json")
-	if c.quotaProject != "" {
-		req.Header.Set("x-goog-user-project", c.quotaProject)
+	if quotaProject != "" {
+		req.Header.Set("x-goog-user-project", quotaProject)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

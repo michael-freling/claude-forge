@@ -48,7 +48,7 @@ func TestClientDo_InjectsAuthAndHeaders(t *testing.T) {
 	c := NewClient(fakeTokenSource{token: "tok-123"}, "proj", "quota-proj")
 
 	// GET: no Content-Type expected.
-	body, status, err := c.do(context.Background(), http.MethodGet, srv.URL+"/x", nil)
+	body, status, err := c.do(context.Background(), http.MethodGet, srv.URL+"/x", nil, "quota-proj")
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, status)
 	assert.Contains(t, string(body), "ok")
@@ -58,7 +58,7 @@ func TestClientDo_InjectsAuthAndHeaders(t *testing.T) {
 	assert.Empty(t, gotContentType)
 
 	// POST with body: Content-Type set.
-	_, _, err = c.do(context.Background(), http.MethodPost, srv.URL+"/y", strings.NewReader("{}"))
+	_, _, err = c.do(context.Background(), http.MethodPost, srv.URL+"/y", strings.NewReader("{}"), "quota-proj")
 	require.NoError(t, err)
 	assert.Equal(t, "application/json", gotContentType)
 }
@@ -71,21 +71,21 @@ func TestClientDo_NoQuotaHeaderWhenEmpty(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(fakeTokenSource{token: "t"}, "proj", "")
-	_, _, err := c.do(context.Background(), http.MethodGet, srv.URL, nil)
+	_, _, err := c.do(context.Background(), http.MethodGet, srv.URL, nil, "")
 	require.NoError(t, err)
 	assert.Empty(t, gotQuota)
 }
 
 func TestClientDo_TokenError(t *testing.T) {
 	c := NewClient(fakeTokenSource{err: fmt.Errorf("boom")}, "proj", "proj")
-	_, _, err := c.do(context.Background(), http.MethodGet, "http://example.invalid", nil)
+	_, _, err := c.do(context.Background(), http.MethodGet, "http://example.invalid", nil, "proj")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to obtain access token")
 }
 
 func TestClientDo_BadURL(t *testing.T) {
 	c := NewClient(fakeTokenSource{token: "t"}, "proj", "proj")
-	_, _, err := c.do(context.Background(), "bad method", "http://example.com", nil)
+	_, _, err := c.do(context.Background(), "bad method", "http://example.com", nil, "proj")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create request")
 }
@@ -93,7 +93,7 @@ func TestClientDo_BadURL(t *testing.T) {
 func TestClientDo_RequestError(t *testing.T) {
 	c := NewClient(fakeTokenSource{token: "t"}, "proj", "proj")
 	// Nothing is listening at this address.
-	_, _, err := c.do(context.Background(), http.MethodGet, "http://127.0.0.1:0/x", nil)
+	_, _, err := c.do(context.Background(), http.MethodGet, "http://127.0.0.1:0/x", nil, "proj")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "request failed")
 }
@@ -106,7 +106,7 @@ func TestClientDo_PassesThroughErrorStatus(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(fakeTokenSource{token: "t"}, "proj", "proj")
-	body, status, err := c.do(context.Background(), http.MethodGet, srv.URL, nil)
+	body, status, err := c.do(context.Background(), http.MethodGet, srv.URL, nil, "proj")
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusForbidden, status)
 	assert.Contains(t, string(body), "denied")

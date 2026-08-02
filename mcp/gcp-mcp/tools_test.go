@@ -19,6 +19,7 @@ type recorder struct {
 	path     string
 	rawQuery string
 	body     string
+	quota    string // x-goog-user-project header
 
 	respStatus int
 	respBody   string
@@ -31,6 +32,7 @@ func newRecordingServer(rec *recorder) *httptest.Server {
 		rec.path = r.URL.Path
 		rec.rawQuery = r.URL.RawQuery
 		rec.body = string(b)
+		rec.quota = r.Header.Get("x-goog-user-project")
 		status := rec.respStatus
 		if status == 0 {
 			status = http.StatusOK
@@ -449,6 +451,57 @@ func TestGetNumber(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = getNumber(map[string]any{"x": "str"}, "x")
 	assert.False(t, ok)
+}
+
+// TestExecuteTool_QuotaFollowsTargetProject verifies the multi-project billing
+// behavior: with no fixed --quota-project, each call bills the project it
+// targets (its explicit arg, else the server default).
+func TestExecuteTool_QuotaFollowsTargetProject(t *testing.T) {
+	rec := &recorder{}
+	srv := newRecordingServer(rec)
+	defer srv.Close()
+
+	client := testClientAt(srv.URL)
+	client.quotaProject = "" // no fixed billing project
+
+	// Explicit per-call project: quota follows it.
+	_, _, err := executeTool(context.Background(), "describe_project",
+		map[string]any{"project": "other-proj"}, &Policy{}, client)
+	require.NoError(t, err)
+	assert.Equal(t, "other-proj", rec.quota)
+
+	// Omitted project: quota falls back to the server default project.
+	_, _, err = executeTool(context.Background(), "describe_project", map[string]any{}, &Policy{}, client)
+	require.NoError(t, err)
+	assert.Equal(t, "test-project", rec.quota)
+}
+
+func TestExecuteTool_QuotaFixedOverrideWins(t *testing.T) {
+	rec := &recorder{}
+	srv := newRecordingServer(rec)
+	defer srv.Close()
+
+	// testClientAt sets a fixed quotaProject ("test-project").
+	client := testClientAt(srv.URL)
+	_, _, err := executeTool(context.Background(), "describe_project",
+		map[string]any{"project": "other-proj"}, &Policy{}, client)
+	require.NoError(t, err)
+	// The fixed billing project wins over the per-call target.
+	assert.Equal(t, "test-project", rec.quota)
+}
+
+func TestExecuteTool_NoQuotaHeaderWhenNoProject(t *testing.T) {
+	rec := &recorder{}
+	srv := newRecordingServer(rec)
+	defer srv.Close()
+
+	client := testClientAt(srv.URL)
+	client.project = ""
+	client.quotaProject = ""
+	// list_projects needs no project, so nothing determines a quota project.
+	_, _, err := executeTool(context.Background(), "list_projects", map[string]any{}, &Policy{}, client)
+	require.NoError(t, err)
+	assert.Empty(t, rec.quota)
 }
 
 // assertErr is a tiny error type for tests.

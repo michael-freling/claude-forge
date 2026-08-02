@@ -134,7 +134,16 @@ func executeTool(ctx context.Context, name string, args map[string]any, policy *
 		return "", false, fmt.Errorf("failed to build request: %w", err)
 	}
 
-	respBody, status, err := client.do(ctx, method, fullURL, body)
+	// Bill quota to the configured project if one is fixed; otherwise bill the
+	// project this call targets, so cross-project reads bill correctly. Empty
+	// when neither is set (e.g. list_projects with no default) — then the
+	// x-goog-user-project header is simply omitted.
+	quota := client.quotaProject
+	if quota == "" {
+		quota = resolveProject(args, client.project)
+	}
+
+	respBody, status, err := client.do(ctx, method, fullURL, body, quota)
 	if err != nil {
 		return "", false, err
 	}
@@ -257,7 +266,9 @@ func numStr(args map[string]any, key string) string {
 // property maps shared by many tools.
 func projectProp() map[string]property {
 	return map[string]property{
-		"project": {Type: "string", Description: "Project ID (optional; overrides the server default)"},
+		"project": {Type: "string", Description: "Target project ID — any project the credential can access. " +
+			"Optional only if the server was started with a default --project; otherwise required. " +
+			"Use list_projects to discover accessible projects."},
 	}
 }
 

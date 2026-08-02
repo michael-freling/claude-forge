@@ -18,60 +18,6 @@ func TestDefaultConfig(t *testing.T) {
 	assert.False(t, cfg.Defaults.SkipPermissions)
 	assert.False(t, cfg.Defaults.Worktree)
 	assert.False(t, cfg.Docker.Enabled)
-	assert.Equal(t, DefaultGCPMCPImage, cfg.GCP.Image)
-	assert.False(t, cfg.GCP.Enabled)
-	assert.False(t, cfg.GCP.AllowSecretAccess)
-	assert.False(t, cfg.GCP.AllowWrites)
-}
-
-func TestLoad_GCP(t *testing.T) {
-	t.Run("defaults the image and keeps values", func(t *testing.T) {
-		dir := t.TempDir()
-		configYAML := `gcp:
-  enabled: true
-  project: my-project
-  impersonate_service_account: sa@my-project.iam.gserviceaccount.com
-  allow_secret_access: true
-`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
-
-		cfg, err := Load(dir)
-		require.NoError(t, err)
-		assert.True(t, cfg.GCP.Enabled)
-		assert.Equal(t, "my-project", cfg.GCP.Project)
-		assert.Equal(t, "sa@my-project.iam.gserviceaccount.com", cfg.GCP.ImpersonateServiceAccount)
-		assert.True(t, cfg.GCP.AllowSecretAccess)
-		assert.False(t, cfg.GCP.AllowWrites)
-		// Image defaults when unset.
-		assert.Equal(t, DefaultGCPMCPImage, cfg.GCP.Image)
-	})
-
-	t.Run("explicit empty image is defaulted", func(t *testing.T) {
-		dir := t.TempDir()
-		configYAML := `gcp:
-  enabled: true
-  image: ""
-`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
-
-		cfg, err := Load(dir)
-		require.NoError(t, err)
-		assert.Equal(t, DefaultGCPMCPImage, cfg.GCP.Image)
-	})
-
-	t.Run("gcp is a reserved custom-server name", func(t *testing.T) {
-		dir := t.TempDir()
-		configYAML := `mcp_servers:
-  - name: gcp
-    type: http
-    url: https://example.com
-`
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644))
-
-		_, err := Load(dir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "reserved")
-	})
 }
 
 func TestKubernetesConfig_TokenDurationValue(t *testing.T) {
@@ -186,9 +132,6 @@ defaults:
 				Kubernetes: KubernetesConfig{
 					Image: DefaultKubernetesMCPImage,
 				},
-				GCP: GCPConfig{
-					Image: DefaultGCPMCPImage,
-				},
 			},
 		},
 		{
@@ -209,9 +152,6 @@ defaults:
 				Kubernetes: KubernetesConfig{
 					Image: DefaultKubernetesMCPImage,
 				},
-				GCP: GCPConfig{
-					Image: DefaultGCPMCPImage,
-				},
 			},
 		},
 		{
@@ -227,9 +167,6 @@ defaults:
 				},
 				Kubernetes: KubernetesConfig{
 					Image: DefaultKubernetesMCPImage,
-				},
-				GCP: GCPConfig{
-					Image: DefaultGCPMCPImage,
 				},
 			},
 		},

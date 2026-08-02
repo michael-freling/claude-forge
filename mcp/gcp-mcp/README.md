@@ -8,6 +8,10 @@ Unlike a generic `gcloud` passthrough, every tool is individually classified and
 policy-gated, and the server **never returns secret payloads unless explicitly
 opted in**.
 
+It is **multi-project**: a single credential can target **any project it can
+access**. `--project` only sets a default for calls that omit a `project`
+argument; `list_projects` discovers accessible projects.
+
 ## Design principles
 
 1. **Read-only by default.** Only non-mutating operations are reachable. Writes,
@@ -68,6 +72,11 @@ gcp-mcp [--addr :8084] [--project <id>] \
         [--quota-project <id>] \
         [--allow-writes] [--allow-secret-access]
 ```
+
+- `--project` is an **optional** default; omit it to require an explicit
+  `project` on each call so any accessible project can be targeted.
+- `--quota-project` fixes the `x-goog-user-project` billing project; when unset,
+  each call bills the project it targets.
 
 ## Docker
 

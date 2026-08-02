@@ -13,8 +13,11 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8084", "Listen address")
-	project := flag.String("project", "", "Default Google Cloud project ID")
-	quotaProject := flag.String("quota-project", "", "Project billed for quota (x-goog-user-project); defaults to --project")
+	project := flag.String("project", "",
+		"Default project for tools that omit a \"project\" argument. Optional: omit it to require an explicit "+
+			"project per call, so any project the credential can access can be targeted.")
+	quotaProject := flag.String("quota-project", "",
+		"Fixed project billed for quota (x-goog-user-project). Default: bill each call's target project.")
 	impersonate := flag.String("impersonate-service-account", "",
 		"Service account to impersonate (falls back to CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT)")
 	allowWrites := flag.Bool("allow-writes", false, "Allow mutating (write) tools; off by default")
@@ -32,12 +35,11 @@ func main() {
 		ts = newImpersonatedTokenSource(ts, target, nil)
 	}
 
-	quota := *quotaProject
-	if quota == "" {
-		quota = *project
-	}
-
-	client := NewClient(ts, *project, quota)
+	// Do not default the quota project to --project here: when it is empty each
+	// call bills the project it targets (see executeTool), which is what makes
+	// cross-project use bill correctly. --quota-project only fixes a single
+	// billing project for every call.
+	client := NewClient(ts, *project, *quotaProject)
 	policy := &Policy{AllowWrites: *allowWrites, AllowSecretAccess: *allowSecretAccess}
 	server := NewServer(policy, client)
 
