@@ -48,13 +48,15 @@ mcp_servers:
     env:
       API_KEY: "${MY_TOOL_API_KEY}"
   # Container server — claude-forge runs it as a sidecar. scope defaults to
-  # global (one shared instance reused across all sessions).
-  - name: gcloud
+  # global (one shared instance reused across all sessions). Wrapped stdio
+  # commands are bridged to HTTP automatically. (For Google Cloud, prefer the
+  # built-in read-only `gcp:` integration below over a gcloud passthrough.)
+  - name: my-container-mcp
     type: container
     command: npx           # wrapped stdio (bridged to HTTP)
-    args: ["-y", "@google-cloud/gcloud-mcp"]
+    args: ["-y", "some-mcp-server"]
     mounts:
-      - "~/.config/gcloud:/root/.config/gcloud:ro"
+      - "~/.config/some-tool:/home/node/.config/some-tool:ro"
   # Per-session (isolated) native HTTP image
   - name: my-sidecar
     type: container
@@ -76,11 +78,31 @@ kubernetes:
     - host_context: dev
       service_account_name: claude-forge-agent
       service_account_namespace: default
+
+# Optional read-only Google Cloud MCP integration. Authenticates with
+# Application Default Credentials from a read-only mount of ~/.config/gcloud;
+# constrained by IAM (run it as a service account with roles/viewer). Secret
+# payloads are blocked unless allow_secret_access is set.
+gcp:
+  enabled: false
+  image: ghcr.io/michael-freling/claude-forge-gcp-mcp:latest
+  project: my-project
+  # Impersonate a service account (your ADC principal needs
+  # roles/iam.serviceAccountTokenCreator on it). Optional.
+  impersonate_service_account: claude-forge-gcp@my-project.iam.gserviceaccount.com
+  # Project billed for API quota (x-goog-user-project); defaults to `project`.
+  quota_project: my-project
+  # Independent, default-closed gates. Neither substitutes for correct IAM.
+  allow_secret_access: false   # allow returning Secret Manager payloads
+  allow_writes: false          # allow mutating tools (none ship today)
+  # Host directory holding ADC to mount read-only (default ~/.config/gcloud).
+  gcloud_config_dir: "~/.config/gcloud"
 ```
 
 See [Custom Servers]({{< relref "/docs/mcp-servers/custom" >}}) for the full
-`mcp_servers` reference and [Kubernetes]({{< relref "/docs/mcp-servers/kubernetes" >}})
-for the `kubernetes` section.
+`mcp_servers` reference, [Kubernetes]({{< relref "/docs/mcp-servers/kubernetes" >}})
+for the `kubernetes` section, and [Google Cloud]({{< relref "/docs/mcp-servers/gcp" >}})
+for the `gcp` section.
 
 ## Authentication
 

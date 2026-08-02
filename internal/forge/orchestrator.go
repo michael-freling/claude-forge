@@ -17,6 +17,7 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/gcpmcp"
 	"github.com/michael-freling/claude-forge/internal/forge/kube"
 	"github.com/michael-freling/claude-forge/internal/forge/project"
 	"github.com/michael-freling/claude-forge/internal/forge/session"
@@ -268,6 +269,17 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		}
 	}
 
+	// Start the shared, read-only GCP MCP service if enabled (before writing
+	// settings, so we only advertise it when the server is actually running).
+	gcpRunning := false
+	if cfg.GCP.Enabled {
+		if err := o.startGCPMCP(ctx, cfg); err != nil {
+			o.Log("Warning: failed to start GCP MCP: %v", err)
+		} else {
+			gcpRunning = true
+		}
+	}
+
 	// Start custom "container" MCP servers (per-session or global) before
 	// writing settings, so we only advertise the ones that actually came up.
 	sidecarRegs, usedSharedMCP := o.startCustomSidecars(ctx, cfg, sess)
@@ -278,6 +290,9 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 	if k8sRunning {
 		mcpServers["kubernetes"] = claudecode.MCPServerConfig{Type: "url", URL: "http://k8s-mcp:" + kube.MCPServerPort + "/mcp"}
+	}
+	if gcpRunning {
+		mcpServers["gcp"] = claudecode.MCPServerConfig{Type: "url", URL: "http://gcp-mcp:" + gcpmcp.MCPServerPort + "/mcp"}
 	}
 
 	// Merge user-configured custom MCP servers (e.g. a hosted Vercel MCP).
@@ -432,7 +447,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	// The agent joins forge-shared when any shared service is running there:
 	// the Kubernetes MCP and/or global custom MCP sidecars.
 	var extraNetworks []container.NetworkAttachment
-	if k8sRunning || usedSharedMCP {
+	if k8sRunning || usedSharedMCP || gcpRunning {
 		extraNetworks = append(extraNetworks, container.NetworkAttachment{
 			NetworkName: "forge-shared",
 		})
@@ -1061,6 +1076,96 @@ func (o *Orchestrator) RunKubeTokenRefresher(ctx context.Context, quiet bool) {
 	r.Run(ctx)
 }
 
+// gcpMCPName is the container name of the shared GCP MCP singleton.
+const gcpMCPName = "forge-gcp-mcp"
+
+// startGCPMCP ensures the shared, read-only GCP MCP service is running. Like the
+// Kubernetes MCP it is a shared singleton on the forge-shared network, but it
+// depends only on host-level Application Default Credentials (a read-only mount
+// of ~/.config/gcloud) and global config — never on a single session's secrets —
+// so sharing it across sessions and projects is safe. The oauth2 library
+// refreshes access tokens in-process from the ADC refresh token, so unlike the
+// Kubernetes MCP there is no host-side credential rotation to schedule.
+func (o *Orchestrator) startGCPMCP(ctx context.Context, cfg *config.Config) error {
+	gcloudDir := o.gcpGcloudDir(cfg)
+	// Preflight: ADC must be present, or the server would start and then fail
+	// every call. Failing here lets Start log a warning and skip advertising
+	// the server, keeping the "only advertise what is running" invariant.
+	adcPath := filepath.Join(gcloudDir, "application_default_credentials.json")
+	if _, err := os.Stat(adcPath); err != nil {
+		return fmt.Errorf("no Application Default Credentials found at %s "+
+			"(run `gcloud auth application-default login` on the host): %w", adcPath, err)
+	}
+
+	if _, err := o.Containers.EnsureSharedNetwork(ctx, "forge-shared"); err != nil {
+		return fmt.Errorf("failed to ensure shared network: %w", err)
+	}
+
+	running, err := o.Containers.IsContainerRunning(ctx, gcpMCPName)
+	if err != nil {
+		return fmt.Errorf("failed to check gcp-mcp status: %w", err)
+	}
+	if running {
+		o.Log("GCP MCP already running")
+		return nil
+	}
+	// Remove a stale (crashed/exited) instance so we can recreate it with the
+	// current config (project, gates, impersonation are baked in at create).
+	_ = o.Containers.RemoveContainer(ctx, gcpMCPName)
+
+	args := gcpmcp.MCPServerArgs(gcpmcp.Options{
+		Project:                   cfg.GCP.Project,
+		ImpersonateServiceAccount: cfg.GCP.ImpersonateServiceAccount,
+		QuotaProject:              cfg.GCP.QuotaProject,
+		AllowWrites:               cfg.GCP.AllowWrites,
+		AllowSecretAccess:         cfg.GCP.AllowSecretAccess,
+	})
+
+	o.Log("Starting GCP MCP: %s", gcpMCPName)
+	id, err := o.Containers.StartSharedService(ctx, container.SharedServiceOptions{
+		Name:        gcpMCPName,
+		Image:       cfg.GCP.Image,
+		NetworkName: "forge-shared",
+		Alias:       "gcp-mcp",
+		// HOME is the parent of the mounted gcloud dir so the ADC lookup finds
+		// application_default_credentials.json at the well-known path.
+		Env: map[string]string{
+			"HOME":            gcpmcp.MCPServerHome,
+			"CLOUDSDK_CONFIG": gcpmcp.MCPServerGcloudDir,
+		},
+		Mounts: []mount.Mount{
+			{
+				Type:     mount.TypeBind,
+				Source:   gcloudDir,
+				Target:   gcpmcp.MCPServerGcloudDir,
+				ReadOnly: true,
+			},
+		},
+		Cmd: args,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start gcp-mcp: %w", err)
+	}
+	if err := o.Containers.WaitForReady(ctx, id, 10*time.Second); err != nil {
+		return fmt.Errorf("gcp-mcp failed to start: %w", err)
+	}
+	return nil
+}
+
+// gcpGcloudDir resolves the host directory holding Google ADC to mount into the
+// GCP MCP container: the configured path (with a leading ~/ expanded against the
+// host home), or the default ~/.config/gcloud.
+func (o *Orchestrator) gcpGcloudDir(cfg *config.Config) string {
+	dir := cfg.GCP.GcloudConfigDir
+	if dir == "" {
+		return filepath.Join(o.HomeDir, ".config", "gcloud")
+	}
+	if strings.HasPrefix(dir, "~/") {
+		return filepath.Join(o.HomeDir, dir[2:])
+	}
+	return dir
+}
+
 // RestartSharedMCP stops all shared MCP containers and starts them again.
 func (o *Orchestrator) RestartSharedMCP(ctx context.Context) error {
 	cfg, err := config.Load(o.ConfigDir)
@@ -1075,7 +1180,7 @@ func (o *Orchestrator) RestartSharedMCP(ctx context.Context) error {
 		}
 	}
 
-	if !cfg.Kubernetes.Enabled && len(globals) == 0 {
+	if !cfg.Kubernetes.Enabled && !cfg.GCP.Enabled && len(globals) == 0 {
 		o.Log("No shared MCP servers configured.")
 		return nil
 	}
@@ -1093,6 +1198,21 @@ func (o *Orchestrator) RestartSharedMCP(ctx context.Context) error {
 		}
 		if err := o.startKubernetesMCP(ctx, cfg); err != nil {
 			return fmt.Errorf("failed to restart Kubernetes MCP: %w", err)
+		}
+	}
+
+	if cfg.GCP.Enabled {
+		running, err := o.Containers.IsContainerRunning(ctx, gcpMCPName)
+		if err != nil {
+			return fmt.Errorf("failed to check gcp-mcp status: %w", err)
+		}
+		if running {
+			o.Log("Stopping: %s", gcpMCPName)
+			_ = o.Containers.StopContainer(ctx, gcpMCPName)
+			_ = o.Containers.RemoveContainer(ctx, gcpMCPName)
+		}
+		if err := o.startGCPMCP(ctx, cfg); err != nil {
+			return fmt.Errorf("failed to restart GCP MCP: %w", err)
 		}
 	}
 
@@ -1123,6 +1243,9 @@ func (o *Orchestrator) Build(ctx context.Context) error {
 	images := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
 	if cfg.Kubernetes.Enabled {
 		images = append(images, cfg.Kubernetes.Image)
+	}
+	if cfg.GCP.Enabled {
+		images = append(images, cfg.GCP.Image)
 	}
 	images = append(images, customSidecarImages(cfg)...)
 	seen := make(map[string]bool, len(images))

@@ -10,6 +10,7 @@
 - Gateway proxy mediates all GitHub traffic (git + API) with per-repo write restrictions
 - Per-session **GitHub MCP** sidecar scoped to the current repository
 - Optional shared **Kubernetes MCP** server for cluster access, gated by generated RBAC
+- Optional shared **Google Cloud MCP** server (read-only, IAM-gated; secret payloads blocked by default)
 - Custom **MCP servers** (remote http/sse or stdio) configurable per install
 - Optional **Docker-in-Docker**: sessions get their own isolated Docker daemon, unable to see or touch host or other sessions' containers
 - Multiple instances can run in parallel across different projects

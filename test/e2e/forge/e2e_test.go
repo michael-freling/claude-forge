@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/gcpmcp"
 	"github.com/michael-freling/claude-forge/internal/forge/kube"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -438,6 +439,73 @@ current-context: dummy
 	tokenPath = filepath.Join(tokensDir, tokenFile)
 	require.NoError(t, os.WriteFile(tokenPath, []byte(token), 0o644))
 	return kubeDir, tokenPath
+}
+
+// TestGCPMCPServer_Starts builds the first-party gcp-mcp image and verifies it
+// starts with the flags the orchestrator passes (shared via
+// gcpmcp.MCPServerArgs — no manual sync needed) and serves MCP over HTTP. This
+// catches flag or startup regressions that unit tests (which mock the container
+// manager) cannot. A dummy ADC file lets the server initialize its token source
+// without any network — token minting only happens on a real tool call.
+func TestGCPMCPServer_Starts(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	projectRoot := findProjectRoot(t)
+	image := "forge-e2e-gcp-mcp:test"
+
+	// Build the image (it is first-party, not pulled from a registry).
+	buildCmd := exec.CommandContext(ctx, "docker", "build", "-t", image, filepath.Join(projectRoot, "mcp", "gcp-mcp"))
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "failed to build gcp-mcp image: %s", out)
+
+	// A dummy Application Default Credentials file: FindDefaultCredentials parses
+	// it and builds a TokenSource lazily, so startup needs no live credentials.
+	gcloudDir := t.TempDir()
+	adc := `{"type":"authorized_user","client_id":"dummy.apps.googleusercontent.com",` +
+		`"client_secret":"dummy-secret","refresh_token":"1//dummy-refresh-token"}`
+	require.NoError(t, os.WriteFile(filepath.Join(gcloudDir, "application_default_credentials.json"), []byte(adc), 0o644))
+
+	containerName := "forge-e2e-gcp-mcp-test"
+	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	})
+
+	runArgs := []string{
+		"run", "-d",
+		"--name", containerName,
+		"-e", "HOME=" + gcpmcp.MCPServerHome,
+		"-v", gcloudDir + ":" + gcpmcp.MCPServerGcloudDir + ":ro",
+		image,
+	}
+	runArgs = append(runArgs, gcpmcp.MCPServerArgs(gcpmcp.Options{Project: "dummy-project"})...)
+	runCmd := exec.CommandContext(ctx, "docker", runArgs...)
+	out, err = runCmd.CombinedOutput()
+	require.NoError(t, err, "failed to start gcp-mcp container: %s", out)
+
+	// A bad/unknown flag would make the server exit immediately; waitForRunning
+	// includes a 1s stabilization delay to catch that.
+	waitForRunning(t, ctx, containerName, 20*time.Second)
+
+	// Confirm it actually serves MCP: initialize must report the server name.
+	// The initialize handler touches no GCP API, so it works with dummy creds.
+	initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
+	initCmd := exec.CommandContext(ctx, "docker", "exec", containerName,
+		"wget", "-q", "-O-", "-T", "10",
+		"--header", "Content-Type: application/json",
+		"--post-data", initReq,
+		"http://localhost:"+gcpmcp.MCPServerPort+"/mcp")
+	initOut, err := initCmd.CombinedOutput()
+	require.NoError(t, err, "initialize request failed: %s", initOut)
+	assert.Contains(t, string(initOut), "gcp-mcp", "server must identify itself as gcp-mcp")
 }
 
 // TestAgentDockerInDocker verifies the agent image's Docker-in-Docker support:

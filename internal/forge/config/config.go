@@ -22,6 +22,9 @@ const (
 	// DefaultKubernetesMCPImage is the default Docker image for the Kubernetes MCP server.
 	DefaultKubernetesMCPImage = "ghcr.io/containers/kubernetes-mcp-server:latest"
 
+	// DefaultGCPMCPImage is the default Docker image for the first-party GCP MCP server.
+	DefaultGCPMCPImage = "ghcr.io/michael-freling/claude-forge-gcp-mcp:latest"
+
 	// DefaultMCPWrapperImage is the default base image used to wrap a stdio MCP
 	// server command in a stdio→HTTP bridge (Node, so `npx -y supergateway` and
 	// npx-based servers work out of the box). Override per-server via `image`
@@ -54,6 +57,7 @@ type Config struct {
 	Defaults   DefaultsConfig    `yaml:"defaults"`
 	Docker     DockerConfig      `yaml:"docker"`
 	Kubernetes KubernetesConfig  `yaml:"kubernetes"`
+	GCP        GCPConfig         `yaml:"gcp"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
 }
 
@@ -128,6 +132,7 @@ type MCPServerConfig struct {
 var reservedMCPNames = map[string]bool{
 	"github":     true,
 	"kubernetes": true,
+	"gcp":        true,
 }
 
 // IsContainer reports whether claude-forge runs the server as a sidecar container.
@@ -292,6 +297,40 @@ func (k KubernetesConfig) TokenDurationValue() (time.Duration, error) {
 	return d, nil
 }
 
+// GCPConfig holds the first-party GCP MCP integration configuration.
+//
+// The server authenticates with Application Default Credentials read from a
+// read-only mount of the host's ~/.config/gcloud (see GcloudConfigDir), so like
+// the Kubernetes MCP it is a shared singleton that depends only on host-level
+// credentials and global config — never on a single session's secrets.
+//
+// AllowWrites and AllowSecretAccess are independent, default-closed gates.
+// Neither is a substitute for correct IAM: run the server as a service account
+// with roles/viewer (or narrower). See docs/content/docs/mcp-servers/gcp.md.
+type GCPConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Image   string `yaml:"image"`
+	// Project is the default project ID the tools target when a call does not
+	// pass its own "project" argument.
+	Project string `yaml:"project"`
+	// ImpersonateServiceAccount, when set, makes the server mint tokens for that
+	// service account (the ADC principal needs
+	// roles/iam.serviceAccountTokenCreator on it).
+	ImpersonateServiceAccount string `yaml:"impersonate_service_account"`
+	// QuotaProject is billed for API quota (x-goog-user-project); defaults to
+	// Project when empty.
+	QuotaProject string `yaml:"quota_project"`
+	// AllowSecretAccess permits the access_secret_version tool to return Secret
+	// Manager payloads. Off by default.
+	AllowSecretAccess bool `yaml:"allow_secret_access"`
+	// AllowWrites permits mutating tools (none ship today). Off by default.
+	AllowWrites bool `yaml:"allow_writes"`
+	// GcloudConfigDir is the host directory holding Application Default
+	// Credentials to bind-mount read-only into the container. Defaults to
+	// ~/.config/gcloud (a leading ~/ is expanded against the host home).
+	GcloudConfigDir string `yaml:"gcloud_config_dir"`
+}
+
 // KubeContextEntry configures a single Kubernetes context to expose to the agent.
 type KubeContextEntry struct {
 	HostContext             string `yaml:"host_context"`
@@ -309,6 +348,9 @@ func DefaultConfig() *Config {
 		},
 		Kubernetes: KubernetesConfig{
 			Image: DefaultKubernetesMCPImage,
+		},
+		GCP: GCPConfig{
+			Image: DefaultGCPMCPImage,
 		},
 	}
 }
@@ -344,6 +386,9 @@ func Load(configDir string) (*Config, error) {
 	}
 	if cfg.Kubernetes.Image == "" {
 		cfg.Kubernetes.Image = DefaultKubernetesMCPImage
+	}
+	if cfg.GCP.Image == "" {
+		cfg.GCP.Image = DefaultGCPMCPImage
 	}
 
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
