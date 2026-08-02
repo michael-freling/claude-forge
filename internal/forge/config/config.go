@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,9 +18,6 @@ const (
 	// DefaultGitHubMCPImage is the default Docker image for the GitHub MCP sidecar.
 	DefaultGitHubMCPImage = "ghcr.io/michael-freling/claude-forge-github-mcp:latest"
 
-	// DefaultKubernetesMCPImage is the default Docker image for the Kubernetes MCP server.
-	DefaultKubernetesMCPImage = "ghcr.io/containers/kubernetes-mcp-server:latest"
-
 	// DefaultMCPWrapperImage is the default base image used to wrap a stdio MCP
 	// server command in a stdio→HTTP bridge (Node, so `npx -y supergateway` and
 	// npx-based servers work out of the box). Override per-server via `image`
@@ -35,17 +31,6 @@ const (
 	// DefaultMCPPath is the HTTP path a container MCP sidecar is reached at when
 	// the server config does not specify one.
 	DefaultMCPPath = "/mcp"
-
-	// DefaultKubeTokenDuration is the SA token lifetime requested for the
-	// Kubernetes MCP server when kubernetes.token_duration is unset. API
-	// servers cap it at their own maximum (often 1h, 24h on EKS, 48h on GKE);
-	// requesting long and letting the server cap covers refresh gaps such as
-	// the host sleeping between refresh ticks.
-	DefaultKubeTokenDuration = 24 * time.Hour
-
-	// MinKubeTokenDuration is the smallest expiration the TokenRequest API
-	// accepts.
-	MinKubeTokenDuration = 10 * time.Minute
 )
 
 // Config holds the claude-forge configuration.
@@ -53,7 +38,6 @@ type Config struct {
 	Images     ImagesConfig      `yaml:"images"`
 	Defaults   DefaultsConfig    `yaml:"defaults"`
 	Docker     DockerConfig      `yaml:"docker"`
-	Kubernetes KubernetesConfig  `yaml:"kubernetes"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
 }
 
@@ -111,9 +95,9 @@ type MCPServerConfig struct {
 	Mounts []string `yaml:"mounts"` // host:container[:ro] bind mounts for the sidecar
 
 	// Scope controls how a container server's instance is reused:
-	//   "global" (default) — a single shared instance reused across all sessions
-	//                         (like the Kubernetes MCP), so N sessions don't
-	//                         spawn N copies. Global servers are shared across
+	//   "global" (default) — a single shared instance reused across all
+	//                         sessions, so N sessions don't spawn N copies.
+	//                         Global servers are shared across
 	//                         projects, outlive individual sessions, and are
 	//                         managed via `mcp restart` rather than per-session
 	//                         cleanup — so they must not depend on any one
@@ -124,10 +108,11 @@ type MCPServerConfig struct {
 }
 
 // reservedMCPNames are server names owned by claude-forge's built-in
-// integrations; a custom server may not shadow them.
+// integrations; a custom server may not shadow them. Only "github" is
+// built in — any other name (including "kubernetes", whose built-in
+// integration was removed) is free for custom servers.
 var reservedMCPNames = map[string]bool{
-	"github":     true,
-	"kubernetes": true,
+	"github": true,
 }
 
 // IsContainer reports whether claude-forge runs the server as a sidecar container.
@@ -262,43 +247,6 @@ type DockerConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
-// KubernetesConfig holds Kubernetes MCP integration configuration.
-type KubernetesConfig struct {
-	Enabled        bool               `yaml:"enabled"`
-	Image          string             `yaml:"image"`
-	Contexts       []KubeContextEntry `yaml:"contexts"`
-	DefaultContext string             `yaml:"default_context"`
-	// TokenDuration is the SA token lifetime to request, as a Go duration
-	// string (e.g. "1h", "168h"). Defaults to DefaultKubeTokenDuration; the
-	// API server may cap the granted lifetime at its own maximum. Tokens are
-	// re-minted at session start and refreshed while sessions run, so this
-	// only needs to cover gaps between refreshes.
-	TokenDuration string `yaml:"token_duration,omitempty"`
-}
-
-// TokenDurationValue returns the parsed token_duration, or the default when
-// unset.
-func (k KubernetesConfig) TokenDurationValue() (time.Duration, error) {
-	if k.TokenDuration == "" {
-		return DefaultKubeTokenDuration, nil
-	}
-	d, err := time.ParseDuration(k.TokenDuration)
-	if err != nil {
-		return 0, fmt.Errorf("invalid kubernetes.token_duration %q: %w", k.TokenDuration, err)
-	}
-	if d < MinKubeTokenDuration {
-		return 0, fmt.Errorf("kubernetes.token_duration %q is below the %s minimum the Kubernetes TokenRequest API accepts", k.TokenDuration, MinKubeTokenDuration)
-	}
-	return d, nil
-}
-
-// KubeContextEntry configures a single Kubernetes context to expose to the agent.
-type KubeContextEntry struct {
-	HostContext             string `yaml:"host_context"`
-	ServiceAccountName      string `yaml:"service_account_name"`
-	ServiceAccountNamespace string `yaml:"service_account_namespace"`
-}
-
 // DefaultConfig returns a Config with all defaults applied.
 func DefaultConfig() *Config {
 	return &Config{
@@ -306,9 +254,6 @@ func DefaultConfig() *Config {
 			Agent:     DefaultAgentImage,
 			Gateway:   DefaultGatewayImage,
 			GitHubMCP: DefaultGitHubMCPImage,
-		},
-		Kubernetes: KubernetesConfig{
-			Image: DefaultKubernetesMCPImage,
 		},
 	}
 }
@@ -342,19 +287,9 @@ func Load(configDir string) (*Config, error) {
 	if cfg.Images.GitHubMCP == "" {
 		cfg.Images.GitHubMCP = DefaultGitHubMCPImage
 	}
-	if cfg.Kubernetes.Image == "" {
-		cfg.Kubernetes.Image = DefaultKubernetesMCPImage
-	}
 
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
 		return nil, err
-	}
-	// Only validated when the integration is on: a leftover bad value in a
-	// disabled section must not break unrelated commands.
-	if cfg.Kubernetes.Enabled {
-		if _, err := cfg.Kubernetes.TokenDurationValue(); err != nil {
-			return nil, err
-		}
 	}
 
 	return cfg, nil

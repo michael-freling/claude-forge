@@ -124,5 +124,8 @@ jobs:
     - name: Build gcp-mcp Docker image
       run: docker build -t claude-forge-gcp-mcp-test mcp/gcp-mcp/
 
+    - name: Build k8s-mcp Docker image
+      run: docker build -t claude-forge-k8s-mcp-test mcp/k8s-mcp/
+
   # Claude CLI E2E tests are run locally only (require real Claude CLI)
   # Run with: ./scripts/run-e2e-tests.sh

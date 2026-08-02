@@ -4,7 +4,7 @@ weight: 1
 ---
 
 
-Beyond the built-in `github` (and optional `kubernetes`) servers, you can expose
+Beyond the built-in `github` server, you can expose
 any number of additional MCP servers to the agent via the `mcp_servers` list in
 `config.yaml`. Each entry is one of these kinds:
 
@@ -35,7 +35,7 @@ any number of additional MCP servers to the agent via the `mcp_servers` list in
 
   **Scope** (`scope:`, container only) controls how the instance is reused:
   - `global` (default) — a single shared instance on the `forge-shared` network,
-    reused across all sessions (the same model as the Kubernetes MCP), so N
+    reused across all sessions, so N
     sessions don't spawn N copies. A global server is **shared across projects**,
     **outlives individual sessions**, and is managed with
     `claude-forge mcp restart` rather than per-session cleanup — so it must not
@@ -71,8 +71,7 @@ export EXAMPLE_TOKEN=...
 claude-forge start "work session"
 ```
 
-Server names must be unique and may not shadow the built-in `github` or
-`kubernetes` servers.
+Server names must be unique and may not shadow the built-in `github` server.
 
 ## OAuth MCP servers (e.g. Vercel)
 

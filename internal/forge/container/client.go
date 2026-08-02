@@ -712,6 +712,9 @@ func (c *Client) ListForgeContainers(ctx context.Context) ([]ContainerInfo, erro
 	filterArgs.Add("name", "forge-agent-")
 	filterArgs.Add("name", "forge-gateway-")
 	filterArgs.Add("name", "forge-github-mcp-")
+	// "forge-k8s-mcp" is the shared server the removed built-in Kubernetes
+	// integration used to run; the filter is retained so status/stop still
+	// surface a leftover container from a pre-removal binary.
 	filterArgs.Add("name", "forge-k8s-mcp")
 	filterArgs.Add("name", "forge-mcp-")
 

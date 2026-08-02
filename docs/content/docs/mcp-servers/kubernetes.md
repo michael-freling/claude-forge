@@ -4,55 +4,82 @@ weight: 2
 ---
 
 
-When `kubernetes.enabled` is set, claude-forge runs a shared Kubernetes MCP
-server that Claude Code can use to inspect and operate on your cluster. Access
-is constrained by RBAC rather than by disabling destructive operations — the
-agent's permissions are exactly what you grant its service account.
+`k8s-mcp` is a first-party Kubernetes MCP server
+(`ghcr.io/michael-freling/claude-forge-k8s-mcp`) that ships in this repo but is
+**not** a built-in integration — you wire it up like any other
+[custom server]({{< relref "custom" >}}), as a `container` entry in
+`mcp_servers`. It authenticates with **your own kubeconfig** and enforces a
+fixed safety policy at the MCP layer.
 
-Generate the ServiceAccount, ClusterRole, and ClusterRoleBinding (with safe
-carveouts — no secrets, no exec, no RBAC tampering) and apply them:
+Unlike a coarse read-only switch (which forbids all writes), it allows **read
+and write** on ordinary resources while denying — regardless of what your
+credential can do:
 
-```bash
-claude-forge kube render --context dev | kubectl apply -f -
+- `secrets` and `serviceaccounts` (read or write),
+- the `rbac.authorization.k8s.io` and `admissionregistration.k8s.io` API groups,
+- `pods/exec`, `pods/attach`, `serviceaccounts/token`, and `impersonate`,
+- writes to cluster-scoped resources other than `nodes` (so cordon/drain work).
+
+The carveout list lives in `mcp/k8s-mcp/policy.go` and is the canonical
+definition of what the agent may touch.
+
+## Configuration
+
+Add it to `~/.config/claude-forge/config.yaml`:
+
+```yaml
+mcp_servers:
+  - name: kube
+    type: container
+    scope: global                # one shared instance across sessions
+    image: ghcr.io/michael-freling/claude-forge-k8s-mcp:latest
+    port: 8080
+    path: /mcp
+    args: ["--addr=:8080", "--kubeconfig=/home/user/.kube/config"]
+    env:
+      HOME: /home/user
+    mounts:
+      - "~/.kube:/home/user/.kube:ro"
+      - "~/.config/gcloud:/home/user/.config/gcloud:ro" # ADC, for GKE contexts
 ```
 
-See the `kubernetes` section of the
-[configuration reference]({{< relref "/docs/configuration" >}}) for the
-available options.
+## Authentication
 
-## Token lifetime and refresh
+Credentials are taken straight from the mounted kubeconfig (bearer token or
+embedded client certificate) — with one exception: **GKE kubeconfigs work**.
+When the selected context uses the `gke-gcloud-auth-plugin` exec plugin (or
+`--gcp-auth` forces it), the server authenticates with a Bearer token minted
+in-process from Google Application Default Credentials and auto-refreshes it,
+so the plugin binary is never needed. That path requires
+`gcloud auth application-default login` on the host and the read-only
+`~/.config/gcloud` mount shown above.
 
-The MCP server authenticates to each cluster with a ServiceAccount token
-minted on the host via `kubectl create token`. Tokens expire — most API
-servers cap the lifetime at 1–48 hours — while Claude Code sessions can stay
-open for days, so claude-forge keeps them fresh automatically:
+## Limitations
 
-- **At every session start**, tokens are re-minted, even when the shared MCP
-  server container is already running. If the `kubernetes.contexts`
-  configuration changed since the server started, the server is recreated so
-  the new contexts take effect.
-- **While a session runs**, the CLI refreshes them every 15 minutes, or every
-  half token lifetime if that is shorter.
-- The generated kubeconfig references each token via `tokenFile` from a
-  directory mounted into the container, and the server's Kubernetes client
-  re-reads that file on its own — rotation requires no container restart.
+Other exec plugins (EKS `aws`, OIDC helpers) remain unsupported. A cluster
+served at `localhost` is not reachable from the container network, and a
+private GKE endpoint still needs a route (bastion/tunnel; `--network host`
+when running standalone). Because the credential is your own (unrestricted)
+one, the MCP policy is the *only* safety layer — if you need
+defense-in-depth, point the kubeconfig at a user or ServiceAccount you have
+scoped down with RBAC yourself.
 
-`kubernetes.token_duration` sets the lifetime *requested* for each token
-(default `24h`, minimum `10m`, any Go duration string). The API server may
-grant less — EKS caps tokens at 24h, GKE at 48h, and a vanilla cluster caps at
-its `--service-account-max-token-expiration` — in which case the request is
-shortened, not rejected; if a cluster rejects the request outright,
-claude-forge falls back to the server-default lifetime. A longer duration
-widens the safety margin for times when no refresh can run, such as the host
-being asleep.
+## Migration from the built-in integration
 
-If your clusters grant long lifetimes and you prefer effectively long-lived
-credentials, set for example `token_duration: 168h`. Either way the
-ServiceAccount's RBAC — not the token lifetime — remains the safety boundary.
+Earlier versions shipped a built-in Kubernetes integration: a `kubernetes:`
+section in `config.yaml` that ran the upstream `kubernetes-mcp-server` image
+with claude-forge-minted ServiceAccount tokens, plus a
+`claude-forge kube render` command that generated the matching RBAC
+manifests. Both have been **removed**; the `mcp_servers` entry above is now
+the only Kubernetes story.
 
-On a multi-user host, note the on-disk trade-off: the MCP container runs as a
-non-host uid, so token files must be world-readable (0644) inside
-execute-only (0711) directories. Their names are salted with a 0600
-`.token-salt` file, so other local users cannot list or derive them — but
-anyone who obtains a token path (or root) can read a live, RBAC-scoped
-cluster credential from `~/.config/claude-forge/k8s-mcp/tokens/`.
+To migrate:
+
+- Replace your `kubernetes:` section with the `mcp_servers` entry shown above.
+  A leftover `kubernetes:` block is harmless — config parsing is not strict,
+  so unknown keys are simply ignored — but it no longer does anything.
+- A leftover shared server container from an old binary can be removed with
+  `docker rm -f forge-k8s-mcp` (it still shows up in `claude-forge status`).
+- The `claude-forge-agent` ServiceAccount/ClusterRole/ClusterRoleBinding that
+  `kube render` created in your clusters are no longer used; delete them with
+  `kubectl` if you don't want them around.

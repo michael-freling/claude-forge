@@ -11,20 +11,17 @@ When you run `claude-forge start`, it:
 4. Starts a **gateway** container that proxies the agent's git and GitHub API
    traffic with write restrictions
 5. Starts a **GitHub MCP** sidecar scoped to the current repository
-6. If `kubernetes.enabled` is set, ensures the shared **Kubernetes MCP** server
-   is running — a single instance on the `forge-shared` network, reused by
-   every session rather than started per session — and re-mints its
-   ServiceAccount tokens, which are then refreshed periodically for as long as
-   the session runs
-7. Starts any custom **container MCP sidecars** from `config.yaml` — on the
-   session network (`scope: session`) or the shared network (`scope: global`)
-8. Writes the MCP server list for Claude Code: the built-in `github` server,
-   plus `kubernetes` and each custom sidecar **only if it actually started**,
+6. Starts any custom **container MCP sidecars** from `config.yaml` — on the
+   session network (`scope: session`) or the shared `forge-shared` network
+   (`scope: global`, a single instance reused by every session rather than
+   started per session)
+7. Writes the MCP server list for Claude Code: the built-in `github` server,
+   plus each custom sidecar **only if it actually started**,
    plus remote (`http`/`sse`) and `stdio` custom servers
-9. Starts an **agent** container running Claude Code with your project mounted
+8. Starts an **agent** container running Claude Code with your project mounted
    at `/work` (and its own isolated Docker daemon inside, when `docker.enabled`
    is set)
-10. Attaches your terminal (interactive) or waits for completion (with `-p`)
+9. Attaches your terminal (interactive) or waits for completion (with `-p`)
 
 ```mermaid
 flowchart LR
@@ -39,16 +36,14 @@ flowchart LR
         S[Custom sidecars<br/>scope: session]
     end
     subgraph shared [forge-shared network]
-        K[Kubernetes MCP<br/>optional]
         C[Custom sidecars<br/>scope: global]
     end
     T -- attach --> A
     P -- mounted at /work --> A
     A -- git + GitHub API --> G
-    A -- MCP --> M & S & K & C
+    A -- MCP --> M & S & C
     G -- "reads: any repo<br/>writes: this repo only" --> GH[(GitHub)]
     M -- "GitHub API<br/>scoped to this repo" --> GH
-    K -- RBAC-scoped<br/>service account --> KC[(Kubernetes cluster)]
 ```
 
 GitHub access is restricted at two independent points:
