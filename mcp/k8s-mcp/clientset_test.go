@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -193,6 +194,38 @@ func TestClientSet_Get_BuildErrorIsNotCached(t *testing.T) {
 	c, err := cs.Get("prod")
 	require.NoError(t, err)
 	assert.NotNil(t, c)
+}
+
+// Get claims a concurrent duplicate build is harmless because one wins the map
+// and both callers get that one. Pin it: goroutines racing on an uncached
+// context must all succeed and observe the identical *Client, and a later call
+// must be served from that same entry.
+func TestClientSet_Get_Concurrent(t *testing.T) {
+	cs, err := NewClientSet(writeKubeconfig(t, multiContextKubeconfig), nil, false)
+	require.NoError(t, err)
+	cs.newClient = func(_, _ string, _ bool) (*Client, error) { return newTestClient(), nil }
+
+	const n = 16
+	clients := make([]*Client, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			clients[i], errs[i] = cs.Get("local")
+		}()
+	}
+	wg.Wait()
+
+	for i := range n {
+		require.NoErrorf(t, errs[i], "goroutine %d", i)
+		assert.Samef(t, clients[0], clients[i], "goroutine %d got a different client", i)
+	}
+
+	cached, err := cs.Get("local")
+	require.NoError(t, err)
+	assert.Same(t, clients[0], cached)
 }
 
 func TestClientSet_ContextsIsACopy(t *testing.T) {
