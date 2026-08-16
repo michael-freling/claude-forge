@@ -40,15 +40,16 @@ type mcpToolResult struct {
 }
 
 // Server implements the MCP Streamable HTTP protocol for Kubernetes operations,
-// enforcing the kube-render carveout policy on every call.
+// enforcing the kube-render carveout policy on every call. It serves every
+// context in the ClientSet; each call picks one via its "context" argument.
 type Server struct {
-	policy *Policy
-	client *Client
+	policy  *Policy
+	clients *ClientSet
 }
 
 // NewServer creates a new MCP server.
-func NewServer(policy *Policy, client *Client) *Server {
-	return &Server{policy: policy, client: client}
+func NewServer(policy *Policy, clients *ClientSet) *Server {
+	return &Server{policy: policy, clients: clients}
 }
 
 // ServeHTTP handles HTTP requests to the MCP endpoint.
@@ -160,7 +161,7 @@ func (s *Server) handleToolsCall(r *http.Request, req *jsonRPCRequest) *jsonRPCR
 		params.Arguments = map[string]any{}
 	}
 
-	result, isError, err := executeTool(r.Context(), params.Name, params.Arguments, s.policy, s.client)
+	result, isError, err := executeTool(r.Context(), params.Name, params.Arguments, s.policy, s.clients)
 	if err != nil {
 		log.Printf("tool %s error: %v", params.Name, err)
 		return &jsonRPCResponse{

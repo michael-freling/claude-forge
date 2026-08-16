@@ -9,7 +9,7 @@
 - Runs Claude Code in Docker with `--dangerously-skip-permissions` by default
 - Gateway proxy mediates all GitHub traffic (git + API) with per-repo write restrictions
 - Per-session **GitHub MCP** sidecar scoped to the current repository
-- A first-party **Kubernetes MCP** server (`mcp/k8s-mcp/`, added as a custom container server) with your own kubeconfig and policy-enforced carveouts — no secrets, no exec, no RBAC
+- A first-party **Kubernetes MCP** server (`mcp/k8s-mcp/`, added as a custom container server) serving every context in your own kubeconfig, with policy-enforced carveouts — no secrets, no exec, no RBAC
 - Custom **MCP servers** (remote http/sse or stdio) configurable per install
 - A ready-made read-only, multi-project **Google Cloud MCP** server (added as a custom container server)
 - Optional **Docker-in-Docker**: sessions get their own isolated Docker daemon, unable to see or touch host or other sessions' containers

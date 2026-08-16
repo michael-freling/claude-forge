@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/client-go/discovery"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kfake "k8s.io/client-go/kubernetes/fake"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // --- shared test fakes (used by k8s_test.go, tools_test.go, server_test.go) ---
@@ -60,6 +62,25 @@ func newTestClient(objs ...runtime.Object) *Client {
 		disco:  &fakeDiscovery{},
 		mapper: testMapper(),
 	}
+}
+
+// staticClientSet wraps an already-built Client as the single served context
+// "test", so tests that care about tool behaviour rather than context routing
+// need no kubeconfig. The client is pre-cached, so newClient is never called.
+func staticClientSet(c *Client) *ClientSet {
+	return &ClientSet{
+		defaultContext: "test",
+		infos:          []ContextInfo{{Name: "test", Cluster: "test", Server: "https://127.0.0.1:6443", Default: true}},
+		clients:        map[string]*Client{"test": c},
+		newClient: func(*clientcmdapi.Config, string, bool) (*Client, error) {
+			return nil, fmt.Errorf("unexpected client build in test")
+		},
+	}
+}
+
+// newTestClientSet is staticClientSet over a fresh fake Client.
+func newTestClientSet(objs ...runtime.Object) *ClientSet {
+	return staticClientSet(newTestClient(objs...))
 }
 
 // unstructuredObj builds a minimal unstructured resource for seeding the dynamic
@@ -126,13 +147,16 @@ users:
     token: abc
 `
 
-func TestNewClient(t *testing.T) {
+func TestNewClientForContext(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")
 	require.NoError(t, os.WriteFile(path, []byte(testKubeconfig), 0o600))
 
-	// Default context.
-	c, err := NewClient(path, "", false)
+	cfg, err := loadKubeconfig(path)
+	require.NoError(t, err)
+
+	// Empty context falls back to the kubeconfig's current-context.
+	c, err := newClientForContext(cfg, "", false)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	assert.NotNil(t, c.dyn)
@@ -140,14 +164,20 @@ func TestNewClient(t *testing.T) {
 	assert.NotNil(t, c.disco)
 	assert.NotNil(t, c.mapper)
 
-	// Explicit context override.
-	c2, err := NewClient(path, "test", false)
+	// Explicit context.
+	c2, err := newClientForContext(cfg, "test", false)
 	require.NoError(t, err)
 	require.NotNil(t, c2)
+
+	// A context the kubeconfig does not define is rejected here rather than
+	// silently falling back to current-context.
+	_, err = newClientForContext(cfg, "no-such-context", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to build client config")
 }
 
-func TestNewClient_LoadError(t *testing.T) {
-	_, err := NewClient(filepath.Join(t.TempDir(), "does-not-exist"), "", false)
+func TestLoadKubeconfig_Error(t *testing.T) {
+	_, err := loadKubeconfig(filepath.Join(t.TempDir(), "does-not-exist"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to load kubeconfig")
 }

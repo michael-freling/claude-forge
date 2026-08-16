@@ -2,27 +2,33 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	kfake "k8s.io/client-go/kubernetes/fake"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// runTool is a thin wrapper over executeTool with a default policy.
+// runTool is a thin wrapper over executeTool with a default policy, routing to a
+// single-context ClientSet.
 func runTool(t *testing.T, client *Client, name string, args map[string]any) (string, bool, error) {
 	t.Helper()
-	return executeTool(context.Background(), name, args, &Policy{}, client)
+	return executeTool(context.Background(), name, args, &Policy{}, staticClientSet(client))
 }
 
 // --- registry / definitions ---
 
 func TestRegistryComplete(t *testing.T) {
-	require.Len(t, toolRegistry, 6)
+	require.Len(t, toolRegistry, 7)
 	for name, td := range toolRegistry {
 		assert.NotEqualf(t, accessUnset, td.Access, "tool %q must classify its access", name)
-		assert.NotNil(t, td.handle, "tool %q must have a handler", name)
+		// Exactly one handler kind: cluster-bound, or about the context set.
+		assert.Truef(t, (td.handle == nil) != (td.handleSet == nil),
+			"tool %q must set exactly one of handle/handleSet", name)
 		assert.Equal(t, name, td.Definition.Name)
 	}
 }
@@ -52,6 +58,92 @@ func TestExecuteTool_Unknown(t *testing.T) {
 	_, _, err := runTool(t, newTestClient(), "no_such_tool", map[string]any{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown tool")
+}
+
+// Every cluster-bound tool advertises the optional context parameter; the
+// context-set tool does not, since it is not bound to a cluster.
+func TestAllToolDefinitions_ContextProperty(t *testing.T) {
+	for _, d := range allToolDefinitions() {
+		s, ok := d.InputSchema.(jsonSchema)
+		require.Truef(t, ok, "tool %q has an unexpected schema type", d.Name)
+		if d.Name == "list_contexts" {
+			assert.NotContains(t, s.Properties, "context")
+			continue
+		}
+		assert.Containsf(t, s.Properties, "context", "tool %q must accept a context", d.Name)
+		assert.NotContains(t, s.Required, "context", "context must stay optional")
+	}
+
+	// The injection copies rather than mutating the shared registry definition.
+	registered := toolRegistry["list_api_resources"].Definition.InputSchema.(jsonSchema)
+	assert.NotContains(t, registered.Properties, "context")
+}
+
+// --- context routing ---
+
+// twoContextClientSet serves two pre-built clients as contexts "a" and "b".
+func twoContextClientSet(a, b *Client) *ClientSet {
+	return &ClientSet{
+		defaultContext: "a",
+		infos: []ContextInfo{
+			{Name: "a", Cluster: "a", Server: "https://a.example:6443", Default: true},
+			{Name: "b", Cluster: "b", Server: "https://b.example:6443"},
+		},
+		clients: map[string]*Client{"a": a, "b": b},
+		newClient: func(*clientcmdapi.Config, string, bool) (*Client, error) {
+			return nil, fmt.Errorf("unexpected client build in test")
+		},
+	}
+}
+
+func TestExecuteTool_RoutesByContext(t *testing.T) {
+	clients := twoContextClientSet(
+		newTestClient(unstructuredObj("v1", "Pod", "default", "pod-in-a")),
+		newTestClient(unstructuredObj("v1", "Pod", "default", "pod-in-b")),
+	)
+	args := func(extra map[string]any) map[string]any {
+		a := map[string]any{"api_version": "v1", "kind": "Pod", "namespace": "default"}
+		for k, v := range extra {
+			a[k] = v
+		}
+		return a
+	}
+
+	// No context named → the default context.
+	out, _, err := executeTool(context.Background(), "list_resources", args(nil), &Policy{}, clients)
+	require.NoError(t, err)
+	assert.Contains(t, out, "pod-in-a")
+	assert.NotContains(t, out, "pod-in-b")
+
+	// Explicit context → the other cluster.
+	out, _, err = executeTool(context.Background(), "list_resources",
+		args(map[string]any{"context": "b"}), &Policy{}, clients)
+	require.NoError(t, err)
+	assert.Contains(t, out, "pod-in-b")
+	assert.NotContains(t, out, "pod-in-a")
+}
+
+func TestExecuteTool_UnknownContext(t *testing.T) {
+	clients := twoContextClientSet(newTestClient(), newTestClient())
+	_, _, err := executeTool(context.Background(), "list_resources", map[string]any{
+		"api_version": "v1", "kind": "Pod", "context": "nope",
+	}, &Policy{}, clients)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown context "nope"`)
+}
+
+func TestExecuteTool_ListContexts(t *testing.T) {
+	clients := twoContextClientSet(newTestClient(), newTestClient())
+	out, isErr, err := executeTool(context.Background(), "list_contexts", map[string]any{}, &Policy{}, clients)
+	require.NoError(t, err)
+	assert.False(t, isErr)
+
+	var got []ContextInfo
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	assert.Equal(t, []ContextInfo{
+		{Name: "a", Cluster: "a", Server: "https://a.example:6443", Default: true},
+		{Name: "b", Cluster: "b", Server: "https://b.example:6443"},
+	}, got)
 }
 
 // --- happy paths for each tool ---

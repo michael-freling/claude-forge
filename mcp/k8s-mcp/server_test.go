@@ -36,7 +36,7 @@ func mcpCall(t *testing.T, server *Server, method string, params any) *jsonRPCRe
 }
 
 func TestInitialize(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	resp := mcpCall(t, server, "initialize", nil)
 	require.NotNil(t, resp)
 	assert.Nil(t, resp.Error)
@@ -52,7 +52,7 @@ func TestInitialize(t *testing.T) {
 }
 
 func TestToolsList(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	resp := mcpCall(t, server, "tools/list", nil)
 	require.NotNil(t, resp)
 	assert.Nil(t, resp.Error)
@@ -71,7 +71,7 @@ func TestToolsList(t *testing.T) {
 }
 
 func TestToolsCall_Success(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient(unstructuredObj("v1", "Pod", "default", "p1")))
+	server := NewServer(&Policy{}, newTestClientSet(unstructuredObj("v1", "Pod", "default", "p1")))
 	resp := mcpCall(t, server, "tools/call", map[string]any{
 		"name":      "list_resources",
 		"arguments": map[string]any{"api_version": "v1", "kind": "Pod", "namespace": "default"},
@@ -89,7 +89,7 @@ func TestToolsCall_Success(t *testing.T) {
 
 func TestToolsCall_ToolError(t *testing.T) {
 	// A denied Secret get surfaces as an isError result, not a JSON-RPC error.
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	resp := mcpCall(t, server, "tools/call", map[string]any{
 		"name":      "get_resource",
 		"arguments": map[string]any{"api_version": "v1", "kind": "Secret", "name": "s1"},
@@ -102,7 +102,7 @@ func TestToolsCall_ToolError(t *testing.T) {
 }
 
 func TestToolsCall_UnknownTool(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	resp := mcpCall(t, server, "tools/call", map[string]any{
 		"name":      "no_such_tool",
 		"arguments": map[string]any{},
@@ -115,7 +115,7 @@ func TestToolsCall_UnknownTool(t *testing.T) {
 }
 
 func TestToolsCall_MissingName(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	resp := mcpCall(t, server, "tools/call", map[string]any{"arguments": map[string]any{}})
 	require.NotNil(t, resp)
 	require.NotNil(t, resp.Error)
@@ -126,7 +126,7 @@ func TestToolsCall_MissingName(t *testing.T) {
 func TestToolsCall_NilArgumentsDefaulted(t *testing.T) {
 	c := newTestClient()
 	c.disco = &fakeDiscovery{resources: sampleAPIResourceLists()}
-	server := NewServer(&Policy{}, c)
+	server := NewServer(&Policy{}, staticClientSet(c))
 	// No "arguments" key at all → defaulted to an empty map.
 	resp := mcpCall(t, server, "tools/call", map[string]any{"name": "list_api_resources"})
 	require.NotNil(t, resp)
@@ -137,7 +137,7 @@ func TestToolsCall_NilArgumentsDefaulted(t *testing.T) {
 }
 
 func TestMethodNotFound(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	resp := mcpCall(t, server, "does/not/exist", nil)
 	require.NotNil(t, resp)
 	require.NotNil(t, resp.Error)
@@ -145,13 +145,13 @@ func TestMethodNotFound(t *testing.T) {
 }
 
 func TestNotificationsInitialized(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	resp := mcpCall(t, server, "notifications/initialized", nil)
 	assert.Nil(t, resp) // 204 No Content, no body
 }
 
 func TestServeHTTP_NonPost(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -164,7 +164,7 @@ func TestServeHTTP_NonPost(t *testing.T) {
 }
 
 func TestServeHTTP_BadJSON(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{not json"))
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -177,7 +177,7 @@ func TestServeHTTP_BadJSON(t *testing.T) {
 }
 
 func TestServeHTTP_InvalidParams(t *testing.T) {
-	server := NewServer(&Policy{}, newTestClient())
+	server := NewServer(&Policy{}, newTestClientSet())
 	// params is a JSON string where an object is expected → unmarshal error.
 	req := httptest.NewRequest(http.MethodPost, "/mcp",
 		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"oops"}`))

@@ -43,26 +43,62 @@ mcp_servers:
       - "~/.config/gcloud:/home/user/.config/gcloud:ro" # ADC, for GKE contexts
 ```
 
+## Contexts
+
+**Every context in the mounted kubeconfig is served.** One server reaches all
+of your clusters; each tool call picks one with an optional `context`
+parameter, and the `list_contexts` tool reports what is available (with each
+cluster's API endpoint) plus which context is used when a call names none —
+the kubeconfig's `current-context`.
+
+Clients are built on first use, not at startup, so a context you never call
+costs nothing and an unreachable cluster (laptop off-VPN, local cluster
+stopped) neither blocks startup nor affects the contexts that do work. A
+context that starts failing is retried on the next call, so recovery needs no
+restart.
+
+Pass `--context` to narrow the served set — repeatable, or comma-separated:
+
+```yaml
+    # Serve only these two; every other context in the file is ignored.
+    args: ["--addr=:8080", "--kubeconfig=/home/user/.kube/config",
+           "--context=microk8s", "--context=gke_myproject_us-central1-a_prod"]
+```
+
+A name that isn't in the kubeconfig fails at startup rather than at first use.
+Narrowing is worth doing deliberately: mounting `~/.kube` hands the sidecar
+credentials for **every** cluster in the file, production included, and the
+policy below is the only thing standing between the agent and all of them.
+
 ## Authentication
 
 Credentials are taken straight from the mounted kubeconfig (bearer token or
 embedded client certificate) — with one exception: **GKE kubeconfigs work**.
-When the selected context uses the `gke-gcloud-auth-plugin` exec plugin (or
-`--gcp-auth` forces it), the server authenticates with a Bearer token minted
-in-process from Google Application Default Credentials and auto-refreshes it,
-so the plugin binary is never needed. That path requires
+Whenever a context uses the `gke-gcloud-auth-plugin` exec plugin (or
+`--gcp-auth` forces it for all of them), that context authenticates with a
+Bearer token minted in-process from Google Application Default Credentials and
+auto-refreshes it, so the plugin binary is never needed. That path requires
 `gcloud auth application-default login` on the host and the read-only
-`~/.config/gcloud` mount shown above.
+`~/.config/gcloud` mount shown above. Detection is per context, so a GKE
+context and a token- or certificate-based one coexist in the same server.
 
 ## Limitations
 
-Other exec plugins (EKS `aws`, OIDC helpers) remain unsupported. A cluster
-served at `localhost` is not reachable from the container network, and a
-private GKE endpoint still needs a route (bastion/tunnel; `--network host`
-when running standalone). Because the credential is your own (unrestricted)
-one, the MCP policy is the *only* safety layer — if you need
-defense-in-depth, point the kubeconfig at a user or ServiceAccount you have
-scoped down with RBAC yourself.
+Other exec plugins (EKS `aws`, OIDC helpers) remain unsupported.
+
+Reachability is separate from auth, and is judged from the **sidecar's**
+network, not your host's. A cluster served at `localhost` in the kubeconfig is
+not reachable, because loopback inside the sidecar is the sidecar itself; a
+local cluster has to be addressed by an IP the container network can route to,
+and that IP must appear in the API server's certificate SANs (or the context
+must set `insecure-skip-tls-verify`). A private GKE endpoint still needs a
+route — bastion or tunnel, or `--network host` when running the image
+standalone.
+
+Because the credential is your own (unrestricted) one, the MCP policy is the
+*only* safety layer — if you need defense-in-depth, point the kubeconfig at a
+user or ServiceAccount you have scoped down with RBAC yourself, or use
+`--context` to keep sensitive clusters out of the served set entirely.
 
 ## Migration from the built-in integration
 

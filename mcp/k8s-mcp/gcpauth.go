@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/oauth2/google"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/transport"
 )
 
@@ -26,14 +26,12 @@ const gkeAuthPluginCommand = "gke-gcloud-auth-plugin"
 var findDefaultCredentials = google.FindDefaultCredentials
 
 // usesGKEAuthPlugin reports whether the auth-info of the selected (or current)
-// context in the kubeconfig authenticates via the gke-gcloud-auth-plugin exec
-// plugin. Any load or lookup failure returns false; NewClient surfaces those
-// errors on its own.
-func usesGKEAuthPlugin(kubeconfigPath, kubeContext string) bool {
-	cfg, err := clientcmd.LoadFromFile(kubeconfigPath)
-	if err != nil {
-		return false
-	}
+// context authenticates via the gke-gcloud-auth-plugin exec plugin. It takes the
+// already-parsed kubeconfig rather than a path so that serving many contexts
+// does not re-read the same file once per context. An empty kubeContext selects
+// the kubeconfig's current-context; an unknown context or auth-info returns
+// false.
+func usesGKEAuthPlugin(cfg *clientcmdapi.Config, kubeContext string) bool {
 	name := kubeContext
 	if name == "" {
 		name = cfg.CurrentContext

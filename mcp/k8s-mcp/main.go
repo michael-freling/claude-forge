@@ -8,16 +8,34 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
 
+// contextList collects a repeatable --context flag. It also splits on commas, so
+// --context=a,b and --context=a --context=b are equivalent.
+type contextList []string
+
+func (c *contextList) String() string { return strings.Join(*c, ",") }
+
+func (c *contextList) Set(v string) error {
+	for _, part := range strings.Split(v, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			*c = append(*c, part)
+		}
+	}
+	return nil
+}
+
 func main() {
+	var kubeContexts contextList
 	addr := flag.String("addr", ":8080", "Listen address")
 	kubeconfig := flag.String("kubeconfig", "", "Path to kubeconfig (defaults to $KUBECONFIG, then ~/.kube/config)")
-	kubeContext := flag.String("context", "", "Kubeconfig context to use (defaults to current-context)")
+	flag.Var(&kubeContexts, "context",
+		"Kubeconfig context to serve; repeatable or comma-separated. Defaults to every context in the kubeconfig")
 	gcpAuth := flag.Bool("gcp-auth", false,
-		"Force Google ADC auth; auto-enabled when the kubeconfig uses gke-gcloud-auth-plugin")
+		"Force Google ADC auth for every context; auto-enabled per context that uses gke-gcloud-auth-plugin")
 	flag.Parse()
 
 	kc := *kubeconfig
@@ -30,12 +48,22 @@ func main() {
 		}
 	}
 
-	client, err := NewClient(kc, *kubeContext, *gcpAuth)
+	clients, err := NewClientSet(kc, kubeContexts, *gcpAuth)
 	if err != nil {
-		log.Fatalf("Failed to initialize Kubernetes client: %v", err)
+		log.Fatalf("Failed to load kubeconfig: %v", err)
+	}
+	// Log the served set at startup: individual clients are built on first use,
+	// so this is the only place the operator sees which clusters are on offer
+	// (and at which endpoint) without making a call.
+	for _, info := range clients.Contexts() {
+		suffix := ""
+		if info.Default {
+			suffix = " (default)"
+		}
+		log.Printf("Serving context %q -> %s%s", info.Name, info.Server, suffix)
 	}
 
-	server := NewServer(&Policy{}, client)
+	server := NewServer(&Policy{}, clients)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", server)
 	httpServer := &http.Server{Addr: *addr, Handler: mux}

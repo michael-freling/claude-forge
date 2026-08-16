@@ -17,6 +17,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // maxLogBytes caps a pod-log read so a chatty pod cannot blow out the model's
@@ -35,25 +36,39 @@ type Client struct {
 	mapper meta.RESTMapper
 }
 
-// NewClient builds a Client from a kubeconfig file and optional context. Auth
-// (bearer token or embedded client certificate) comes straight from the
+// loadKubeconfig reads and merges a kubeconfig the same way the deferred loader
+// does — including ResolveLocalPaths, so relative certificate paths inside the
+// file still resolve — and returns the parsed config for reuse.
+func loadKubeconfig(kubeconfigPath string) (*clientcmdapi.Config, error) {
+	rules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
+	cfg, err := rules.Load()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load kubeconfig %s: %w", kubeconfigPath, err)
+	}
+	return cfg, nil
+}
+
+// newClientForContext builds a Client for one context of an already-parsed
+// kubeconfig. An empty kubeContext selects the kubeconfig's current-context.
+//
+// It takes the parsed config rather than a path because a server that serves
+// many contexts would otherwise re-read and re-parse the same file on every
+// context's first use, and could disagree with the context set enumerated at
+// startup if the file changed underneath it.
+//
+// Auth (bearer token or embedded client certificate) comes straight from the
 // kubeconfig. GKE kubeconfigs are the exception: their gke-gcloud-auth-plugin
 // exec plugin is not available in the container, so when the selected context
 // uses it (or gcpAuth forces it) the kubeconfig's auth is replaced with Google
 // Application Default Credentials minted and refreshed in-process.
-func NewClient(kubeconfigPath, kubeContext string, gcpAuth bool) (*Client, error) {
-	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
-	overrides := &clientcmd.ConfigOverrides{}
-	if kubeContext != "" {
-		overrides.CurrentContext = kubeContext
-	}
-	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
+func newClientForContext(cfg *clientcmdapi.Config, kubeContext string, gcpAuth bool) (*Client, error) {
+	cc := clientcmd.NewNonInteractiveClientConfig(*cfg, kubeContext, &clientcmd.ConfigOverrides{}, nil)
 	restConfig, err := cc.ClientConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load kubeconfig %s: %w", kubeconfigPath, err)
+		return nil, fmt.Errorf("failed to build client config: %w", err)
 	}
 
-	if gcpAuth || usesGKEAuthPlugin(kubeconfigPath, kubeContext) {
+	if gcpAuth || usesGKEAuthPlugin(cfg, kubeContext) {
 		if err := applyGCPAuth(context.Background(), restConfig); err != nil {
 			return nil, err
 		}
