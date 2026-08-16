@@ -34,26 +34,47 @@ The server never offers an exec/attach tool at all.
 | `delete_resource` | Delete a resource | write |
 | `get_logs` | Pod logs (capped) | read |
 | `list_api_resources` | Discover served apiVersion/kind | read |
+| `list_contexts` | Show the targetable contexts and their endpoints | read |
+
+Every tool except `list_contexts` takes an optional `context` argument.
 
 ## Usage
 
 ```
-k8s-mcp [--addr :8080] [--kubeconfig <path>] [--context <name>] [--gcp-auth]
+k8s-mcp [--addr :8080] [--kubeconfig <path>] [--context <name>]... [--gcp-auth]
 ```
 
-`--kubeconfig` defaults to `$KUBECONFIG`, then `~/.kube/config`. Auth is taken
-straight from the kubeconfig (bearer token or embedded client certificate) —
-with one exception: **GKE kubeconfigs work**. When the selected context
+`--kubeconfig` defaults to `$KUBECONFIG`, then `~/.kube/config`.
+
+### Contexts
+
+**All contexts in the kubeconfig are served by default.** A call selects one
+via its `context` argument; without it, the kubeconfig's `current-context` is
+used. `--context` narrows the served set and is repeatable (or
+comma-separated); an unknown name fails at startup rather than at first use.
+
+Clients are constructed lazily per context and cached, so an unreachable
+cluster in the kubeconfig neither blocks startup nor affects the contexts that
+work, and a build failure is not cached — a context that recovers works again
+on the next call without a restart.
+
+### Authentication
+
+Auth is taken straight from the kubeconfig (bearer token or embedded client
+certificate) — with one exception: **GKE kubeconfigs work**. When a context
 authenticates via the `gke-gcloud-auth-plugin` exec plugin (or `--gcp-auth`
-forces it), the server replaces that auth with a Bearer token minted in-process
-from Google Application Default Credentials, and auto-refreshes it — the plugin
-binary is never needed. This requires running
+forces it for every context), the server replaces that auth with a Bearer token
+minted in-process from Google Application Default Credentials, and
+auto-refreshes it — the plugin binary is never needed. This requires running
 `gcloud auth application-default login` on the host and mounting
-`~/.config/gcloud` read-only into the container.
+`~/.config/gcloud` read-only into the container. Detection is per context, so
+GKE and non-GKE clusters coexist in one server.
 
 Other exec plugins (EKS `aws`, OIDC helpers) remain unsupported. Network
-reachability is separate from auth: a cluster served at `localhost` is not
-reachable from the container network, and a private GKE endpoint still needs a
+reachability is separate from auth, and is judged from inside the container: a
+cluster served at `localhost` is not reachable (loopback is the container
+itself), a local cluster must be addressed by a container-routable IP that the
+API server's certificate SANs cover, and a private GKE endpoint still needs a
 route (bastion/tunnel; `--network host` when running standalone).
 
 ## As a claude-forge MCP server

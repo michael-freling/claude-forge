@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +61,26 @@ func newTestClient(objs ...runtime.Object) *Client {
 		disco:  &fakeDiscovery{},
 		mapper: testMapper(),
 	}
+}
+
+// staticClientSet wraps an already-built Client as the single served context
+// "test", so tests that care about tool behaviour rather than context routing
+// need no kubeconfig. The client is pre-cached, so newClient is never called.
+func staticClientSet(c *Client) *ClientSet {
+	return &ClientSet{
+		kubeconfigPath: "/nonexistent",
+		defaultContext: "test",
+		infos:          []ContextInfo{{Name: "test", Cluster: "test", Server: "https://127.0.0.1:6443", Default: true}},
+		clients:        map[string]*Client{"test": c},
+		newClient: func(string, string, bool) (*Client, error) {
+			return nil, fmt.Errorf("unexpected client build in test")
+		},
+	}
+}
+
+// newTestClientSet is staticClientSet over a fresh fake Client.
+func newTestClientSet(objs ...runtime.Object) *ClientSet {
+	return staticClientSet(newTestClient(objs...))
 }
 
 // unstructuredObj builds a minimal unstructured resource for seeding the dynamic

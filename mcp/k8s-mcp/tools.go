@@ -38,7 +38,13 @@ type toolDef struct {
 	Definition  ToolDefinition
 	Access      access
 	Destructive bool
-	handle      func(ctx context.Context, args map[string]any, policy *Policy, client *Client) (string, bool, error)
+	// handle serves a tool bound to one cluster; executeTool resolves the
+	// "context" argument to a Client before calling it.
+	handle func(ctx context.Context, args map[string]any, policy *Policy, client *Client) (string, bool, error)
+	// handleSet serves a tool that is about the set of contexts rather than any
+	// single cluster, so it never touches a Kubernetes API. Exactly one of
+	// handle/handleSet is set.
+	handleSet func(ctx context.Context, args map[string]any, clients *ClientSet) (string, bool, error)
 }
 
 type jsonSchema struct {
@@ -62,6 +68,7 @@ func init() {
 		"delete_resource":    deleteResourceTool(),
 		"get_logs":           getLogsTool(),
 		"list_api_resources": listAPIResourcesTool(),
+		"list_contexts":      listContextsTool(),
 	}
 }
 
@@ -78,16 +85,50 @@ func allToolDefinitions() []ToolDefinition {
 	for _, td := range toolRegistry {
 		def := td.Definition
 		def.Annotations = annotationsFor(td)
+		if td.handle != nil {
+			// Advertised here rather than in each tool's own schema, so a tool
+			// added later cannot forget to accept a context.
+			def.InputSchema = withContextProperty(def.InputSchema)
+		}
 		defs = append(defs, def)
 	}
 	return defs
 }
 
-// executeTool runs a tool call.
-func executeTool(ctx context.Context, name string, args map[string]any, policy *Policy, client *Client) (string, bool, error) {
+// withContextProperty adds the optional "context" parameter to a cluster-bound
+// tool's schema. It copies the property map rather than writing through to the
+// registry's shared definition.
+func withContextProperty(schema any) any {
+	s, ok := schema.(jsonSchema)
+	if !ok {
+		return schema
+	}
+	props := make(map[string]property, len(s.Properties)+1)
+	for k, v := range s.Properties {
+		props[k] = v
+	}
+	props["context"] = property{
+		Type: "string",
+		Description: "Kubeconfig context to target. Defaults to the kubeconfig's current-context; " +
+			"call list_contexts to see every cluster this server can reach.",
+	}
+	s.Properties = props
+	return s
+}
+
+// executeTool runs a tool call, resolving the "context" argument to the Client
+// for that cluster.
+func executeTool(ctx context.Context, name string, args map[string]any, policy *Policy, clients *ClientSet) (string, bool, error) {
 	td, ok := toolRegistry[name]
 	if !ok {
 		return "", false, fmt.Errorf("unknown tool: %s", name)
+	}
+	if td.handleSet != nil {
+		return td.handleSet(ctx, args, clients)
+	}
+	client, err := clients.Get(getString(args, "context"))
+	if err != nil {
+		return "", false, err
 	}
 	return td.handle(ctx, args, policy, client)
 }
@@ -421,6 +462,25 @@ func listAPIResourcesTool() *toolDef {
 				return "", false, err
 			}
 			return s, false, nil
+		},
+	}
+}
+
+func listContextsTool() *toolDef {
+	return &toolDef{
+		Access: accessRead,
+		Definition: ToolDefinition{
+			Name: "list_contexts",
+			Description: "List the kubeconfig contexts this server can target, with each cluster's " +
+				"API endpoint and which context is used when a call names none.",
+			InputSchema: jsonSchema{Type: "object"},
+		},
+		handleSet: func(ctx context.Context, args map[string]any, clients *ClientSet) (string, bool, error) {
+			out, err := toJSON(clients.Contexts())
+			if err != nil {
+				return "", false, err
+			}
+			return out, false, nil
 		},
 	}
 }
