@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // multiContextKubeconfig has three contexts with current-context set to "prod",
@@ -48,9 +50,13 @@ users:
     token: def
 `
 
-// countingFactory records how many times a client was built per context.
-func countingFactory(calls map[string]int, err error) clientFactory {
-	return func(_, kubeContext string, _ bool) (*Client, error) {
+// countingFactory records how many times a client was built per context, and
+// asserts the factory is handed the already-parsed config rather than re-reading
+// the kubeconfig itself.
+func countingFactory(t *testing.T, calls map[string]int, err error) clientFactory {
+	t.Helper()
+	return func(cfg *clientcmdapi.Config, kubeContext string, _ bool) (*Client, error) {
+		assert.NotNil(t, cfg, "factory must receive the parsed kubeconfig")
 		calls[kubeContext]++
 		if err != nil {
 			return nil, err
@@ -140,7 +146,7 @@ func TestClientSet_Get(t *testing.T) {
 	cs, err := NewClientSet(writeKubeconfig(t, multiContextKubeconfig), nil, false)
 	require.NoError(t, err)
 	calls := map[string]int{}
-	cs.newClient = countingFactory(calls, nil)
+	cs.newClient = countingFactory(t, calls, nil)
 
 	// Empty name resolves to the default context.
 	def, err := cs.Get("")
@@ -177,7 +183,7 @@ func TestClientSet_Get_BuildErrorIsNotCached(t *testing.T) {
 	cs, err := NewClientSet(writeKubeconfig(t, multiContextKubeconfig), nil, false)
 	require.NoError(t, err)
 	calls := map[string]int{}
-	cs.newClient = countingFactory(calls, fmt.Errorf("cluster unreachable"))
+	cs.newClient = countingFactory(t, calls, fmt.Errorf("cluster unreachable"))
 
 	_, err = cs.Get("local")
 	require.Error(t, err)
@@ -190,10 +196,29 @@ func TestClientSet_Get_BuildErrorIsNotCached(t *testing.T) {
 	assert.Equal(t, 2, calls["local"])
 
 	// A healthy context still works after the failure.
-	cs.newClient = countingFactory(calls, nil)
+	cs.newClient = countingFactory(t, calls, nil)
 	c, err := cs.Get("prod")
 	require.NoError(t, err)
 	assert.NotNil(t, c)
+}
+
+// The kubeconfig is parsed once, at construction, and building a context's
+// client must not touch the file again. Deleting the file after NewClientSet
+// proves it with the real factory: when Get resolved a path instead of the
+// parsed config, it re-read the file here (twice — once in the client config,
+// once in the GKE auth-plugin probe) and this would fail.
+func TestClientSet_Get_DoesNotRereadKubeconfig(t *testing.T) {
+	path := writeKubeconfig(t, multiContextKubeconfig)
+	cs, err := NewClientSet(path, nil, false)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(path))
+
+	c, err := cs.Get("local")
+	require.NoError(t, err)
+	assert.NotNil(t, c.dyn)
+
+	// The startup snapshot still describes the contexts, file or no file.
+	assert.Equal(t, []string{"local", "prod", "staging"}, cs.Names())
 }
 
 // Get claims a concurrent duplicate build is harmless because one wins the map
@@ -203,7 +228,7 @@ func TestClientSet_Get_BuildErrorIsNotCached(t *testing.T) {
 func TestClientSet_Get_Concurrent(t *testing.T) {
 	cs, err := NewClientSet(writeKubeconfig(t, multiContextKubeconfig), nil, false)
 	require.NoError(t, err)
-	cs.newClient = func(_, _ string, _ bool) (*Client, error) { return newTestClient(), nil }
+	cs.newClient = func(*clientcmdapi.Config, string, bool) (*Client, error) { return newTestClient(), nil }
 
 	const n = 16
 	clients := make([]*Client, n)

@@ -74,25 +74,30 @@ func withFakeCredentials(t *testing.T) {
 
 // --- usesGKEAuthPlugin ---
 
+// loadTestKubeconfig writes content and returns the parsed config.
+func loadTestKubeconfig(t *testing.T, content string) *clientcmdapi.Config {
+	t.Helper()
+	cfg, err := loadKubeconfig(writeKubeconfig(t, content))
+	require.NoError(t, err)
+	return cfg
+}
+
 func TestUsesGKEAuthPlugin(t *testing.T) {
-	gkePath := writeKubeconfig(t, gkeKubeconfig)
-	plainPath := writeKubeconfig(t, testKubeconfig)
+	gke := loadTestKubeconfig(t, gkeKubeconfig)
+	plain := loadTestKubeconfig(t, testKubeconfig)
 
 	// Current context uses the gke exec plugin.
-	assert.True(t, usesGKEAuthPlugin(gkePath, ""))
+	assert.True(t, usesGKEAuthPlugin(gke, ""))
 
 	// Named-context selection within the same file.
-	assert.True(t, usesGKEAuthPlugin(gkePath, "gke"))
-	assert.False(t, usesGKEAuthPlugin(gkePath, "plain"))
+	assert.True(t, usesGKEAuthPlugin(gke, "gke"))
+	assert.False(t, usesGKEAuthPlugin(gke, "plain"))
 
 	// Token-based user → false.
-	assert.False(t, usesGKEAuthPlugin(plainPath, ""))
+	assert.False(t, usesGKEAuthPlugin(plain, ""))
 
 	// Unknown context name → false.
-	assert.False(t, usesGKEAuthPlugin(gkePath, "no-such-context"))
-
-	// Missing file → false.
-	assert.False(t, usesGKEAuthPlugin(filepath.Join(t.TempDir(), "does-not-exist"), ""))
+	assert.False(t, usesGKEAuthPlugin(gke, "no-such-context"))
 }
 
 func TestUsesGKEAuthPlugin_MissingAuthInfo(t *testing.T) {
@@ -110,7 +115,7 @@ contexts:
     user: ghost
 current-context: c
 `
-	assert.False(t, usesGKEAuthPlugin(writeKubeconfig(t, cfg), ""))
+	assert.False(t, usesGKEAuthPlugin(loadTestKubeconfig(t, cfg), ""))
 }
 
 // --- applyGCPAuth ---
@@ -148,43 +153,43 @@ func TestApplyGCPAuth_ADCFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "gcloud auth application-default login")
 }
 
-// --- NewClient with GCP auth ---
+// --- newClientForContext with GCP auth ---
 
-func TestNewClient_GCPAuthForced(t *testing.T) {
+func TestNewClientForContext_GCPAuthForced(t *testing.T) {
 	withFakeCredentials(t)
 
 	// A plain token kubeconfig with --gcp-auth forced still builds: ADC
 	// replaces the token.
-	c, err := NewClient(writeKubeconfig(t, testKubeconfig), "", true)
+	c, err := newClientForContext(loadTestKubeconfig(t, testKubeconfig), "", true)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	assert.NotNil(t, c.dyn)
 	assert.NotNil(t, c.typed)
 }
 
-func TestNewClient_GCPAuthAutoDetected(t *testing.T) {
+func TestNewClientForContext_GCPAuthAutoDetected(t *testing.T) {
 	withFakeCredentials(t)
 
 	// The kubeconfig's user declares the gke exec plugin; the client builds
 	// without the plugin binary because ADC auth replaces it.
-	c, err := NewClient(writeKubeconfig(t, gkeKubeconfig), "", false)
+	c, err := newClientForContext(loadTestKubeconfig(t, gkeKubeconfig), "", false)
 	require.NoError(t, err)
 	require.NotNil(t, c)
 
 	// Named context selection takes the same path.
-	c2, err := NewClient(writeKubeconfig(t, gkeKubeconfig), "gke", false)
+	c2, err := newClientForContext(loadTestKubeconfig(t, gkeKubeconfig), "gke", false)
 	require.NoError(t, err)
 	require.NotNil(t, c2)
 }
 
-func TestNewClient_GCPAuthADCFailure(t *testing.T) {
+func TestNewClientForContext_GCPAuthADCFailure(t *testing.T) {
 	orig := findDefaultCredentials
 	findDefaultCredentials = func(_ context.Context, _ ...string) (*google.Credentials, error) {
 		return nil, errors.New("no ADC found")
 	}
 	t.Cleanup(func() { findDefaultCredentials = orig })
 
-	_, err := NewClient(writeKubeconfig(t, gkeKubeconfig), "", false)
+	_, err := newClientForContext(loadTestKubeconfig(t, gkeKubeconfig), "", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "gcloud auth application-default login")
 }

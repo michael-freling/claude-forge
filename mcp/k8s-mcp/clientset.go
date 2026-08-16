@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // ContextInfo describes one kubeconfig context the server can target. It is the
@@ -21,9 +21,10 @@ type ContextInfo struct {
 	Default bool   `json:"default,omitempty"`
 }
 
-// clientFactory builds a Client for a single context. It is a field on ClientSet
-// so tests can substitute a fake without a reachable cluster.
-type clientFactory func(kubeconfigPath, kubeContext string, gcpAuth bool) (*Client, error)
+// clientFactory builds a Client for a single context of an already-parsed
+// kubeconfig. It is a field on ClientSet so tests can substitute a fake without
+// a reachable cluster.
+type clientFactory func(cfg *clientcmdapi.Config, kubeContext string, gcpAuth bool) (*Client, error)
 
 // ClientSet serves one Client per kubeconfig context. Every context in the
 // kubeconfig is served unless an explicit allowlist narrows the set.
@@ -34,8 +35,12 @@ type clientFactory func(kubeconfigPath, kubeContext string, gcpAuth bool) (*Clie
 // the server's startup nor the working contexts may depend on the broken ones.
 // A build failure is reported to the caller and deliberately not cached, so a
 // context that recovers starts working without restarting the server.
+// The kubeconfig is parsed exactly once, at construction, and that one parsed
+// config backs both the enumerated context set and every client built from it —
+// so a file edited underneath a running server cannot make Get disagree with
+// what list_contexts reported.
 type ClientSet struct {
-	kubeconfigPath string
+	cfg            *clientcmdapi.Config
 	gcpAuth        bool
 	defaultContext string
 	infos          []ContextInfo
@@ -50,9 +55,9 @@ type ClientSet struct {
 // must exist in the kubeconfig, so a typo fails loudly at startup rather than
 // silently serving fewer clusters than intended.
 func NewClientSet(kubeconfigPath string, allow []string, gcpAuth bool) (*ClientSet, error) {
-	cfg, err := clientcmd.LoadFromFile(kubeconfigPath)
+	cfg, err := loadKubeconfig(kubeconfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load kubeconfig %s: %w", kubeconfigPath, err)
+		return nil, err
 	}
 
 	all := make([]string, 0, len(cfg.Contexts))
@@ -106,11 +111,11 @@ func NewClientSet(kubeconfigPath string, allow []string, gcpAuth bool) (*ClientS
 	}
 
 	return &ClientSet{
-		kubeconfigPath: kubeconfigPath,
+		cfg:            cfg,
 		gcpAuth:        gcpAuth,
 		defaultContext: def,
 		infos:          infos,
-		newClient:      NewClient,
+		newClient:      newClientForContext,
 		clients:        map[string]*Client{},
 	}, nil
 }
@@ -158,7 +163,7 @@ func (cs *ClientSet) Get(name string) (*Client, error) {
 	// minting or a dead endpoint, and one bad context must not stall calls to the
 	// others. A concurrent duplicate build is harmless — one wins the map and
 	// both callers get that one.
-	built, err := cs.newClient(cs.kubeconfigPath, name, cs.gcpAuth)
+	built, err := cs.newClient(cs.cfg, name, cs.gcpAuth)
 	if err != nil {
 		return nil, fmt.Errorf("context %q: %w", name, err)
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	kfake "k8s.io/client-go/kubernetes/fake"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
 // runTool is a thin wrapper over executeTool with a default policy, routing to a
@@ -89,7 +90,7 @@ func twoContextClientSet(a, b *Client) *ClientSet {
 			{Name: "b", Cluster: "b", Server: "https://b.example:6443"},
 		},
 		clients: map[string]*Client{"a": a, "b": b},
-		newClient: func(string, string, bool) (*Client, error) {
+		newClient: func(*clientcmdapi.Config, string, bool) (*Client, error) {
 			return nil, fmt.Errorf("unexpected client build in test")
 		},
 	}
