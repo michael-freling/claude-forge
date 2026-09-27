@@ -277,7 +277,7 @@ type AgentOptions struct {
 	Name               string            // container name: forge-agent-<project-id>-<session-id>
 	Image              string            // agent image
 	NetworkName        string            // Docker network to attach to
-	ProjectDir         string            // host path to project (mounted at /work)
+	ProjectDir         string            // host path to project (mounted at layout.Workspace)
 	SessionDir         string            // host path to session storage
 	ClaudeDir          string            // host path to ~/.claude/
 	ConfigDir          string            // host path to ~/.config/claude-forge/
@@ -453,15 +453,17 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 
 	var cmd []string
 	if opts.ResumeWorktreeName != "" {
-		wtPath := layout.WorktreesSubdir + "/" + opts.ResumeWorktreeName
+		// git worktree add takes the path relative to the workspace (the cwd);
+		// the cd target is the same worktree spelled absolutely.
+		wtRelPath := layout.WorktreesSubdir + "/" + opts.ResumeWorktreeName
 		var quotedArgs []string
 		for _, arg := range opts.Cmd {
 			quotedArgs = append(quotedArgs, "'"+arg+"'")
 		}
 		claudeArgs := strings.Join(quotedArgs, " ")
 		shellCmd := fmt.Sprintf(
-			"git worktree add %s HEAD 2>/dev/null || true && cd %s/%s && exec claude %s",
-			wtPath, layout.Workspace, wtPath, claudeArgs,
+			"git worktree add %s HEAD 2>/dev/null || true && cd %s && exec claude %s",
+			wtRelPath, layout.WorktreePath(opts.ResumeWorktreeName), claudeArgs,
 		)
 		cmd = []string{"bash", "-c", shellCmd}
 	} else {

@@ -348,8 +348,8 @@ Normalized to `owner=michael-freling`, `repo=claude-forge`. Passed to gateway at
     │       └── *.md              ← topic files
     ├── -home-user-work--claude-worktrees-<name>/   ← bucket for each --worktree cwd
     │   └── <session-id>.jsonl
-    └── -work/                    ← bucket from before the workspace moved
-        └── <session-id>.jsonl      under /home/user (still listed by `list`)
+    └── -work/                    ← pre-move bucket, still listed by `list`
+        └── <session-id>.jsonl
 ```
 
 `<project-id>` on the host is the mangled absolute path of the project on the host (e.g. `-home-user-foo`), which gives each project its own session directory.

@@ -247,8 +247,9 @@ func buildMounts(opts Options) []MountConfig {
 //
 // worktree.useRelativePaths makes git worktree add (including the one Claude
 // Code runs for --worktree) emit a .git file whose gitdir is relative — so the
-// worktree resolves correctly both at /work in the container and at the host
-// project path. Requires git 2.48+ in the agent image.
+// worktree resolves correctly both at the container workspace
+// (layout.Workspace) and at the host project path. Requires git 2.48+ in the
+// agent image.
 func generateGitconfig(opts Options) string {
 	return fmt.Sprintf(`[url "http://gateway:8080/github.com/"]
     insteadOf = https://github.com/
@@ -355,8 +356,11 @@ func ensureWorkspaceTrusted(configPath string) error {
 		return fmt.Errorf("failed to read .claude.json: %w", err)
 	}
 
+	// A file holding the JSON literal null unmarshals without error but leaves
+	// config nil, so it gets the same treatment as an unparseable one rather
+	// than a panic on the first write.
 	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
+	if err := json.Unmarshal(data, &config); err != nil || config == nil {
 		return nil
 	}
 
@@ -543,6 +547,10 @@ func UpdateMCPServers(configDir string, servers map[string]MCPServerConfig) erro
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return fmt.Errorf("failed to parse settings.json: %w", err)
 	}
+	// A JSON null unmarshals into a nil map, which would panic on write below.
+	if settings == nil {
+		settings = make(map[string]any)
+	}
 
 	mcpServers := make(map[string]any, len(servers))
 	for name, cfg := range servers {
@@ -573,6 +581,10 @@ func RegisterProjectMCPServers(configDir string, servers map[string]MCPServerCon
 	var config map[string]any
 	if err := json.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("failed to parse .claude.json: %w", err)
+	}
+	// A JSON null unmarshals into a nil map, which would panic on write below.
+	if config == nil {
+		config = make(map[string]any)
 	}
 
 	// Navigate to or create projects[layout.Workspace]

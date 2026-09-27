@@ -642,6 +642,23 @@ func TestEnsureUserConfig(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to write .claude.json")
 	})
 
+	t.Run("leaves a null file untouched", func(t *testing.T) {
+		homeDir := t.TempDir()
+		configDir := t.TempDir()
+
+		// "null" unmarshals into a nil map without error, so a naive write would
+		// panic instead of treating the file as unusable.
+		existing := `null`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		err := EnsureUserConfig(configDir, homeDir)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+		assert.Equal(t, existing, string(data))
+	})
+
 	t.Run("read error on existing file", func(t *testing.T) {
 		homeDir := t.TempDir()
 		configDir := t.TempDir()
@@ -1316,6 +1333,45 @@ func TestUpdateMCPServers(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to parse settings.json")
 	})
+}
+
+func TestUpdateMCPServers_NullSettingsFile(t *testing.T) {
+	configDir := t.TempDir()
+	settingsPath := filepath.Join(configDir, "settings.json")
+	require.NoError(t, os.WriteFile(settingsPath, []byte("null"), 0o644))
+
+	// "null" unmarshals into a nil map without error; writing into it would panic.
+	err := UpdateMCPServers(configDir, map[string]MCPServerConfig{
+		"example": {Type: "http", URL: "https://mcp.example.com"},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(settingsPath)
+	require.NoError(t, err)
+
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	assert.Contains(t, settings["mcpServers"], "example")
+}
+
+func TestRegisterProjectMCPServers_NullConfigFile(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, ".claude.json")
+	require.NoError(t, os.WriteFile(configPath, []byte("null"), 0o644))
+
+	err := RegisterProjectMCPServers(configDir, map[string]MCPServerConfig{
+		"example": {Type: "http", URL: "https://mcp.example.com"},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	var config map[string]any
+	require.NoError(t, json.Unmarshal(data, &config))
+	projects := config["projects"].(map[string]any)
+	workspace := projects[layout.Workspace].(map[string]any)
+	assert.Contains(t, workspace["mcpServers"], "example")
 }
 
 func TestMCPServerConfig_settingsMap(t *testing.T) {

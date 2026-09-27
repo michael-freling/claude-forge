@@ -29,7 +29,8 @@ RUN apt-get update && apt-get install -y docker.io \
 # Common CLIs used by Claude Code.
 # Install git from ppa:git-core/ppa to get >= 2.48, which is needed for
 # worktree.useRelativePaths so Claude Code's --worktree creates a .git file that
-# resolves correctly both inside the container (cwd=/work) and on the host.
+# resolves correctly both inside the container (cwd=/home/user/work) and on the
+# host.
 RUN apt-get update && apt-get install -y software-properties-common \
     && add-apt-repository -y ppa:git-core/ppa \
     && apt-get update && apt-get install -y \

@@ -167,7 +167,8 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 
 	// Write/update the container instructions mounted as the agent's managed
-	// memory (it runs in a container; /work paths are shared as relative paths).
+	// memory: it runs in a container, workspace paths are shared as relative
+	// paths, and GitHub is reached through the gateway.
 	containerMemoryFile, err := claudecode.WriteContainerMemory(o.ConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write container CLAUDE.md: %w", err)
