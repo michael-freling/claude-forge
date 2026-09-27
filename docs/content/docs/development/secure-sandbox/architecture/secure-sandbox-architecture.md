@@ -346,15 +346,15 @@ Normalized to `owner=michael-freling`, `repo=claude-forge`. Passed to gateway at
     │   └── memory/
     │       ├── MEMORY.md         ← auto memory
     │       └── *.md              ← topic files
-    ├── -home-user-work--claude-worktrees-<name>/   ← bucket for each --worktree cwd
-    │   └── <session-id>.jsonl
-    └── -work/                    ← pre-move bucket, still listed by `list`
+    └── -home-user-work--claude-worktrees-<name>/   ← bucket for each --worktree cwd
         └── <session-id>.jsonl
 ```
 
 `<project-id>` on the host is the mangled absolute path of the project on the host (e.g. `-home-user-foo`), which gives each project its own session directory.
 
-The host path `~/.claude-forge/<project-id>/` is mounted into the container at `/home/user/.claude/projects/` (the parent). Claude Code in the container writes session files under a subdirectory derived from its cwd — `-home-user-work/` for the main workspace and `-home-user-work--claude-worktrees-<name>/` for each worktree (every `/` and `.` becomes `-`) — so all of those buckets persist to the host through a single bind mount. Sessions recorded while the workspace was mounted at `/work` keep their old bucket and are still listed.
+The host path `~/.claude-forge/<project-id>/` is mounted into the container at `/home/user/.claude/projects/` (the parent). Claude Code in the container writes session files under a subdirectory derived from its cwd — `-home-user-work/` for the main workspace and `-home-user-work--claude-worktrees-<name>/` for each worktree (every `/` and `.` becomes `-`) — so all of those buckets persist to the host through a single bind mount.
+
+A bucket name follows the workspace path, so changing the workspace starts new buckets: transcripts, Claude Code's per-project `memory/` and its per-session `tool-results/` all live under the bucket for the cwd they were written in. Buckets from an earlier workspace path are not carried over — they can be deleted once no session is reading them.
 
 ### Session Listing for `resume`
 

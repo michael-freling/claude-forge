@@ -101,14 +101,6 @@ func readMetadata(sessionDir, sessionID string) Metadata {
 	return meta
 }
 
-// worktreeSubdirPrefixes are the bucket prefixes Claude Code produces for a
-// worktree cwd. The legacy one covers sessions recorded while the workspace was
-// mounted at /work, which still sit in the host session directory.
-var worktreeSubdirPrefixes = []string{
-	layout.WorktreeSubdirPrefix,
-	layout.LegacyWorktreeSubdirPrefix,
-}
-
 // IsWorktree reports whether this session was created inside a Claude Code worktree.
 func (s Session) IsWorktree() bool {
 	return s.WorktreeName() != ""
@@ -116,10 +108,8 @@ func (s Session) IsWorktree() bool {
 
 // WorktreeName returns the worktree name for worktree sessions, or "" otherwise.
 func (s Session) WorktreeName() string {
-	for _, prefix := range worktreeSubdirPrefixes {
-		if name, ok := strings.CutPrefix(s.Subdir, prefix); ok && name != "" {
-			return name
-		}
+	if name, ok := strings.CutPrefix(s.Subdir, layout.WorktreeSubdirPrefix); ok && name != "" {
+		return name
 	}
 	return ""
 }

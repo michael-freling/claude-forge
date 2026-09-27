@@ -118,12 +118,12 @@ func TestList(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "multiple sessions in -work subdir sorted by most recent first",
+			name: "multiple sessions in the workspace bucket sorted by most recent first",
 			files: map[string]string{
-				"-work/session-1.jsonl": `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"session-1"}
+				layout.SessionSubdir + "/session-1.jsonl": `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"session-1"}
 {"type":"user","message":{"role":"user","content":"Hello world"},"timestamp":"2026-05-08T14:30:01Z"}
 {"type":"assistant","message":{"role":"assistant","content":"Hi there"},"timestamp":"2026-05-08T14:30:02Z"}`,
-				"-work/session-2.jsonl": `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"session-2"}
+				layout.SessionSubdir + "/session-2.jsonl": `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"session-2"}
 {"type":"user","message":{"role":"user","content":"Fix the bug"},"timestamp":"2026-05-09T10:00:01Z"}`,
 			},
 			want: []Session{
@@ -131,13 +131,13 @@ func TestList(t *testing.T) {
 					ID:        "session-2",
 					CreatedAt: time.Date(2026, 5, 9, 10, 0, 1, 0, time.UTC),
 					FirstMsg:  "Fix the bug",
-					Subdir:    "-work",
+					Subdir:    layout.SessionSubdir,
 				},
 				{
 					ID:        "session-1",
 					CreatedAt: time.Date(2026, 5, 8, 14, 30, 1, 0, time.UTC),
 					FirstMsg:  "Hello world",
-					Subdir:    "-work",
+					Subdir:    layout.SessionSubdir,
 				},
 			},
 		},
@@ -412,9 +412,6 @@ func TestSession_IsWorktree(t *testing.T) {
 		{"", false},
 		{layout.WorktreeSubdirPrefix + "feature", true},
 		{layout.WorktreeSubdirPrefix + "my-long-branch-name", true},
-		// Buckets recorded while the workspace was mounted at /work.
-		{"-work", false},
-		{"-work--claude-worktrees-feature", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.subdir, func(t *testing.T) {
@@ -433,9 +430,6 @@ func TestSession_WorktreeName(t *testing.T) {
 		{"", ""},
 		{layout.WorktreeSubdirPrefix + "feature", "feature"},
 		{layout.WorktreeSubdirPrefix + "my-long-branch-name", "my-long-branch-name"},
-		// Buckets recorded while the workspace was mounted at /work.
-		{"-work", ""},
-		{"-work--claude-worktrees-feature", "feature"},
 		// A bare prefix with no name after it is not a worktree bucket.
 		{layout.WorktreeSubdirPrefix, ""},
 	}
@@ -491,18 +485,18 @@ func TestDelete(t *testing.T) {
 	tmp := t.TempDir()
 
 	t.Run("removes transcript and sidecar", func(t *testing.T) {
-		work := filepath.Join(tmp, "-work")
+		work := filepath.Join(tmp, layout.SessionSubdir)
 		require.NoError(t, os.MkdirAll(work, 0o755))
 		jsonl := filepath.Join(work, "s1.jsonl")
 		require.NoError(t, os.WriteFile(jsonl, []byte("{}"), 0o644))
 		require.NoError(t, WriteMetadata(tmp, "s1", Metadata{Name: "n1"}))
 
-		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: "-work"}))
+		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: layout.SessionSubdir}))
 		assert.NoFileExists(t, jsonl)
 		assert.NoFileExists(t, metadataPath(tmp, "s1"))
 
 		// Idempotent: deleting again is not an error.
-		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: "-work"}))
+		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: layout.SessionSubdir}))
 	})
 
 	t.Run("removes legacy root transcript", func(t *testing.T) {

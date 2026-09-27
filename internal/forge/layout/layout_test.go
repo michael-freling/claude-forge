@@ -41,8 +41,6 @@ func TestSessionSubdirs(t *testing.T) {
 	// prefix and WorktreePath must agree.
 	assert.Equal(t, WorktreeSubdirPrefix+"feature", EncodePath(WorktreePath("feature")))
 
-	// The legacy prefix is the same construction for the old /work mount.
-	assert.Equal(t, LegacyWorktreeSubdirPrefix, EncodePath("/work/"+WorktreesSubdir)+"-")
 }
 
 func TestWorktreePath(t *testing.T) {

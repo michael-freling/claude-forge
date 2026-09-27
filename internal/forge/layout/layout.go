@@ -43,12 +43,6 @@ const (
 	// file at /CLAUDE.md is silently ignored; this is the injection point that
 	// works from outside the project tree.
 	ManagedMemory = "/etc/claude-code/CLAUDE.md"
-
-	// LegacyWorktreeSubdirPrefix is the worktree bucket prefix Claude Code
-	// produced while the workspace was mounted at /work. Sessions recorded then
-	// still sit in the host session directory, so the session lister keeps
-	// recognizing it.
-	LegacyWorktreeSubdirPrefix = "-work--claude-worktrees-"
 )
 
 var (
