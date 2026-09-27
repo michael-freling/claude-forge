@@ -14,7 +14,13 @@ if [ -n "$FORGE_UID" ] && [ -n "$FORGE_GID" ]; then
         usermod -u "$FORGE_UID" -o user 2>/dev/null || true
     fi
 
-    chown -R user:user /home/user 2>/dev/null || true
+    # Fix ownership of the image's own files under /home/user, but stay out of
+    # the bind mounts: -xdev stops find at every mount point (the dependency
+    # caches and the session directory, which the host already owns), and the
+    # workspace is pruned outright so the user's working tree is never
+    # rewritten on the host.
+    find /home/user -xdev -path "${FORGE_WORKSPACE:-/home/user/work}" -prune \
+        -o -exec chown user:user {} + 2>/dev/null || true
 fi
 
 # Docker-in-Docker: start a dedicated dockerd inside this container. The host

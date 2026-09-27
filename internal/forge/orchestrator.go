@@ -16,6 +16,7 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/michael-freling/claude-forge/internal/forge/project"
 	"github.com/michael-freling/claude-forge/internal/forge/session"
 	"gopkg.in/yaml.v3"
@@ -47,7 +48,7 @@ type StartOptions struct {
 	Worktree           bool
 	Prompt             string
 	ResumeID           string
-	ResumeSubdir       string // session subdir (e.g., "-work") for constructing the resume file path
+	ResumeSubdir       string // session subdir (e.g., layout.SessionSubdir) for constructing the resume file path
 	Continue           bool
 	Interactive        bool     // allocate TTY for docker attach (false for prompt mode)
 	ProjectDir         string   // working directory (defaults to cwd if empty)
@@ -163,6 +164,13 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	// Ensure .claude.json exists (skips onboarding in container)
 	if err := claudecode.EnsureUserConfig(o.ConfigDir, o.HomeDir); err != nil {
 		return nil, fmt.Errorf("failed to ensure .claude.json: %w", err)
+	}
+
+	// Write/update the container instructions mounted as the agent's managed
+	// memory (it runs in a container; /work paths are shared as relative paths).
+	containerMemoryFile, err := claudecode.WriteContainerMemory(o.ConfigDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write container CLAUDE.md: %w", err)
 	}
 
 	// Pull images if not present
@@ -306,7 +314,7 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	}
 	if opts.ResumeID != "" {
 		if opts.ResumeSubdir != "" {
-			resumePath := fmt.Sprintf("/home/user/.claude/projects/%s/%s.jsonl", opts.ResumeSubdir, opts.ResumeID)
+			resumePath := fmt.Sprintf("%s/%s/%s.jsonl", layout.ProjectsDir, opts.ResumeSubdir, opts.ResumeID)
 			agentCmd = append(agentCmd, "--resume", resumePath)
 		} else {
 			agentCmd = append(agentCmd, "--resume", opts.ResumeID)
@@ -414,26 +422,27 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	// Start agent
 	o.Log("Starting agent: %s", sess.AgentName)
 	if _, err := o.Containers.StartAgent(ctx, container.AgentOptions{
-		Name:               sess.AgentName,
-		Image:              cfg.Images.Agent,
-		NetworkName:        sess.NetworkName,
-		ProjectDir:         proj.Dir,
-		SessionDir:         sessionDir,
-		ClaudeDir:          o.ClaudeDir,
-		ConfigDir:          o.ConfigDir,
-		HomeDir:            o.HomeDir,
-		PluginsDir:         pluginsDir,
-		Env:                agentEnv,
-		Privileged:         cfg.Docker.Enabled,
-		EnableDocker:       cfg.Docker.Enabled,
-		Interactive:        opts.Interactive,
-		Cmd:                agentCmd,
-		UID:                opts.UID,
-		GID:                opts.GID,
-		CacheDirs:          containerCacheDirs,
-		ExtraMounts:        extraMounts,
-		ResumeWorktreeName: opts.ResumeWorktreeName,
-		ExtraNetworks:      extraNetworks,
+		Name:                sess.AgentName,
+		Image:               cfg.Images.Agent,
+		NetworkName:         sess.NetworkName,
+		ProjectDir:          proj.Dir,
+		SessionDir:          sessionDir,
+		ClaudeDir:           o.ClaudeDir,
+		ConfigDir:           o.ConfigDir,
+		HomeDir:             o.HomeDir,
+		PluginsDir:          pluginsDir,
+		Env:                 agentEnv,
+		Privileged:          cfg.Docker.Enabled,
+		EnableDocker:        cfg.Docker.Enabled,
+		Interactive:         opts.Interactive,
+		Cmd:                 agentCmd,
+		UID:                 opts.UID,
+		GID:                 opts.GID,
+		CacheDirs:           containerCacheDirs,
+		ExtraMounts:         extraMounts,
+		ResumeWorktreeName:  opts.ResumeWorktreeName,
+		ExtraNetworks:       extraNetworks,
+		ContainerMemoryFile: containerMemoryFile,
 	}); err != nil {
 		o.Cleanup(ctx, sess)
 		return nil, fmt.Errorf("failed to start agent: %w", err)

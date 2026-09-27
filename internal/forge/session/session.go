@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 )
 
 // GenerateID returns 8 random hex characters for use as a session identifier.
@@ -43,7 +45,7 @@ type Session struct {
 	LastActive time.Time // last activity, taken from the transcript file's mtime
 	FirstMsg   string
 	Name       string // human-readable name from the sidecar metadata file
-	Subdir     string // relative subdirectory within session dir (e.g., "-work", "-work--claude-worktrees-feature")
+	Subdir     string // relative subdirectory within session dir (e.g., "-home-user-work", "-home-user-work--claude-worktrees-feature")
 }
 
 // Metadata is sidecar information about a session, stored next to the JSONL
@@ -99,19 +101,27 @@ func readMetadata(sessionDir, sessionID string) Metadata {
 	return meta
 }
 
-const worktreeSubdirPrefix = "-work--claude-worktrees-"
+// worktreeSubdirPrefixes are the bucket prefixes Claude Code produces for a
+// worktree cwd. The legacy one covers sessions recorded while the workspace was
+// mounted at /work, which still sit in the host session directory.
+var worktreeSubdirPrefixes = []string{
+	layout.WorktreeSubdirPrefix,
+	layout.LegacyWorktreeSubdirPrefix,
+}
 
 // IsWorktree reports whether this session was created inside a Claude Code worktree.
 func (s Session) IsWorktree() bool {
-	return strings.HasPrefix(s.Subdir, worktreeSubdirPrefix)
+	return s.WorktreeName() != ""
 }
 
 // WorktreeName returns the worktree name for worktree sessions, or "" otherwise.
 func (s Session) WorktreeName() string {
-	if !s.IsWorktree() {
-		return ""
+	for _, prefix := range worktreeSubdirPrefixes {
+		if name, ok := strings.CutPrefix(s.Subdir, prefix); ok && name != "" {
+			return name
+		}
 	}
-	return s.Subdir[len(worktreeSubdirPrefix):]
+	return ""
 }
 
 // jsonLine represents a single line in a session JSONL file.
@@ -146,8 +156,9 @@ func extractContent(raw json.RawMessage) string {
 // List reads JSONL session files from the project's session directory.
 // sessionDir is the host path like ~/.claude-forge/<project-id>/, which is
 // bind-mounted to /home/user/.claude/projects in the container. Claude Code
-// stores sessions under <encoded-cwd>/<session-id>.jsonl — typically -work/ for
-// the main workspace and -work--claude-worktrees-<name>/ for each worktree.
+// stores sessions under <encoded-cwd>/<session-id>.jsonl — layout.SessionSubdir
+// for the main workspace and layout.WorktreeSubdirPrefix + <name> for each
+// worktree.
 //
 // To surface all of those in `resume --list`, List walks one level of
 // subdirectories. .jsonl files placed directly under sessionDir are also

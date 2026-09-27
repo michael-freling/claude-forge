@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -272,7 +273,7 @@ func TestStartAgent(t *testing.T) {
 						assert.Equal(t, "agent:latest", config.Image)
 						assert.Empty(t, config.Entrypoint)
 						assert.Equal(t, []string{"claude", "--dangerously-skip-permissions"}, []string(config.Cmd))
-						assert.Equal(t, "/work", config.WorkingDir)
+						assert.Equal(t, layout.Workspace, config.WorkingDir)
 						assert.Contains(t, config.Env, "ANTHROPIC_API_KEY=sk-test")
 						assert.True(t, config.Tty, "Tty should be true when Interactive is true")
 						assert.True(t, config.OpenStdin, "OpenStdin should be true when Interactive is true")
@@ -283,7 +284,7 @@ func TestStartAgent(t *testing.T) {
 						foundProjectMount := false
 						foundDockerVolume := false
 						for _, m := range hostConfig.Mounts {
-							if m.Target == "/work" && m.Source == "/home/user/my-project" {
+							if m.Target == layout.Workspace && m.Source == "/home/user/my-project" {
 								foundProjectMount = true
 							}
 							if m.Target == "/var/lib/docker" && m.Type == mount.TypeVolume {
@@ -388,25 +389,28 @@ func TestStartAgent_Mounts(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dir, 0o755))
 	}
 	// Create required config files, credentials, and CLAUDE.md
+	containerMemory := filepath.Join(configDir, "container-CLAUDE.md")
 	for _, f := range []string{
 		filepath.Join(configDir, "settings.json"),
 		filepath.Join(configDir, ".claude.json"),
 		filepath.Join(configDir, "gitconfig"),
 		filepath.Join(homeDir, "CLAUDE.md"),
+		containerMemory,
 	} {
 		require.NoError(t, os.WriteFile(f, []byte("{}"), 0o644))
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(claudeDir, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"tk"}}`), 0o644))
 
 	opts := AgentOptions{
-		Name:        "forge-agent-project-session",
-		Image:       "agent:latest",
-		NetworkName: "forge_net",
-		ProjectDir:  projectDir,
-		SessionDir:  sessionDir,
-		ClaudeDir:   claudeDir,
-		ConfigDir:   configDir,
-		HomeDir:     homeDir,
+		Name:                "forge-agent-project-session",
+		Image:               "agent:latest",
+		NetworkName:         "forge_net",
+		ProjectDir:          projectDir,
+		SessionDir:          sessionDir,
+		ClaudeDir:           claudeDir,
+		ConfigDir:           configDir,
+		HomeDir:             homeDir,
+		ContainerMemoryFile: containerMemory,
 	}
 
 	mockAPI.EXPECT().
@@ -417,7 +421,7 @@ func TestStartAgent_Mounts(t *testing.T) {
 				mountsByTarget[m.Target] = m.Source
 			}
 
-			assert.Contains(t, mountsByTarget, "/work", "project mount missing")
+			assert.Contains(t, mountsByTarget, layout.Workspace, "project mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/.claude/rules", "claude rules mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/.claude/agents", "claude agents mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/.claude/commands", "claude commands mount missing")
@@ -427,9 +431,21 @@ func TestStartAgent_Mounts(t *testing.T) {
 			assert.Contains(t, mountsByTarget, "/home/user/.gitconfig", "gitconfig mount missing")
 			assert.Contains(t, mountsByTarget, "/home/user/CLAUDE.md", "home CLAUDE.md mount missing")
 
+			// Forge's container instructions land at Claude Code's managed-memory
+			// path (never at /CLAUDE.md, which Claude Code does not read), and the
+			// agent must not be able to edit them.
+			assert.Equal(t, containerMemory, mountsByTarget[layout.ManagedMemory],
+				"container CLAUDE.md mount missing or pointed at wrong source")
+			for _, m := range hostConfig.Mounts {
+				if m.Target == layout.ManagedMemory {
+					assert.True(t, m.ReadOnly, "container CLAUDE.md must be mounted read-only")
+				}
+			}
+
 			// Session dir mounts at /home/user/.claude/projects (parent) so Claude Code's
-			// writes under -work/ and -work-.claude-worktrees-*/ both reach the host.
-			assert.Equal(t, sessionDir, mountsByTarget["/home/user/.claude/projects"],
+			// writes under the workspace bucket and any worktree bucket both reach
+			// the host.
+			assert.Equal(t, sessionDir, mountsByTarget[layout.ProjectsDir],
 				"session dir mount missing or pointed at wrong source")
 
 			return container.CreateResponse{ID: "c-123"}, nil
@@ -556,6 +572,8 @@ func TestStartAgent_NonExistentClaudeDirs(t *testing.T) {
 			assert.False(t, mountTargets["/home/user/.claude/commands"], "commands mount should be skipped")
 			assert.False(t, mountTargets["/home/user/.claude/skills"], "skills mount should be skipped")
 			assert.False(t, mountTargets["/home/user/CLAUDE.md"], "CLAUDE.md mount should be skipped")
+			assert.False(t, mountTargets[layout.ManagedMemory],
+				"container CLAUDE.md mount should be skipped when no file is configured")
 
 			return container.CreateResponse{ID: "c-123"}, nil
 		})
@@ -845,7 +863,7 @@ func TestStartAgent_NoCacheDirs(t *testing.T) {
 		DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
 			// Only the project dir mount should exist
 			assert.Len(t, hostConfig.Mounts, 1)
-			assert.Equal(t, "/work", hostConfig.Mounts[0].Target)
+			assert.Equal(t, layout.Workspace, hostConfig.Mounts[0].Target)
 			return container.CreateResponse{ID: "c-123"}, nil
 		})
 
@@ -885,7 +903,7 @@ func TestStartAgent_ResumeWorktreeSession(t *testing.T) {
 			assert.Equal(t, "-c", config.Cmd[1])
 			shellCmd := config.Cmd[2]
 			assert.Contains(t, shellCmd, "git worktree add .claude/worktrees/my-feature HEAD")
-			assert.Contains(t, shellCmd, "cd /work/.claude/worktrees/my-feature")
+			assert.Contains(t, shellCmd, "cd "+layout.WorktreePath("my-feature"))
 			assert.Contains(t, shellCmd, "exec claude")
 			assert.Contains(t, shellCmd, "'--dangerously-skip-permissions'")
 			assert.Contains(t, shellCmd, "'--resume'")

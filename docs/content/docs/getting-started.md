@@ -41,7 +41,8 @@ On first run, `claude-forge build` is called automatically to pull the agent,
 gateway, and GitHub MCP Docker images.
 
 An interactive session drops you into the normal Claude Code UI — the only
-difference is that it runs inside the container, sees your project at `/work`,
+difference is that it runs inside the container, sees your project at
+`/home/user/work`,
 and reaches GitHub through the gateway.
 
 ## Next Steps

@@ -14,6 +14,7 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/michael-freling/claude-forge/internal/forge/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -93,6 +94,38 @@ func TestStart_Success(t *testing.T) {
 	assert.Contains(t, sess.AgentName, "forge-agent-")
 	assert.Contains(t, sess.GatewayName, "forge-gateway-")
 	assert.Contains(t, sess.NetworkName, "forge_net_")
+}
+
+func TestStart_WritesContainerMemory(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-123")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+
+	memoryFile := filepath.Join(homeDir, ".config", "claude-forge", claudecode.ContainerMemoryFile)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Equal(t, memoryFile, opts.ContainerMemoryFile,
+				"the agent must be given the generated container CLAUDE.md to mount")
+			return "agent-id", nil
+		})
+
+	_, err := orch.Start(context.Background(), StartOptions{ProjectDir: projectDir})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(memoryFile)
+	require.NoError(t, err)
+	assert.Equal(t, claudecode.DefaultContainerMemory(), string(data))
 }
 
 func TestStart_ImagePull(t *testing.T) {
@@ -603,7 +636,7 @@ func TestStart_Resume_WithName_NoSessionID(t *testing.T) {
 
 	_, err := orch.Start(context.Background(), StartOptions{
 		ResumeID:     "abc12345",
-		ResumeSubdir: "-work",
+		ResumeSubdir: layout.SessionSubdir,
 		Name:         "claude",
 		ProjectDir:   projectDir,
 	})
@@ -628,14 +661,14 @@ func TestStart_ResumeSession(t *testing.T) {
 	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Contains(t, opts.Cmd, "--resume")
-			assert.Contains(t, opts.Cmd, "/home/user/.claude/projects/-work/abc12345.jsonl")
+			assert.Contains(t, opts.Cmd, layout.ProjectsDir+"/"+layout.SessionSubdir+"/abc12345.jsonl")
 			assert.NotContains(t, opts.Cmd, "--continue")
 			return "agent-id", nil
 		})
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		ResumeID:     "abc12345",
-		ResumeSubdir: "-work",
+		ResumeSubdir: layout.SessionSubdir,
 		ProjectDir:   projectDir,
 	})
 
@@ -694,14 +727,14 @@ func TestStart_ResumeWorktreeSession(t *testing.T) {
 		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
 			assert.Contains(t, opts.Cmd, "--worktree")
 			assert.Contains(t, opts.Cmd, "--resume")
-			assert.Contains(t, opts.Cmd, "/home/user/.claude/projects/-work--claude-worktrees-my-feature/wt123456.jsonl")
+			assert.Contains(t, opts.Cmd, layout.ProjectsDir+"/"+layout.WorktreeSubdirPrefix+"my-feature/wt123456.jsonl")
 			return "agent-id", nil
 		})
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		Worktree:           true,
 		ResumeID:           "wt123456",
-		ResumeSubdir:       "-work--claude-worktrees-my-feature",
+		ResumeSubdir:       layout.WorktreeSubdirPrefix + "my-feature",
 		ResumeWorktreeName: "my-feature",
 		ProjectDir:         projectDir,
 	})
@@ -735,7 +768,7 @@ func TestStart_ResumeNonWorktreeSession_NoWorktreeFlag(t *testing.T) {
 	sess, err := orch.Start(context.Background(), StartOptions{
 		Worktree:     false,
 		ResumeID:     "abc12345",
-		ResumeSubdir: "-work",
+		ResumeSubdir: layout.SessionSubdir,
 		ProjectDir:   projectDir,
 	})
 

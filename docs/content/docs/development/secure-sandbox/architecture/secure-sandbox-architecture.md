@@ -188,7 +188,7 @@ The `~/.claude/.credentials.json` file is bind-mounted (read-write) into the con
 
 | Host path | Container path | Mode | Purpose |
 |---|---|---|---|
-| Project dir | `/work` | `rw` | Workspace |
+| Project dir | `/home/user/work` | `rw` | Workspace (also the agent's working directory; see `internal/forge/layout`) |
 | `~/.claude-forge/<project-id>/` | `/home/user/.claude/projects/` | `rw` | Per-project session history and memory (covers both `-work/` and any `-work-.claude-worktrees-<name>/` buckets Claude Code creates) |
 | `~/CLAUDE.md` | `/home/user/CLAUDE.md` | `ro` | User-level instructions (if exists) |
 | `~/.claude/CLAUDE.md` | `/home/user/.claude/CLAUDE.md` | `ro` | User-level instructions (if exists) |
@@ -199,6 +199,16 @@ The `~/.claude/.credentials.json` file is bind-mounted (read-write) into the con
 | `~/.claude/plugins/` | `/home/user/.claude/plugins/` | `ro` | User-level Claude Code plugins (if exists) |
 | `~/.config/claude-forge/settings.json` | `/home/user/.claude/settings.json` | `ro` | Claude Code config (if exists) |
 | `~/.config/claude-forge/gitconfig` | `/home/user/.gitconfig` | `ro` | Git config (user identity + proxy routing + `worktree.useRelativePaths`) |
+| `~/.config/claude-forge/container-CLAUDE.md` | `/etc/claude-code/CLAUDE.md` | `ro` | Forge-managed instructions: the session runs in a container, paths are named relative to the workspace, and GitHub is reached through the gateway |
+
+`/etc/claude-code` is Claude Code's managed-settings directory on Linux, and the
+`CLAUDE.md` there is loaded as managed memory on every run — ahead of user and
+project memory. It is the only injection point above the workspace that works:
+Claude Code's project-memory search walks up from the working directory only
+while the directory differs from the filesystem root, so `/CLAUDE.md` is never
+read (and `/home/user/CLAUDE.md`, a legacy location, is not part of the
+hierarchy either — current versions read user memory from
+`/home/user/.claude/CLAUDE.md`).
 
 ### Environment Variables
 
@@ -331,18 +341,20 @@ Normalized to `owner=michael-freling`, `repo=claude-forge`. Passed to gateway at
 ```
 ~/.claude-forge/
 └── <project-id>/                 ← mangled host project path
-    ├── -work/                    ← Claude Code's bucket for cwd=/work
+    ├── -home-user-work/          ← Claude Code's bucket for cwd=/home/user/work
     │   ├── <session-id>.jsonl    ← conversation transcript
     │   └── memory/
     │       ├── MEMORY.md         ← auto memory
     │       └── *.md              ← topic files
-    └── -work-.claude-worktrees-<name>/   ← bucket for each --worktree cwd
-        └── <session-id>.jsonl
+    ├── -home-user-work--claude-worktrees-<name>/   ← bucket for each --worktree cwd
+    │   └── <session-id>.jsonl
+    └── -work/                    ← bucket from before the workspace moved
+        └── <session-id>.jsonl      under /home/user (still listed by `list`)
 ```
 
 `<project-id>` on the host is the mangled absolute path of the project on the host (e.g. `-home-user-foo`), which gives each project its own session directory.
 
-The host path `~/.claude-forge/<project-id>/` is mounted into the container at `/home/user/.claude/projects/` (the parent). Claude Code in the container writes session files under a subdirectory derived from its cwd — `-work/` for the main workspace and `-work-.claude-worktrees-<name>/` for each worktree — so all of those buckets persist to the host through a single bind mount.
+The host path `~/.claude-forge/<project-id>/` is mounted into the container at `/home/user/.claude/projects/` (the parent). Claude Code in the container writes session files under a subdirectory derived from its cwd — `-home-user-work/` for the main workspace and `-home-user-work--claude-worktrees-<name>/` for each worktree (every `/` and `.` becomes `-`) — so all of those buckets persist to the host through a single bind mount. Sessions recorded while the workspace was mounted at `/work` keep their old bucket and are still listed.
 
 ### Session Listing for `resume`
 
@@ -405,7 +417,7 @@ Mounted as `/home/user/.gitconfig`. Contains user identity and proxy routing for
 
 `claude-forge start --worktree` passes `--worktree` to Claude Code inside the container. Claude Code handles everything:
 
-1. Creates a worktree at `/work/.claude/worktrees/<name>/` (which is on the host filesystem via bind mount).
+1. Creates a worktree at `/home/user/work/.claude/worktrees/<name>/` (which is on the host filesystem via bind mount).
 2. Works in the worktree — isolated from the main branch.
 3. On interactive exit: auto-removes worktree if no uncommitted changes.
 
@@ -490,7 +502,7 @@ RUN ln -sf /home/user/.local/bin/claude /usr/local/bin/claude
 COPY forge-gh /usr/local/bin/forge-gh
 RUN ln -s /usr/local/bin/forge-gh /usr/local/bin/gh
 USER user
-WORKDIR /work
+WORKDIR /home/user/work
 ENTRYPOINT ["claude"]
 ```
 

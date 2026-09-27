@@ -98,6 +98,25 @@ for the first-party Kubernetes MCP server, and
 [Google Cloud]({{< relref "/docs/mcp-servers/gcp" >}}) for the read-only Google
 Cloud MCP server (both configured under `mcp_servers`).
 
+## Generated files
+
+Alongside `config.yaml`, `claude-forge` writes these into
+`~/.config/claude-forge/` and mounts them into the session:
+
+| File | Mounted at | Regenerated each session |
+|---|---|---|
+| `settings.json` | `/home/user/.claude/settings.json` | MCP server list only |
+| `.claude.json` | `/home/user/.claude.json` | MCP server list only |
+| `gitconfig` | `/home/user/.gitconfig` | yes |
+| `container-CLAUDE.md` | `/etc/claude-code/CLAUDE.md` | yes |
+
+`container-CLAUDE.md` holds the instructions that tell the session it runs in a
+container, how to name paths relative to `/home/user/work`, and how to reach
+GitHub through the gateway; see
+[How It Works]({{< relref "/docs/how-it-works" >}}#container-instructions).
+Because it is regenerated, put your own instructions in the project's
+`CLAUDE.md` or in `~/.claude/rules/` on the host instead.
+
 ## Authentication
 
 Claude Code credentials are not part of `config.yaml` — `claude-forge` detects

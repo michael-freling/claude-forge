@@ -60,6 +60,10 @@ COPY claude-forge /usr/local/bin/claude-forge
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-WORKDIR /work
+# The host project is bind-mounted here (see internal/forge/layout). Created in
+# the image so a run without the mount still has a writable working directory.
+RUN mkdir -p /home/user/work && chown user:user /home/user/work
+
+WORKDIR /home/user/work
 ENTRYPOINT ["entrypoint.sh"]
 CMD ["claude"]
