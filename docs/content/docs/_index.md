@@ -14,7 +14,7 @@ every step (`--dangerously-skip-permissions`) — but granting that on your host
 means an autonomous agent with your credentials and your filesystem.
 claude-forge resolves that tension with containers:
 
-- The agent only sees the **project you mount** at `/work`, never your host
+- The agent only sees the **project you mount** at `/home/user/work`, never your host
   filesystem, host Docker daemon, or unrelated credentials.
 - All git and GitHub API traffic flows through a **gateway proxy** that lets
   the agent read any repository but write only to the current project's — a

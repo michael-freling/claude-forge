@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -168,10 +170,10 @@ Reply with the raw command outputs only, no other text.`
 	}
 
 	// Step 8: Verify the session JSONL was persisted to the host so
-	// `claude-forge list` can find it. Claude Code in the container
-	// (cwd=/work) writes sessions under the encoded path -work/.
+	// `claude-forge list` can find it. Claude Code in the container writes
+	// sessions under the bucket encoding its cwd (layout.SessionSubdir).
 	projectID := strings.ReplaceAll(projectRoot, "/", "-")
-	hostSessionDir := filepath.Join(tempHome, ".claude-forge", projectID, "-work")
+	hostSessionDir := filepath.Join(tempHome, ".claude-forge", projectID, layout.SessionSubdir)
 	entries, err := os.ReadDir(hostSessionDir)
 	require.NoError(t, err, "expected session dir %s to exist on host", hostSessionDir)
 
@@ -417,6 +419,97 @@ docker run --rm hello-world
 	assert.NotContains(t, logs, "alpine", "inner daemon must not see host containers:\n%s", logs)
 }
 
+// TestAgentContainerCLAUDEMD verifies that the forge-managed container
+// instructions actually reach Claude Code inside the agent image: the mount
+// target is created and readable by the mapped non-root user, the file cannot
+// be edited from inside, and Claude Code loads it as memory.
+//
+// The failure mode this guards against is silent. Claude Code discovers project
+// memory by walking up from the cwd only while the directory differs from the
+// filesystem root, so a file at /CLAUDE.md is never read — mounted at the wrong
+// path, the instructions are simply ignored and nothing errors. Unit tests
+// assert the mount; only a real run of the image proves it is loaded.
+func TestAgentContainerCLAUDEMD(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	projectRoot := findProjectRoot(t)
+
+	// Build the agent binary and image (the image COPYs the binary).
+	agentBinaryPath := filepath.Join(projectRoot, "docker", "agent", "claude-forge")
+	buildAgentBinary := exec.Command("go", "build", "-o", agentBinaryPath, "./cmd/claude-forge/")
+	buildAgentBinary.Dir = projectRoot
+	buildAgentBinary.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
+	out, err := buildAgentBinary.CombinedOutput()
+	require.NoError(t, err, "failed to build agent binary: %s", out)
+	t.Cleanup(func() { os.Remove(agentBinaryPath) })
+
+	agentImageName := "forge-e2e-agent-claudemd"
+	buildAgent := exec.CommandContext(ctx, "docker", "build", "-t", agentImageName, "docker/agent/")
+	buildAgent.Dir = projectRoot
+	out, err = buildAgent.CombinedOutput()
+	require.NoError(t, err, "failed to build agent image: %s", out)
+
+	// Generate the file exactly as the orchestrator does.
+	memoryFile, err := claudecode.WriteContainerMemory(t.TempDir())
+	require.NoError(t, err)
+	workDir := t.TempDir()
+
+	mountArgs := []string{
+		"-v", memoryFile + ":" + claudecode.ContainerMemoryTarget + ":ro",
+		"-v", workDir + ":" + layout.Workspace,
+		"-w", layout.Workspace,
+		"-e", "FORGE_UID=1000",
+		"-e", "FORGE_GID=1000",
+		"-e", "DISABLE_AUTOUPDATER=1",
+	}
+
+	// Structural check (no credentials needed): Docker creates the target path,
+	// the mapped non-root user can read it, and the agent cannot rewrite its own
+	// instructions.
+	script := `set -e
+test -r ` + claudecode.ContainerMemoryTarget + ` && echo READABLE
+if echo tampered >> ` + claudecode.ContainerMemoryTarget + ` 2>/dev/null; then echo WRITABLE; else echo READONLY; fi
+grep -q 'bind-mounted at' ` + claudecode.ContainerMemoryTarget + ` && echo CONTENT_OK
+`
+	args := append([]string{"run", "--rm"}, mountArgs...)
+	args = append(args, agentImageName, "bash", "-c", script)
+	out, err = exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	logs := string(out)
+	require.NoError(t, err, "container instruction check failed:\n%s", logs)
+	assert.Contains(t, logs, "READABLE", "the agent user must be able to read the instructions:\n%s", logs)
+	assert.Contains(t, logs, "READONLY", "the agent must not be able to edit its own instructions:\n%s", logs)
+	assert.Contains(t, logs, "CONTENT_OK", "mounted file does not hold the generated content:\n%s", logs)
+
+	// Behavioral check: Claude Code in the image loads the file as memory.
+	oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	if oauthToken == "" {
+		t.Skip("CLAUDE_CODE_OAUTH_TOKEN not set -- skipping the Claude Code load check")
+	}
+
+	prompt := `Reply with one word, YES or NO: does your loaded memory include a ` +
+		`section titled "Container environment (claude-forge)"?`
+	args = append([]string{"run", "--rm", "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + oauthToken}, mountArgs...)
+	args = append(args, agentImageName, "claude", "--dangerously-skip-permissions", "-p", prompt)
+	out, err = exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	logs = string(out)
+	t.Logf("claude output:\n%s", logs)
+
+	if strings.Contains(logs, "401") && strings.Contains(logs, "Invalid authentication credentials") {
+		t.Skip("CLAUDE_CODE_OAUTH_TOKEN is expired or invalid -- skipping e2e test")
+	}
+	require.NoError(t, err, "claude run failed:\n%s", logs)
+	assert.Contains(t, strings.ToUpper(logs), "YES",
+		"Claude Code did not load %s as memory:\n%s", claudecode.ContainerMemoryTarget, logs)
+}
+
 // buildForge builds the claude-forge binary and returns its path.
 func buildForge(t *testing.T) string {
 	t.Helper()
@@ -451,7 +544,7 @@ func TestResumeList_NonWorktreeSession(t *testing.T) {
 	projectID := strings.ReplaceAll(projectRoot, "/", "-")
 
 	writeTestSession(t,
-		filepath.Join(tempHome, ".claude-forge", projectID, "-work", "non-wt-session.jsonl"),
+		filepath.Join(tempHome, ".claude-forge", projectID, layout.SessionSubdir, "non-wt-session.jsonl"),
 		"2026-05-20T10:00:00Z", "regular session")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -492,11 +585,11 @@ func TestResumeList_WorktreeSession(t *testing.T) {
 	projectID := strings.ReplaceAll(projectRoot, "/", "-")
 
 	writeTestSession(t,
-		filepath.Join(tempHome, ".claude-forge", projectID, "-work", "main-session.jsonl"),
+		filepath.Join(tempHome, ".claude-forge", projectID, layout.SessionSubdir, "main-session.jsonl"),
 		"2026-05-20T10:00:00Z", "main workspace")
 
 	writeTestSession(t,
-		filepath.Join(tempHome, ".claude-forge", projectID, "-work--claude-worktrees-my-feature", "wt-session.jsonl"),
+		filepath.Join(tempHome, ".claude-forge", projectID, layout.WorktreeSubdirPrefix+"my-feature", "wt-session.jsonl"),
 		"2026-05-20T11:00:00Z", "worktree task")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -539,15 +632,15 @@ func TestResumeList_MixedSessions(t *testing.T) {
 	baseDir := filepath.Join(tempHome, ".claude-forge", projectID)
 
 	writeTestSession(t,
-		filepath.Join(baseDir, "-work", "session-a.jsonl"),
+		filepath.Join(baseDir, layout.SessionSubdir, "session-a.jsonl"),
 		"2026-05-20T09:00:00Z", "main work")
 
 	writeTestSession(t,
-		filepath.Join(baseDir, "-work--claude-worktrees-feature-auth", "session-b.jsonl"),
+		filepath.Join(baseDir, layout.WorktreeSubdirPrefix+"feature-auth", "session-b.jsonl"),
 		"2026-05-20T10:00:00Z", "auth feature")
 
 	writeTestSession(t,
-		filepath.Join(baseDir, "-work--claude-worktrees-bugfix-login", "session-c.jsonl"),
+		filepath.Join(baseDir, layout.WorktreeSubdirPrefix+"bugfix-login", "session-c.jsonl"),
 		"2026-05-20T11:00:00Z", "login bugfix")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,7 +68,7 @@ func TestBuildContainerConfig_FullOptions(t *testing.T) {
 
 	// Verify project dir mount
 	assert.Equal(t, projectDir, cfg.Mounts[0].Source)
-	assert.Equal(t, "/work", cfg.Mounts[0].Target)
+	assert.Equal(t, layout.Workspace, cfg.Mounts[0].Target)
 	assert.False(t, cfg.Mounts[0].ReadOnly)
 
 	// Verify session dir mount
@@ -131,7 +132,7 @@ func TestBuildContainerConfig_MinimalOptions(t *testing.T) {
 	// Only the required project dir mount
 	assert.Len(t, cfg.Mounts, 1)
 	assert.Equal(t, projectDir, cfg.Mounts[0].Source)
-	assert.Equal(t, "/work", cfg.Mounts[0].Target)
+	assert.Equal(t, layout.Workspace, cfg.Mounts[0].Target)
 
 	// No command args (SkipPermissions is false by default)
 	assert.Empty(t, cfg.Cmd)
@@ -323,7 +324,7 @@ func TestBuildContainerConfig_ConditionalMounts(t *testing.T) {
 
 	// project dir + home CLAUDE.md + rules = 3
 	assert.Len(t, cfg.Mounts, 3)
-	assert.Equal(t, "/work", cfg.Mounts[0].Target)
+	assert.Equal(t, layout.Workspace, cfg.Mounts[0].Target)
 	assert.Equal(t, "/home/user/CLAUDE.md", cfg.Mounts[1].Target)
 	assert.Equal(t, "/home/user/.claude/rules/", cfg.Mounts[2].Target)
 }
@@ -552,11 +553,102 @@ func TestEnsureUserConfig(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to create config directory")
 	})
 
-	t.Run("skips if file already exists", func(t *testing.T) {
+	t.Run("keeps existing settings and marks the workspace trusted", func(t *testing.T) {
 		homeDir := t.TempDir()
 		configDir := t.TempDir()
 
-		existing := `{"theme": "custom"}`
+		// A config written before the workspace moved: it only trusts the old
+		// path, so every session would face the trust dialog.
+		existing := `{"theme": "custom", "projects": {"/work": {"hasTrustDialogAccepted": true}}}`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		err := EnsureUserConfig(configDir, homeDir)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(data, &parsed))
+		assert.Equal(t, "custom", parsed["theme"], "existing settings must survive")
+
+		projects := parsed["projects"].(map[string]any)
+		workspace := projects[layout.Workspace].(map[string]any)
+		assert.Equal(t, true, workspace["hasTrustDialogAccepted"])
+		assert.Contains(t, projects, "/work", "unrelated project entries must survive")
+	})
+
+	t.Run("leaves an already-trusted file untouched", func(t *testing.T) {
+		homeDir := t.TempDir()
+		configDir := t.TempDir()
+
+		existing := `{"theme":"custom","projects":{"` + layout.Workspace + `":{"hasTrustDialogAccepted":true}}}`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		err := EnsureUserConfig(configDir, homeDir)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+		assert.Equal(t, existing, string(data), "no rewrite when nothing changes")
+	})
+
+	t.Run("leaves an unparseable file untouched", func(t *testing.T) {
+		homeDir := t.TempDir()
+		configDir := t.TempDir()
+
+		existing := `{invalid`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		err := EnsureUserConfig(configDir, homeDir)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+		assert.Equal(t, existing, string(data),
+			"Claude Code owns this file at runtime; a rewrite would discard its state")
+	})
+
+	t.Run("replaces a non-object projects value", func(t *testing.T) {
+		homeDir := t.TempDir()
+		configDir := t.TempDir()
+
+		existing := `{"projects": "not-an-object"}`
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
+
+		err := EnsureUserConfig(configDir, homeDir)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
+		require.NoError(t, err)
+
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(data, &parsed))
+		projects := parsed["projects"].(map[string]any)
+		workspace := projects[layout.Workspace].(map[string]any)
+		assert.Equal(t, true, workspace["hasTrustDialogAccepted"])
+	})
+
+	t.Run("write error while marking the workspace trusted", func(t *testing.T) {
+		homeDir := t.TempDir()
+		configDir := t.TempDir()
+
+		configPath := filepath.Join(configDir, ".claude.json")
+		require.NoError(t, os.WriteFile(configPath, []byte(`{"theme":"custom"}`), 0o444))
+		t.Cleanup(func() { os.Chmod(configPath, 0o644) })
+
+		err := EnsureUserConfig(configDir, homeDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to write .claude.json")
+	})
+
+	t.Run("leaves a null file untouched", func(t *testing.T) {
+		homeDir := t.TempDir()
+		configDir := t.TempDir()
+
+		// "null" unmarshals into a nil map without error, so a naive write would
+		// panic instead of treating the file as unusable.
+		existing := `null`
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(existing), 0o644))
 
 		err := EnsureUserConfig(configDir, homeDir)
@@ -565,6 +657,18 @@ func TestEnsureUserConfig(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join(configDir, ".claude.json"))
 		require.NoError(t, err)
 		assert.Equal(t, existing, string(data))
+	})
+
+	t.Run("read error on existing file", func(t *testing.T) {
+		homeDir := t.TempDir()
+		configDir := t.TempDir()
+
+		// A directory where the file is expected: it exists, but cannot be read.
+		require.NoError(t, os.Mkdir(filepath.Join(configDir, ".claude.json"), 0o755))
+
+		err := EnsureUserConfig(configDir, homeDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to read .claude.json")
 	})
 }
 
@@ -837,7 +941,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
   "hasCompletedOnboarding": true,
   "theme": "dark",
   "projects": {
-    "/work": {
+    "/home/user/work": {
       "hasTrustDialogAccepted": true
     }
   }
@@ -863,7 +967,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
 		assert.Equal(t, "dark", config["theme"])
 
 		projects := config["projects"].(map[string]any)
-		workProject := projects["/work"].(map[string]any)
+		workProject := projects[layout.Workspace].(map[string]any)
 		assert.Equal(t, true, workProject["hasTrustDialogAccepted"])
 
 		mcpServers := workProject["mcpServers"].(map[string]any)
@@ -890,7 +994,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &config))
 
 		projects := config["projects"].(map[string]any)
-		workProject := projects["/work"].(map[string]any)
+		workProject := projects[layout.Workspace].(map[string]any)
 		mcpServers := workProject["mcpServers"].(map[string]any)
 		k8s := mcpServers["kubernetes"].(map[string]any)
 		// Must be "http" in .claude.json, not "url" as in settings.json
@@ -906,7 +1010,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
   "theme": "light-daltonized",
   "numStartups": 42,
   "projects": {
-    "/work": {
+    "/home/user/work": {
       "hasTrustDialogAccepted": true,
       "customField": "preserved"
     }
@@ -933,7 +1037,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
 		assert.Equal(t, float64(42), config["numStartups"])
 
 		projects := config["projects"].(map[string]any)
-		workProject := projects["/work"].(map[string]any)
+		workProject := projects[layout.Workspace].(map[string]any)
 		assert.Equal(t, true, workProject["hasTrustDialogAccepted"])
 		assert.Equal(t, "preserved", workProject["customField"])
 	})
@@ -944,7 +1048,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
 		existing := `{
   "hasCompletedOnboarding": true,
   "projects": {
-    "/work": {
+    "/home/user/work": {
       "hasTrustDialogAccepted": true,
       "mcpServers": {
         "github": {"type": "http", "url": "http://github-mcp:8083/mcp"}
@@ -965,7 +1069,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &config))
 
 		projects := config["projects"].(map[string]any)
-		workProject := projects["/work"].(map[string]any)
+		workProject := projects[layout.Workspace].(map[string]any)
 		_, hasMCP := workProject["mcpServers"]
 		assert.False(t, hasMCP, "mcpServers should be removed when called with empty map")
 		assert.Equal(t, true, workProject["hasTrustDialogAccepted"])
@@ -989,7 +1093,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &config))
 
 		projects := config["projects"].(map[string]any)
-		workProject := projects["/work"].(map[string]any)
+		workProject := projects[layout.Workspace].(map[string]any)
 		mcpServers := workProject["mcpServers"].(map[string]any)
 		assert.Len(t, mcpServers, 2)
 
@@ -1020,7 +1124,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
 
 		existing := `{
   "projects": {
-    "/work": {
+    "/home/user/work": {
       "mcpServers": {
         "old-server": {"type": "http", "url": "http://old:1111/mcp"}
       }
@@ -1044,7 +1148,7 @@ func TestRegisterProjectMCPServers(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &config))
 
 		projects := config["projects"].(map[string]any)
-		workProject := projects["/work"].(map[string]any)
+		workProject := projects[layout.Workspace].(map[string]any)
 		mcpServers := workProject["mcpServers"].(map[string]any)
 
 		_, hasOld := mcpServers["old-server"]
@@ -1229,6 +1333,45 @@ func TestUpdateMCPServers(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to parse settings.json")
 	})
+}
+
+func TestUpdateMCPServers_NullSettingsFile(t *testing.T) {
+	configDir := t.TempDir()
+	settingsPath := filepath.Join(configDir, "settings.json")
+	require.NoError(t, os.WriteFile(settingsPath, []byte("null"), 0o644))
+
+	// "null" unmarshals into a nil map without error; writing into it would panic.
+	err := UpdateMCPServers(configDir, map[string]MCPServerConfig{
+		"example": {Type: "http", URL: "https://mcp.example.com"},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(settingsPath)
+	require.NoError(t, err)
+
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	assert.Contains(t, settings["mcpServers"], "example")
+}
+
+func TestRegisterProjectMCPServers_NullConfigFile(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, ".claude.json")
+	require.NoError(t, os.WriteFile(configPath, []byte("null"), 0o644))
+
+	err := RegisterProjectMCPServers(configDir, map[string]MCPServerConfig{
+		"example": {Type: "http", URL: "https://mcp.example.com"},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	var config map[string]any
+	require.NoError(t, json.Unmarshal(data, &config))
+	projects := config["projects"].(map[string]any)
+	workspace := projects[layout.Workspace].(map[string]any)
+	assert.Contains(t, workspace["mcpServers"], "example")
 }
 
 func TestMCPServerConfig_settingsMap(t *testing.T) {

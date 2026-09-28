@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 )
 
 // ContainerConfig holds all Claude Code configuration needed for the agent container.
@@ -149,7 +151,7 @@ func buildMounts(opts Options) []MountConfig {
 	mounts := []MountConfig{
 		{
 			Source: opts.ProjectDir,
-			Target: "/work",
+			Target: layout.Workspace,
 		},
 	}
 
@@ -157,7 +159,7 @@ func buildMounts(opts Options) []MountConfig {
 	if opts.SessionDir != "" && pathExists(opts.SessionDir) {
 		mounts = append(mounts, MountConfig{
 			Source: opts.SessionDir,
-			Target: "/home/user/.claude/projects/" + opts.ProjectID + "/",
+			Target: layout.ProjectsDir + "/" + opts.ProjectID + "/",
 		})
 	}
 
@@ -245,8 +247,9 @@ func buildMounts(opts Options) []MountConfig {
 //
 // worktree.useRelativePaths makes git worktree add (including the one Claude
 // Code runs for --worktree) emit a .git file whose gitdir is relative — so the
-// worktree resolves correctly both at /work in the container and at the host
-// project path. Requires git 2.48+ in the agent image.
+// worktree resolves correctly both at the container workspace
+// (layout.Workspace) and at the host project path. Requires git 2.48+ in the
+// agent image.
 func generateGitconfig(opts Options) string {
 	return fmt.Sprintf(`[url "http://gateway:8080/github.com/"]
     insteadOf = https://github.com/
@@ -306,6 +309,10 @@ func EnsureSettings(configDir string) error {
 // EnsureUserConfig writes .claude.json to the config directory if it doesn't exist.
 // It reads the theme from the host's ~/.claude.json so the container matches the user's preference.
 // This is mounted into the container at ~/.claude.json to skip onboarding.
+//
+// An existing file is kept as the user left it, except that the workspace is
+// marked trusted: a config written before the workspace moved only trusts the
+// old path, which would put the trust dialog in front of every session.
 func EnsureUserConfig(configDir, homeDir string) error {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
@@ -313,7 +320,7 @@ func EnsureUserConfig(configDir, homeDir string) error {
 
 	configPath := filepath.Join(configDir, ".claude.json")
 	if pathExists(configPath) {
-		return nil
+		return ensureWorkspaceTrusted(configPath)
 	}
 
 	theme := readHostTheme(homeDir)
@@ -322,7 +329,7 @@ func EnsureUserConfig(configDir, homeDir string) error {
 		"hasCompletedOnboarding": true,
 		"theme":                  theme,
 		"projects": map[string]any{
-			"/work": map[string]any{
+			layout.Workspace: map[string]any{
 				"hasTrustDialogAccepted": true,
 			},
 		},
@@ -336,6 +343,49 @@ func EnsureUserConfig(configDir, homeDir string) error {
 		return fmt.Errorf("failed to write .claude.json: %w", err)
 	}
 
+	return nil
+}
+
+// ensureWorkspaceTrusted marks the workspace trusted in an existing
+// .claude.json, leaving every other setting alone. It rewrites the file only
+// when something actually changed. An unparseable file is left untouched:
+// Claude Code owns it at runtime, and a rewrite would discard its state.
+func ensureWorkspaceTrusted(configPath string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read .claude.json: %w", err)
+	}
+
+	// A file holding the JSON literal null unmarshals without error but leaves
+	// config nil, so it gets the same treatment as an unparseable one rather
+	// than a panic on the first write.
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil || config == nil {
+		return nil
+	}
+
+	projects, ok := config["projects"].(map[string]any)
+	if !ok {
+		projects = make(map[string]any)
+		config["projects"] = projects
+	}
+	workspace, ok := projects[layout.Workspace].(map[string]any)
+	if !ok {
+		workspace = make(map[string]any)
+		projects[layout.Workspace] = workspace
+	}
+	if trusted, _ := workspace["hasTrustDialogAccepted"].(bool); trusted {
+		return nil
+	}
+	workspace["hasTrustDialogAccepted"] = true
+
+	out, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal .claude.json: %w", err)
+	}
+	if err := os.WriteFile(configPath, append(out, '\n'), 0o644); err != nil {
+		return fmt.Errorf("failed to write .claude.json: %w", err)
+	}
 	return nil
 }
 
@@ -497,6 +547,10 @@ func UpdateMCPServers(configDir string, servers map[string]MCPServerConfig) erro
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return fmt.Errorf("failed to parse settings.json: %w", err)
 	}
+	// A JSON null unmarshals into a nil map, which would panic on write below.
+	if settings == nil {
+		settings = make(map[string]any)
+	}
 
 	mcpServers := make(map[string]any, len(servers))
 	for name, cfg := range servers {
@@ -512,7 +566,7 @@ func UpdateMCPServers(configDir string, servers map[string]MCPServerConfig) erro
 }
 
 // RegisterProjectMCPServers updates .claude.json to register MCP servers
-// under the /work project entry. Claude Code requires this registration
+// under the workspace project entry. Claude Code requires this registration
 // in addition to the settings.json mcpServers entry.
 func RegisterProjectMCPServers(configDir string, servers map[string]MCPServerConfig) error {
 	configPath := filepath.Join(configDir, ".claude.json")
@@ -528,17 +582,21 @@ func RegisterProjectMCPServers(configDir string, servers map[string]MCPServerCon
 	if err := json.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("failed to parse .claude.json: %w", err)
 	}
+	// A JSON null unmarshals into a nil map, which would panic on write below.
+	if config == nil {
+		config = make(map[string]any)
+	}
 
-	// Navigate to or create projects["/work"]
+	// Navigate to or create projects[layout.Workspace]
 	projects, ok := config["projects"].(map[string]any)
 	if !ok {
 		projects = make(map[string]any)
 		config["projects"] = projects
 	}
-	workProject, ok := projects["/work"].(map[string]any)
+	workProject, ok := projects[layout.Workspace].(map[string]any)
 	if !ok {
 		workProject = make(map[string]any)
-		projects["/work"] = workProject
+		projects[layout.Workspace] = workProject
 	}
 
 	if len(servers) == 0 {

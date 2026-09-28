@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 )
 
 //go:generate mockgen -destination=mock_docker_test.go -package=container github.com/michael-freling/claude-forge/internal/forge/container DockerAPI
@@ -276,7 +277,7 @@ type AgentOptions struct {
 	Name               string            // container name: forge-agent-<project-id>-<session-id>
 	Image              string            // agent image
 	NetworkName        string            // Docker network to attach to
-	ProjectDir         string            // host path to project (mounted at /work)
+	ProjectDir         string            // host path to project (mounted at layout.Workspace)
 	SessionDir         string            // host path to session storage
 	ClaudeDir          string            // host path to ~/.claude/
 	ConfigDir          string            // host path to ~/.config/claude-forge/
@@ -293,6 +294,11 @@ type AgentOptions struct {
 	ExtraMounts        []CacheDir          // additional user-specified bind mounts (rw)
 	ResumeWorktreeName string              // worktree name when resuming a worktree session
 	ExtraNetworks      []NetworkAttachment // additional networks to connect before starting
+	// ContainerMemoryFile is the host path to the forge-managed CLAUDE.md that
+	// tells the agent it runs in a container, how to name workspace paths, and
+	// how to reach GitHub through the gateway (written by
+	// claudecode.WriteContainerMemory). Empty skips the mount.
+	ContainerMemoryFile string
 }
 
 // StartAgent creates and starts an agent container.
@@ -308,23 +314,27 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		env = append(env, fmt.Sprintf("FORGE_GID=%d", opts.GID))
 	}
 
+	// The entrypoint needs the workspace path to keep its ownership fixup out of
+	// the bind-mounted project tree.
+	env = append(env, "FORGE_WORKSPACE="+layout.Workspace)
+
 	mounts := []mount.Mount{
 		{
 			Type:   mount.TypeBind,
 			Source: opts.ProjectDir,
-			Target: "/work",
+			Target: layout.Workspace,
 		},
 	}
 
 	// Session directory mount.
-	// Mounted at the projects parent so Claude Code's session JSONL files for both
-	// the main /work cwd (encoded as -work) and any worktree cwd (encoded as
-	// -work--claude-worktrees-<name>) persist to the host.
+	// Mounted at the projects parent so Claude Code's session JSONL files for
+	// both the workspace cwd (bucket layout.SessionSubdir) and any worktree cwd
+	// (bucket layout.WorktreeSubdirPrefix + name) persist to the host.
 	if opts.SessionDir != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: opts.SessionDir,
-			Target: "/home/user/.claude/projects",
+			Target: layout.ProjectsDir,
 		})
 	}
 
@@ -387,6 +397,18 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		})
 	}
 
+	// Forge-managed container instructions (read-only): mounted at Claude Code's
+	// managed-memory path, so every session is told it runs in a container, how
+	// to name workspace paths, and how to reach GitHub through the gateway.
+	if opts.ContainerMemoryFile != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   opts.ContainerMemoryFile,
+			Target:   layout.ManagedMemory,
+			ReadOnly: true,
+		})
+	}
+
 	// Home CLAUDE.md mount (read-only) — skip if file doesn't exist or is a broken symlink
 	if opts.HomeDir != "" {
 		claudeMDSource := filepath.Join(opts.HomeDir, "CLAUDE.md")
@@ -431,15 +453,17 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 
 	var cmd []string
 	if opts.ResumeWorktreeName != "" {
-		wtPath := ".claude/worktrees/" + opts.ResumeWorktreeName
+		// git worktree add takes the path relative to the workspace (the cwd);
+		// the cd target is the same worktree spelled absolutely.
+		wtRelPath := layout.WorktreesSubdir + "/" + opts.ResumeWorktreeName
 		var quotedArgs []string
 		for _, arg := range opts.Cmd {
 			quotedArgs = append(quotedArgs, "'"+arg+"'")
 		}
 		claudeArgs := strings.Join(quotedArgs, " ")
 		shellCmd := fmt.Sprintf(
-			"git worktree add %s HEAD 2>/dev/null || true && cd /work/%s && exec claude %s",
-			wtPath, wtPath, claudeArgs,
+			"git worktree add %s HEAD 2>/dev/null || true && cd %s && exec claude %s",
+			wtRelPath, layout.WorktreePath(opts.ResumeWorktreeName), claudeArgs,
 		)
 		cmd = []string{"bash", "-c", shellCmd}
 	} else {
@@ -450,7 +474,7 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		Image:      opts.Image,
 		Env:        env,
 		Cmd:        cmd,
-		WorkingDir: "/work",
+		WorkingDir: layout.Workspace,
 		Tty:        opts.Interactive,
 		OpenStdin:  opts.Interactive,
 	}

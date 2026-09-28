@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -95,7 +96,7 @@ func TestReadMetadata_MissingOrInvalid(t *testing.T) {
 func TestList_PopulatesNameFromSidecar(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	workDir := filepath.Join(tmpDir, "-work")
+	workDir := filepath.Join(tmpDir, layout.SessionSubdir)
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "sess-1.jsonl"),
 		[]byte(`{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-05-08T14:30:01Z"}`+"\n"), 0o644))
@@ -117,12 +118,12 @@ func TestList(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "multiple sessions in -work subdir sorted by most recent first",
+			name: "multiple sessions in the workspace bucket sorted by most recent first",
 			files: map[string]string{
-				"-work/session-1.jsonl": `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"session-1"}
+				layout.SessionSubdir + "/session-1.jsonl": `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"session-1"}
 {"type":"user","message":{"role":"user","content":"Hello world"},"timestamp":"2026-05-08T14:30:01Z"}
 {"type":"assistant","message":{"role":"assistant","content":"Hi there"},"timestamp":"2026-05-08T14:30:02Z"}`,
-				"-work/session-2.jsonl": `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"session-2"}
+				layout.SessionSubdir + "/session-2.jsonl": `{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"session-2"}
 {"type":"user","message":{"role":"user","content":"Fix the bug"},"timestamp":"2026-05-09T10:00:01Z"}`,
 			},
 			want: []Session{
@@ -130,34 +131,34 @@ func TestList(t *testing.T) {
 					ID:        "session-2",
 					CreatedAt: time.Date(2026, 5, 9, 10, 0, 1, 0, time.UTC),
 					FirstMsg:  "Fix the bug",
-					Subdir:    "-work",
+					Subdir:    layout.SessionSubdir,
 				},
 				{
 					ID:        "session-1",
 					CreatedAt: time.Date(2026, 5, 8, 14, 30, 1, 0, time.UTC),
 					FirstMsg:  "Hello world",
-					Subdir:    "-work",
+					Subdir:    layout.SessionSubdir,
 				},
 			},
 		},
 		{
 			name: "sessions from worktree subdirs are also surfaced",
 			files: map[string]string{
-				"-work/main.jsonl":                         `{"type":"user","message":{"role":"user","content":"main work"},"timestamp":"2026-05-08T14:30:01Z"}`,
-				"-work--claude-worktrees-feature/wt.jsonl": `{"type":"user","message":{"role":"user","content":"worktree work"},"timestamp":"2026-05-10T09:00:01Z"}`,
+				layout.SessionSubdir + "/main.jsonl":             `{"type":"user","message":{"role":"user","content":"main work"},"timestamp":"2026-05-08T14:30:01Z"}`,
+				layout.WorktreeSubdirPrefix + "feature/wt.jsonl": `{"type":"user","message":{"role":"user","content":"worktree work"},"timestamp":"2026-05-10T09:00:01Z"}`,
 			},
 			want: []Session{
 				{
 					ID:        "wt",
 					CreatedAt: time.Date(2026, 5, 10, 9, 0, 1, 0, time.UTC),
 					FirstMsg:  "worktree work",
-					Subdir:    "-work--claude-worktrees-feature",
+					Subdir:    layout.WorktreeSubdirPrefix + "feature",
 				},
 				{
 					ID:        "main",
 					CreatedAt: time.Date(2026, 5, 8, 14, 30, 1, 0, time.UTC),
 					FirstMsg:  "main work",
-					Subdir:    "-work",
+					Subdir:    layout.SessionSubdir,
 				},
 			},
 		},
@@ -255,7 +256,7 @@ func TestList(t *testing.T) {
 func TestList_PopulatesLastActiveFromMtime(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	workDir := filepath.Join(tmpDir, "-work")
+	workDir := filepath.Join(tmpDir, layout.SessionSubdir)
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
 	jsonl := filepath.Join(workDir, "sess-1.jsonl")
 	require.NoError(t, os.WriteFile(jsonl,
@@ -293,7 +294,7 @@ func TestOrphanedSidecars(t *testing.T) {
 
 	t.Run("sidecar with transcript in subdir is kept", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		workDir := filepath.Join(tmpDir, "-work")
+		workDir := filepath.Join(tmpDir, layout.SessionSubdir)
 		require.NoError(t, os.MkdirAll(workDir, 0o755))
 		// The transcript need not be parseable; its presence keeps the sidecar.
 		require.NoError(t, os.WriteFile(filepath.Join(workDir, keptID+".jsonl"), []byte("not json"), 0o644))
@@ -407,10 +408,10 @@ func TestSession_IsWorktree(t *testing.T) {
 		subdir string
 		want   bool
 	}{
-		{"-work", false},
+		{layout.SessionSubdir, false},
 		{"", false},
-		{"-work--claude-worktrees-feature", true},
-		{"-work--claude-worktrees-my-long-branch-name", true},
+		{layout.WorktreeSubdirPrefix + "feature", true},
+		{layout.WorktreeSubdirPrefix + "my-long-branch-name", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.subdir, func(t *testing.T) {
@@ -425,10 +426,12 @@ func TestSession_WorktreeName(t *testing.T) {
 		subdir string
 		want   string
 	}{
-		{"-work", ""},
+		{layout.SessionSubdir, ""},
 		{"", ""},
-		{"-work--claude-worktrees-feature", "feature"},
-		{"-work--claude-worktrees-my-long-branch-name", "my-long-branch-name"},
+		{layout.WorktreeSubdirPrefix + "feature", "feature"},
+		{layout.WorktreeSubdirPrefix + "my-long-branch-name", "my-long-branch-name"},
+		// A bare prefix with no name after it is not a worktree bucket.
+		{layout.WorktreeSubdirPrefix, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.subdir, func(t *testing.T) {
@@ -442,12 +445,12 @@ func TestFind(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create sessions in different subdirs
-	workDir := filepath.Join(tmpDir, "-work")
+	workDir := filepath.Join(tmpDir, layout.SessionSubdir)
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main-session.jsonl"),
 		[]byte(`{"type":"user","message":{"role":"user","content":"hello"},"timestamp":"2026-05-08T14:30:01Z"}`+"\n"), 0o644))
 
-	wtDir := filepath.Join(tmpDir, "-work--claude-worktrees-feature")
+	wtDir := filepath.Join(tmpDir, layout.WorktreeSubdirPrefix+"feature")
 	require.NoError(t, os.MkdirAll(wtDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "wt-session.jsonl"),
 		[]byte(`{"type":"user","message":{"role":"user","content":"worktree hello"},"timestamp":"2026-05-09T10:00:01Z"}`+"\n"), 0o644))
@@ -456,7 +459,7 @@ func TestFind(t *testing.T) {
 		sess, err := Find(tmpDir, "main-session")
 		require.NoError(t, err)
 		assert.Equal(t, "main-session", sess.ID)
-		assert.Equal(t, "-work", sess.Subdir)
+		assert.Equal(t, layout.SessionSubdir, sess.Subdir)
 		assert.False(t, sess.IsWorktree())
 		assert.Equal(t, "", sess.WorktreeName())
 	})
@@ -465,7 +468,7 @@ func TestFind(t *testing.T) {
 		sess, err := Find(tmpDir, "wt-session")
 		require.NoError(t, err)
 		assert.Equal(t, "wt-session", sess.ID)
-		assert.Equal(t, "-work--claude-worktrees-feature", sess.Subdir)
+		assert.Equal(t, layout.WorktreeSubdirPrefix+"feature", sess.Subdir)
 		assert.True(t, sess.IsWorktree())
 		assert.Equal(t, "feature", sess.WorktreeName())
 	})
@@ -482,18 +485,18 @@ func TestDelete(t *testing.T) {
 	tmp := t.TempDir()
 
 	t.Run("removes transcript and sidecar", func(t *testing.T) {
-		work := filepath.Join(tmp, "-work")
+		work := filepath.Join(tmp, layout.SessionSubdir)
 		require.NoError(t, os.MkdirAll(work, 0o755))
 		jsonl := filepath.Join(work, "s1.jsonl")
 		require.NoError(t, os.WriteFile(jsonl, []byte("{}"), 0o644))
 		require.NoError(t, WriteMetadata(tmp, "s1", Metadata{Name: "n1"}))
 
-		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: "-work"}))
+		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: layout.SessionSubdir}))
 		assert.NoFileExists(t, jsonl)
 		assert.NoFileExists(t, metadataPath(tmp, "s1"))
 
 		// Idempotent: deleting again is not an error.
-		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: "-work"}))
+		require.NoError(t, Delete(tmp, Session{ID: "s1", Subdir: layout.SessionSubdir}))
 	})
 
 	t.Run("removes legacy root transcript", func(t *testing.T) {
@@ -507,7 +510,7 @@ func TestDelete(t *testing.T) {
 func TestFind_ByName(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	workDir := filepath.Join(tmpDir, "-work")
+	workDir := filepath.Join(tmpDir, layout.SessionSubdir)
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
 
 	// Two sessions named "hello"; the more recent one should win.

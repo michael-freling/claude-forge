@@ -23,7 +23,7 @@ claude-forge start "experiment" --worktree
 claude-forge start "careful run" --no-skip-permissions
 
 # Mount additional host directories (repeatable)
-claude-forge start "with data" --mount /host/data:/work/data
+claude-forge start "with data" --mount /host/data:/home/user/work/data
 ```
 
 ## List and Resume Sessions

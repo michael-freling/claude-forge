@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/michael-freling/claude-forge/internal/forge/container"
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/michael-freling/claude-forge/internal/forge/project"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,7 +99,7 @@ func writeSession(t *testing.T, dir, id, timestamp, message, name string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, id+".jsonl"), content, 0o644))
 	// The sidecar lives one directory up from the transcript's subdir.
 	sidecarDir := filepath.Dir(dir)
-	if filepath.Base(dir) == "-work" || strings.HasPrefix(filepath.Base(dir), "-work--") {
+	if base := filepath.Base(dir); base == layout.SessionSubdir || strings.HasPrefix(base, layout.WorktreeSubdirPrefix) {
 		require.NoError(t, os.WriteFile(filepath.Join(sidecarDir, id+".json"),
 			[]byte(fmt.Sprintf(`{"name":%q}`, name)), 0o644))
 	}
@@ -178,18 +179,18 @@ func TestBuild_Full(t *testing.T) {
 	unresolvedID := "-no-such-dir-" + rnd
 
 	// Seed sessions.
-	// cwd: two -work sessions (same derived branch "main") + one worktree session.
-	writeSession(t, filepath.Join(forgeDir, cwdID, "-work"),
+	// cwd: two workspace sessions (same derived branch "main") + one worktree session.
+	writeSession(t, filepath.Join(forgeDir, cwdID, layout.SessionSubdir),
 		"11111111-1111-4111-8111-111111111111", "2025-01-15T10:00:00Z", "first message", "main-a")
-	writeSession(t, filepath.Join(forgeDir, cwdID, "-work"),
+	writeSession(t, filepath.Join(forgeDir, cwdID, layout.SessionSubdir),
 		"22222222-2222-4222-8222-222222222222", "2025-01-15T11:00:00Z", "second message", "main-b")
-	writeSession(t, filepath.Join(forgeDir, cwdID, "-work--claude-worktrees-feature"),
+	writeSession(t, filepath.Join(forgeDir, cwdID, layout.WorktreeSubdirPrefix+"feature"),
 		"33333333-3333-4333-8333-333333333333", "2025-01-15T12:00:00Z", "wt message", "wt")
 	// resolved scanned project: one session.
-	writeSession(t, filepath.Join(forgeDir, resolvedID, "-work"),
+	writeSession(t, filepath.Join(forgeDir, resolvedID, layout.SessionSubdir),
 		"44444444-4444-4444-8444-444444444444", "2025-01-15T09:00:00Z", "other repo", "other")
 	// unresolved project: one session (listed, but no branch/PR).
-	writeSession(t, filepath.Join(forgeDir, unresolvedID, "-work"),
+	writeSession(t, filepath.Join(forgeDir, unresolvedID, layout.SessionSubdir),
 		"55555555-5555-4555-8555-555555555555", "2025-01-15T08:00:00Z", "orphan", "orphan")
 
 	short := "abcd1234"
@@ -697,7 +698,7 @@ func TestClaudeSessionIDFromArgs(t *testing.T) {
 	}{
 		{"fresh session", []string{"--dangerously-skip-permissions", "--session-id", uuid}, uuid},
 		{"session-id equals form", []string{"--session-id=" + uuid}, uuid},
-		{"resume with transcript path", []string{"--resume", "/home/user/.claude/projects/-work/" + uuid + ".jsonl"}, uuid},
+		{"resume with transcript path", []string{"--resume", layout.ProjectsDir + "/" + layout.SessionSubdir + "/" + uuid + ".jsonl"}, uuid},
 		{"resume with bare id", []string{"--resume", uuid}, uuid},
 		{"resume equals form", []string{"--resume=" + uuid}, uuid},
 		{"continue has no id", []string{"--continue"}, ""},
