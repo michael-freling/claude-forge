@@ -28,6 +28,7 @@ func TestResolve(t *testing.T) {
 			want: &Credentials{
 				AuthType: "api_key",
 				Token:    "sk-ant-test-key",
+				FromEnv:  true,
 			},
 		},
 		{
@@ -38,6 +39,19 @@ func TestResolve(t *testing.T) {
 			want: &Credentials{
 				AuthType: "oauth",
 				Token:    "oauth-test-token",
+				FromEnv:  true,
+			},
+		},
+		{
+			name: "CLAUDE_CODE_OAUTH_TOKEN takes precedence over an MCP-only credentials file",
+			envVars: map[string]string{
+				"CLAUDE_CODE_OAUTH_TOKEN": "oauth-test-token",
+			},
+			credFile: `{"mcpOAuth":{"linear|0123456789abcdef":{"accessToken":"mcp-token"}}}`,
+			want: &Credentials{
+				AuthType: "oauth",
+				Token:    "oauth-test-token",
+				FromEnv:  true,
 			},
 		},
 		{
@@ -49,6 +63,7 @@ func TestResolve(t *testing.T) {
 			want: &Credentials{
 				AuthType: "api_key",
 				Token:    "sk-ant-test-key",
+				FromEnv:  true,
 			},
 		},
 		{

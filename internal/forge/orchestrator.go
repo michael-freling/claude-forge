@@ -354,8 +354,13 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 	case "api_key":
 		agentEnv["ANTHROPIC_API_KEY"] = creds.Token
 	case "oauth":
-		credentialsPath := filepath.Join(o.ClaudeDir, ".credentials.json")
-		if _, err := os.Stat(credentialsPath); err != nil {
+		// A token from CLAUDE_CODE_OAUTH_TOKEN is always forwarded, even when
+		// ~/.claude/.credentials.json exists: authenticating a remote MCP
+		// server creates that file with only "mcpOAuth" entries, and the
+		// mounted file alone would leave the agent without a Claude login.
+		// A token read from the file is not forwarded, so Claude Code keeps
+		// using (and refreshing) the mounted file.
+		if creds.FromEnv {
 			agentEnv["CLAUDE_CODE_OAUTH_TOKEN"] = creds.Token
 		}
 	}
