@@ -126,4 +126,9 @@ them automatically, in this order:
 2. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
 3. `~/.claude/.credentials.json` (written by `claude` CLI login)
 
+An environment-variable token is always passed to the agent, even when
+`~/.claude/.credentials.json` exists — for example because you authenticated a
+remote MCP server, which stores its tokens in that file. The file is still
+mounted so those MCP tokens remain available.
+
 Run `claude-forge auth` to verify your credentials are detected.

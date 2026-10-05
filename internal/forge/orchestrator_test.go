@@ -475,6 +475,39 @@ func TestStart_OAuthCredentials(t *testing.T) {
 		assert.NotNil(t, sess)
 	})
 
+	t.Run("from env var with MCP-only credentials file", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		mockCM := NewMockContainerManager(ctrl)
+		orch, homeDir := setupOrchestrator(t, mockCM)
+
+		// Authenticating a remote MCP server creates .credentials.json holding
+		// only mcpOAuth entries; the env token must still reach the agent.
+		credsJSON := `{"mcpOAuth":{"linear|0123456789abcdef":{"accessToken":"mcp-token","refreshToken":"mcp-refresh"}}}`
+		require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".claude", ".credentials.json"), []byte(credsJSON), 0o600))
+
+		projectDir := setupGitProject(t)
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token-xyz")
+
+		mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+		mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+		mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+		mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+		mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+		mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+				assert.Equal(t, "oauth-token-xyz", opts.Env["CLAUDE_CODE_OAUTH_TOKEN"])
+				return "agent-id", nil
+			})
+
+		sess, err := orch.Start(context.Background(), StartOptions{
+			ProjectDir: projectDir,
+		})
+		require.NoError(t, err)
+		assert.NotNil(t, sess)
+	})
+
 	t.Run("from credentials file", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		mockCM := NewMockContainerManager(ctrl)

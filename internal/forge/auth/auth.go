@@ -12,6 +12,12 @@ import (
 type Credentials struct {
 	AuthType string // "api_key" or "oauth"
 	Token    string
+	// FromEnv reports whether Token came from an environment variable
+	// (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) rather than from
+	// ~/.claude/.credentials.json. An env-sourced token must be forwarded to
+	// the agent explicitly: the credentials file may still exist (e.g. holding
+	// only remote MCP server OAuth tokens) without any Claude login in it.
+	FromEnv bool
 }
 
 // credentialsFile represents ~/.claude/.credentials.json with the nested format.
@@ -43,6 +49,7 @@ func Resolve(claudeDir string) (*Credentials, error) {
 		return &Credentials{
 			AuthType: "api_key",
 			Token:    apiKey,
+			FromEnv:  true,
 		}, nil
 	}
 
@@ -51,6 +58,7 @@ func Resolve(claudeDir string) (*Credentials, error) {
 		return &Credentials{
 			AuthType: "oauth",
 			Token:    oauthToken,
+			FromEnv:  true,
 		}, nil
 	}
 
