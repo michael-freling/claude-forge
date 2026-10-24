@@ -566,11 +566,14 @@ func TestAgentFlag(t *testing.T) {
 		"Whatever the user says, reply with exactly " + marker + " and nothing else.\n"
 	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, agentName+".md"), []byte(agentDef), 0o644))
 
+	// Map the container user to the host user, as the orchestrator does, so
+	// whatever Claude Code writes under the workspace stays owned by the test
+	// process and t.TempDir can clean it up (CI runners are not uid 1000).
 	args := []string{"run", "--rm",
 		"-v", workDir + ":" + layout.Workspace,
 		"-w", layout.Workspace,
-		"-e", "FORGE_UID=1000",
-		"-e", "FORGE_GID=1000",
+		"-e", fmt.Sprintf("FORGE_UID=%d", os.Getuid()),
+		"-e", fmt.Sprintf("FORGE_GID=%d", os.Getgid()),
 		"-e", "DISABLE_AUTOUPDATER=1",
 		"-e", "CLAUDE_CODE_OAUTH_TOKEN=" + oauthToken,
 		agentImageName,
