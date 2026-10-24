@@ -90,7 +90,7 @@ func TestStartSession_NonInteractive(t *testing.T) {
 	t.Cleanup(func() { createOrchestrator = original })
 
 	// Non-interactive (prompt set) so we don't try to attach to a TTY.
-	err = startSession(true, false, "do a task", "", "", false, nil, "", "")
+	err = startSession(true, false, "do a task", "", "", false, nil, "", "", "")
 	require.NoError(t, err)
 }
 
@@ -131,7 +131,7 @@ func TestStartSession_PluginSyncFailureNonFatal(t *testing.T) {
 	}
 	t.Cleanup(func() { syncHostPlugins = originalSync })
 
-	err = startSession(true, false, "do a task", "", "", false, nil, "", "")
+	err = startSession(true, false, "do a task", "", "", false, nil, "", "", "")
 	require.NoError(t, err)
 	// Sync was invoked with the orchestrator's home dir without forcing a
 	// reinstall, and its failure was tolerated.

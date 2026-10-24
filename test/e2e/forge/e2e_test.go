@@ -510,6 +510,83 @@ grep -q 'bind-mounted at' ` + claudecode.ContainerMemoryTarget + ` && echo CONTE
 		"Claude Code did not load %s as memory:\n%s", claudecode.ContainerMemoryTarget, logs)
 }
 
+// TestAgentFlag verifies that the Claude Code CLI in the agent image accepts
+// the --agent flag forge passes for defaults.agent / `start --agent`, and (with
+// credentials) that the named agent actually becomes the main-thread agent.
+// Unit tests only assert the generated args; a Claude Code upgrade that drops
+// or renames --agent would make every agent-configured session fail to start.
+func TestAgentFlag(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	projectRoot := findProjectRoot(t)
+
+	// Build the agent binary and image (the image COPYs the binary).
+	agentBinaryPath := filepath.Join(projectRoot, "docker", "agent", "claude-forge")
+	buildAgentBinary := exec.Command("go", "build", "-o", agentBinaryPath, "./cmd/claude-forge/")
+	buildAgentBinary.Dir = projectRoot
+	buildAgentBinary.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
+	out, err := buildAgentBinary.CombinedOutput()
+	require.NoError(t, err, "failed to build agent binary: %s", out)
+	t.Cleanup(func() { os.Remove(agentBinaryPath) })
+
+	agentImageName := "forge-e2e-agent-flag"
+	buildAgent := exec.CommandContext(ctx, "docker", "build", "-t", agentImageName, "docker/agent/")
+	buildAgent.Dir = projectRoot
+	out, err = buildAgent.CombinedOutput()
+	require.NoError(t, err, "failed to build agent image: %s", out)
+
+	// Structural check (no credentials needed): the image's claude lists
+	// --agent among its options.
+	out, err = exec.CommandContext(ctx, "docker", "run", "--rm", agentImageName, "claude", "--help").CombinedOutput()
+	help := string(out)
+	require.NoError(t, err, "claude --help failed:\n%s", help)
+	assert.Regexp(t, regexp.MustCompile(`(?m)^\s*--agent\b`), help,
+		"claude in the agent image no longer lists --agent:\n%s", help)
+
+	// Behavioral check: a project agent passed via --agent drives the session.
+	oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	if oauthToken == "" {
+		t.Skip("CLAUDE_CODE_OAUTH_TOKEN not set -- skipping the --agent load check")
+	}
+
+	const agentName = "forge-e2e-probe"
+	const marker = "FORGE_AGENT_PROBE_OK"
+	workDir := t.TempDir()
+	agentsDir := filepath.Join(workDir, ".claude", "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0o755))
+	agentDef := "---\nname: " + agentName + "\ndescription: e2e probe agent for claude-forge\n---\n" +
+		"Whatever the user says, reply with exactly " + marker + " and nothing else.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, agentName+".md"), []byte(agentDef), 0o644))
+
+	args := []string{"run", "--rm",
+		"-v", workDir + ":" + layout.Workspace,
+		"-w", layout.Workspace,
+		"-e", "FORGE_UID=1000",
+		"-e", "FORGE_GID=1000",
+		"-e", "DISABLE_AUTOUPDATER=1",
+		"-e", "CLAUDE_CODE_OAUTH_TOKEN=" + oauthToken,
+		agentImageName,
+		"claude", "--dangerously-skip-permissions", "--agent", agentName, "-p", "Say hello.",
+	}
+	out, err = exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	logs := string(out)
+	t.Logf("claude output:\n%s", logs)
+
+	if strings.Contains(logs, "401") && strings.Contains(logs, "Invalid authentication credentials") {
+		t.Skip("CLAUDE_CODE_OAUTH_TOKEN is expired or invalid -- skipping e2e test")
+	}
+	require.NoError(t, err, "claude --agent run failed:\n%s", logs)
+	assert.Contains(t, logs, marker, "the --agent agent did not drive the session:\n%s", logs)
+}
+
 // buildForge builds the claude-forge binary and returns its path.
 func buildForge(t *testing.T) string {
 	t.Helper()

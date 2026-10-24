@@ -57,6 +57,7 @@ type StartOptions struct {
 	Mounts             []string // additional host:container bind mounts
 	ResumeWorktreeName string   // worktree name when resuming a worktree session
 	Name               string   // human-readable session name (passed to Claude Code via --name)
+	Agent              string   // main-thread agent (passed via --agent); overrides config defaults.agent
 }
 
 // Session holds information about a running session.
@@ -79,6 +80,9 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		if err := session.ValidateName(opts.Name); err != nil {
 			return nil, err
 		}
+	}
+	if err := config.ValidateAgentName(opts.Agent); err != nil {
+		return nil, err
 	}
 
 	// Resolve project directory
@@ -332,6 +336,18 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		// paths); re-verify it still exists against `claude --help` when bumping
 		// the agent image.
 		agentCmd = append(agentCmd, "--name", opts.Name)
+	}
+	// The per-session agent overrides the config default. Both the fresh and
+	// resume/continue paths pass it, so a resumed session runs with the agent
+	// chosen now rather than whatever the original session used.
+	agent := opts.Agent
+	if agent == "" {
+		agent = cfg.Defaults.Agent
+	}
+	if agent != "" {
+		// --agent is a Claude Code CLI flag; re-verify it still exists against
+		// `claude --help` when bumping the agent image.
+		agentCmd = append(agentCmd, "--agent", agent)
 	}
 	if opts.Prompt != "" {
 		agentCmd = append(agentCmd, "-p", opts.Prompt)

@@ -267,14 +267,22 @@ func TestBuildContainerConfig_CommandCombinations(t *testing.T) {
 			notInCmd: []string{"--dangerously-skip-permissions"},
 		},
 		{
+			name: "agent only",
+			opts: Options{
+				Agent: "my-plugin:orchestrator",
+			},
+			wantCmd: []string{"--agent", "my-plugin:orchestrator"},
+		},
+		{
 			name: "all flags together",
 			opts: Options{
 				SkipPermissions: true,
 				Worktree:        true,
 				Resume:          "sess-1",
+				Agent:           "orchestrator",
 				Prompt:          "build it",
 			},
-			wantCmd: []string{"--dangerously-skip-permissions", "--worktree", "--resume", "sess-1", "-p", "build it"},
+			wantCmd: []string{"--dangerously-skip-permissions", "--worktree", "--resume", "sess-1", "--agent", "orchestrator", "-p", "build it"},
 		},
 	}
 

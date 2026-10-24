@@ -32,6 +32,7 @@ type Options struct {
 	Resume          string // Pass --resume <session-id> to Claude Code
 	Continue        bool   // Pass --continue to Claude Code (resume most recent)
 	Model           string // Claude Code model override (e.g. "claude-opus-4-6")
+	Agent           string // Pass --agent <name> to Claude Code (main-thread agent)
 
 	// Paths
 	ProjectDir string // Host path to the project directory
@@ -138,6 +139,9 @@ func buildCmd(opts Options) []string {
 		cmd = append(cmd, "--resume", opts.Resume)
 	} else if opts.Continue {
 		cmd = append(cmd, "--continue")
+	}
+	if opts.Agent != "" {
+		cmd = append(cmd, "--agent", opts.Agent)
 	}
 	if opts.Prompt != "" {
 		cmd = append(cmd, "-p", opts.Prompt)

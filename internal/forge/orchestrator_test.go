@@ -1769,3 +1769,107 @@ func TestEnsureGlobalSidecar_Failures(t *testing.T) {
 		assert.False(t, ok)
 	})
 }
+
+// agentFlagValue returns the value following --agent in cmd, or "" when
+// --agent is absent.
+func agentFlagValue(cmd []string) string {
+	for i, a := range cmd {
+		if a == "--agent" && i+1 < len(cmd) {
+			return cmd[i+1]
+		}
+	}
+	return ""
+}
+
+func TestStart_Agent(t *testing.T) {
+	tests := []struct {
+		name          string
+		configDefault string // defaults.agent in config.yaml ("" = unset)
+		opts          StartOptions
+		want          string // expected --agent value ("" = flag absent)
+	}{
+		{
+			name: "no agent configured",
+			want: "",
+		},
+		{
+			name:          "config default applies",
+			configDefault: "my-plugin:orchestrator",
+			want:          "my-plugin:orchestrator",
+		},
+		{
+			name: "per-session agent without config default",
+			opts: StartOptions{Agent: "reviewer"},
+			want: "reviewer",
+		},
+		{
+			name:          "per-session agent overrides config default",
+			configDefault: "my-plugin:orchestrator",
+			opts:          StartOptions{Agent: "reviewer"},
+			want:          "reviewer",
+		},
+		{
+			name:          "resume uses config default",
+			configDefault: "my-plugin:orchestrator",
+			opts:          StartOptions{ResumeID: "abc12345", ResumeSubdir: layout.SessionSubdir},
+			want:          "my-plugin:orchestrator",
+		},
+		{
+			name:          "resume with per-session agent",
+			configDefault: "my-plugin:orchestrator",
+			opts:          StartOptions{ResumeID: "abc12345", ResumeSubdir: layout.SessionSubdir, Agent: "reviewer"},
+			want:          "reviewer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockCM := NewMockContainerManager(ctrl)
+			orch, _ := setupOrchestrator(t, mockCM)
+			if tt.configDefault != "" {
+				configYAML := "defaults:\n  agent: " + tt.configDefault + "\n"
+				require.NoError(t, os.WriteFile(filepath.Join(orch.ConfigDir, "config.yaml"), []byte(configYAML), 0o644))
+			}
+
+			t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+			tt.opts.ProjectDir = setupGitProject(t)
+
+			var gotCmd []string
+			mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+			mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+			mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+			mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+			mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+			mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+			mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+					gotCmd = opts.Cmd
+					return "agent-id", nil
+				})
+
+			_, err := orch.Start(context.Background(), tt.opts)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, agentFlagValue(gotCmd))
+			if tt.want == "" {
+				assert.NotContains(t, gotCmd, "--agent")
+			}
+		})
+	}
+}
+
+func TestStart_RejectsInvalidAgent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, _ := setupOrchestrator(t, mockCM)
+
+	// No container methods should be called: validation fails first.
+	_, err := orch.Start(context.Background(), StartOptions{
+		Agent:      "--dangerously-skip-permissions",
+		ProjectDir: setupGitProject(t),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not start with")
+}
