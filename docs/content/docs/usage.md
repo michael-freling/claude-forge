@@ -24,6 +24,9 @@ claude-forge start "careful run" --no-skip-permissions
 
 # Mount additional host directories (repeatable)
 claude-forge start "with data" --mount /host/data:/home/user/work/data
+
+# Run the main thread as a specific Claude Code agent (overrides defaults.agent)
+claude-forge start "delegate" --agent my-plugin:orchestrator
 ```
 
 ## List and Resume Sessions
@@ -41,7 +44,13 @@ claude-forge resume "refactor parser"
 
 # Override the session name on resume
 claude-forge resume <session-id> --name "new name"
+
+# Resume with a different main-thread agent (defaults to defaults.agent)
+claude-forge resume <session-id> --agent my-plugin:orchestrator
 ```
+
+See [Main-thread agent]({{< relref "/docs/configuration#main-thread-agent" >}})
+for how `--agent` and `defaults.agent` interact.
 
 ## Prune Old Sessions
 

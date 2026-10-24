@@ -18,6 +18,9 @@ images:
 defaults:
   skip_permissions: true
   worktree: false
+  # Claude Code main-thread agent for every session (claude --agent).
+  # Empty or omitted uses Claude Code's default; start/resume --agent overrides.
+  agent: my-plugin:orchestrator
 
 # Optional Docker-in-Docker: give sessions their own isolated Docker daemon.
 # The agent can build/run/stop its own containers, but cannot see or control
@@ -97,6 +100,28 @@ See [Custom Servers]({{< relref "/docs/mcp-servers/custom" >}}) for the full
 for the first-party Kubernetes MCP server, and
 [Google Cloud]({{< relref "/docs/mcp-servers/gcp" >}}) for the read-only Google
 Cloud MCP server (both configured under `mcp_servers`).
+
+## Main-thread agent
+
+`defaults.agent` names the Claude Code agent that runs the main thread of every
+session — for example a plugin agent such as `my-plugin:orchestrator` that has
+restricted tools and only delegates to subagents. claude-forge passes it to
+Claude Code as `claude --agent <name>` on fresh, resumed, and continued
+sessions.
+
+- `--agent <name>` on `start` or `resume` overrides `defaults.agent` for that
+  run. Without the flag, `resume` uses `defaults.agent` (not the agent the
+  original session ran with).
+- The agent must be available inside the container: a plugin agent from a
+  plugin installed on the host (host plugins are synced at session start), a
+  user agent under `~/.claude/agents/`, or a project agent under
+  `.claude/agents/` in the repository.
+- The name must be a single token: no whitespace or control characters, and
+  it must not start with `-`. An invalid value is rejected before any
+  container starts.
+
+Use `defaults.agent` rather than editing `~/.config/claude-forge/settings.json`:
+that file is managed by claude-forge (see below).
 
 ## Generated files
 

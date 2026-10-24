@@ -16,6 +16,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, DefaultGatewayImage, cfg.Images.Gateway)
 	assert.False(t, cfg.Defaults.SkipPermissions)
 	assert.False(t, cfg.Defaults.Worktree)
+	assert.Empty(t, cfg.Defaults.Agent)
 	assert.False(t, cfg.Docker.Enabled)
 }
 
@@ -71,6 +72,7 @@ func TestLoad(t *testing.T) {
 defaults:
   skip_permissions: true
   worktree: true
+  agent: my-plugin:orchestrator
 `,
 			want: &Config{
 				Images: ImagesConfig{
@@ -81,6 +83,7 @@ defaults:
 				Defaults: DefaultsConfig{
 					SkipPermissions: true,
 					Worktree:        true,
+					Agent:           "my-plugin:orchestrator",
 				},
 			},
 		},
@@ -126,6 +129,18 @@ defaults:
   gateway: ""
 `,
 			want: DefaultConfig(),
+		},
+		{
+			name:        "agent starting with a hyphen",
+			configYAML:  "defaults:\n  agent: --dangerously-skip-permissions\n",
+			wantErr:     true,
+			errContains: "defaults.agent",
+		},
+		{
+			name:        "agent with whitespace",
+			configYAML:  "defaults:\n  agent: \"my agent\"\n",
+			wantErr:     true,
+			errContains: "whitespace",
 		},
 		{
 			name:        "invalid YAML",
@@ -411,4 +426,32 @@ func TestLoad_MCPServers_GlobalScope(t *testing.T) {
 	require.Len(t, got.MCPServers, 1)
 	assert.True(t, got.MCPServers[0].IsGlobal())
 	assert.True(t, got.MCPServers[0].IsWrappedStdio())
+}
+
+func TestValidateAgentName(t *testing.T) {
+	tests := []struct {
+		name        string
+		agent       string
+		errContains string
+	}{
+		{name: "empty means unset", agent: ""},
+		{name: "plain name", agent: "orchestrator"},
+		{name: "plugin-scoped name", agent: "my-plugin:orchestrator"},
+		{name: "leading hyphen", agent: "-p", errContains: "must not start with"},
+		{name: "space", agent: "my agent", errContains: "whitespace"},
+		{name: "tab", agent: "my\tagent", errContains: "whitespace"},
+		{name: "newline", agent: "agent\n", errContains: "whitespace"},
+		{name: "control character", agent: "agent\x00", errContains: "control"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAgentName(tt.agent)
+			if tt.errContains == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errContains)
+		})
+	}
 }

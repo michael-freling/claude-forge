@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -232,6 +234,30 @@ type ImagesConfig struct {
 type DefaultsConfig struct {
 	SkipPermissions bool `yaml:"skip_permissions"`
 	Worktree        bool `yaml:"worktree"`
+	// Agent is the Claude Code main-thread agent for every session (passed as
+	// `claude --agent <name>`), e.g. "my-plugin:orchestrator". Empty leaves
+	// Claude Code's default. The per-session --agent flag overrides it.
+	Agent string `yaml:"agent"`
+}
+
+// ValidateAgentName checks that name can be passed to Claude Code as the
+// value of --agent. An empty name means "no agent" and is valid. A name must
+// not contain whitespace or control characters (agent names are single
+// tokens such as "orchestrator" or "plugin:orchestrator") and must not start
+// with "-", which Claude Code would parse as another flag.
+func ValidateAgentName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("agent name %q must not start with \"-\"", name)
+	}
+	for _, r := range name {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("agent name %q must not contain whitespace or control characters", name)
+		}
+	}
+	return nil
 }
 
 // DockerConfig holds Docker-in-Docker (DinD) configuration for the agent.
@@ -290,6 +316,9 @@ func Load(configDir string) (*Config, error) {
 
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
 		return nil, err
+	}
+	if err := ValidateAgentName(cfg.Defaults.Agent); err != nil {
+		return nil, fmt.Errorf("defaults.agent: %w", err)
 	}
 
 	return cfg, nil

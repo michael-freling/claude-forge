@@ -88,7 +88,9 @@ func newOrchestrator() (*forge.Orchestrator, func(), error) {
 }
 
 // startSession runs the common logic for the start and resume commands.
-func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName, name string) error {
+// agent is the per-session main-thread agent; empty falls back to the config's
+// defaults.agent (resolved by the orchestrator).
+func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir string, continueSession bool, mounts []string, resumeWorktreeName, name, agent string) error {
 	orch, cleanup, err := createOrchestrator()
 	if err != nil {
 		return err
@@ -120,6 +122,7 @@ func startSession(skipPermissions, worktree bool, prompt, resumeID, resumeSubdir
 		Mounts:             mounts,
 		ResumeWorktreeName: resumeWorktreeName,
 		Name:               name,
+		Agent:              agent,
 	})
 	if err != nil {
 		return err
@@ -219,6 +222,10 @@ images:
 defaults:
   skip_permissions: false
   worktree: false
+  # Claude Code main-thread agent for every session and resume (claude --agent),
+  # e.g. "my-plugin:orchestrator". Empty uses Claude Code's default; the
+  # --agent flag on start/resume overrides it.
+  agent: ""
 
 # Docker-in-Docker: when enabled, a dedicated dockerd runs inside the agent
 # container so the agent can build and run its own containers. The host Docker
@@ -291,6 +298,7 @@ func newStartCmd() *cobra.Command {
 		noSkipPermissions bool
 		prompt            string
 		mounts            []string
+		agent             string
 	)
 
 	cmd := &cobra.Command{
@@ -304,7 +312,7 @@ it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skipPermissions := !noSkipPermissions
-			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "", args[0])
+			return startSession(skipPermissions, worktree, prompt, "", "", false, mounts, "", args[0], agent)
 		},
 	}
 
@@ -312,9 +320,13 @@ it.`,
 	cmd.Flags().BoolVar(&noSkipPermissions, "no-skip-permissions", false, "Disable --dangerously-skip-permissions")
 	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Initial prompt to send to Claude Code")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
+	cmd.Flags().StringVar(&agent, "agent", "", agentFlagUsage)
 
 	return cmd
 }
+
+// agentFlagUsage is the --agent help text shared by start and resume.
+const agentFlagUsage = "Claude Code main-thread agent for the session, e.g. plugin:orchestrator (overrides defaults.agent)"
 
 // projectSessionDir resolves the host session directory for the project in the
 // current working directory.
@@ -566,6 +578,7 @@ func newResumeCmd() *cobra.Command {
 	var (
 		mounts []string
 		name   string
+		agent  string
 	)
 
 	cmd := &cobra.Command{
@@ -574,7 +587,8 @@ func newResumeCmd() *cobra.Command {
 		Long: `Resume a previous session by ID or by name (the most recent session
 with that name). If no argument is given, the most recent session is
 continued. Run 'claude-forge list' to see available sessions. The session
-name is reused unless overridden with --name.`,
+name is reused unless overridden with --name. The main-thread agent is
+--agent if given, else the config's defaults.agent.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionDir, err := projectSessionDir()
@@ -588,7 +602,7 @@ name is reused unless overridden with --name.`,
 					return err
 				}
 				// Use the resolved session ID (args[0] may be a name).
-				return startSession(true, sess.IsWorktree(), "", sess.ID, sess.Subdir, false, mounts, sess.WorktreeName(), resumeName(name, sess.Name))
+				return startSession(true, sess.IsWorktree(), "", sess.ID, sess.Subdir, false, mounts, sess.WorktreeName(), resumeName(name, sess.Name), agent)
 			}
 
 			// Continue most recent session, detecting worktree if needed
@@ -600,12 +614,13 @@ name is reused unless overridden with --name.`,
 				return fmt.Errorf("no sessions found to continue")
 			}
 			mostRecent := sessions[0]
-			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName(), resumeName(name, mostRecent.Name))
+			return startSession(true, mostRecent.IsWorktree(), "", mostRecent.ID, mostRecent.Subdir, false, mounts, mostRecent.WorktreeName(), resumeName(name, mostRecent.Name), agent)
 		},
 	}
 
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Additional host directories to mount (format: host_path:container_path)")
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Override the session name passed to Claude Code (defaults to the stored name)")
+	cmd.Flags().StringVar(&agent, "agent", "", agentFlagUsage)
 
 	return cmd
 }

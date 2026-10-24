@@ -72,6 +72,10 @@ func TestNewStartCmd(t *testing.T) {
 	require.NotNil(t, promptFlag)
 	assert.Equal(t, "", promptFlag.DefValue)
 	assert.Equal(t, "p", promptFlag.Shorthand)
+
+	agentFlag := cmd.Flags().Lookup("agent")
+	require.NotNil(t, agentFlag)
+	assert.Equal(t, "", agentFlag.DefValue)
 }
 
 func TestStartCmd_RequiresNameArg(t *testing.T) {
@@ -394,6 +398,10 @@ func TestNewResumeCmd(t *testing.T) {
 	nameFlag := cmd.Flags().Lookup("name")
 	require.NotNil(t, nameFlag)
 	assert.Equal(t, "n", nameFlag.Shorthand)
+
+	agentFlag := cmd.Flags().Lookup("agent")
+	require.NotNil(t, agentFlag)
+	assert.Equal(t, "", agentFlag.DefValue)
 
 	// Verify MaximumNArgs(1) is set by checking the Args validator.
 	require.NotNil(t, cmd.Args)
@@ -1387,6 +1395,7 @@ func TestBuildConfigTemplate(t *testing.T) {
 
 	assert.Contains(t, content, "images:")
 	assert.Contains(t, content, "defaults:")
+	assert.Contains(t, content, "agent: \"\"")
 	assert.Contains(t, content, "docker:")
 	assert.Contains(t, content, "# mcp_servers:")
 	// The built-in Kubernetes integration was removed; the template must not
