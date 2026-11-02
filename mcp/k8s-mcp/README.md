@@ -31,7 +31,7 @@ The server never offers an exec/attach tool at all.
 | `list_resources` | List resources of a kind (all namespaces if none given) | read |
 | `get_resource` | Get a single resource | read |
 | `apply_resource` | Create or update from a YAML/JSON manifest | write |
-| `delete_resource` | Delete a resource | write |
+| `delete_resource` | Delete a resource; optional `propagation_policy` (`Orphan` / `Background` / `Foreground`), e.g. `Orphan` for `kubectl delete --cascade=orphan` | write |
 | `get_logs` | Pod logs (capped) | read |
 | `list_api_resources` | Discover served apiVersion/kind | read |
 | `list_contexts` | Show the targetable contexts and their endpoints | read |

@@ -9,6 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	kfake "k8s.io/client-go/kubernetes/fake"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
@@ -214,6 +217,87 @@ func TestExecuteTool_DeleteResource(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, isErr)
 	assert.Contains(t, out, "deleted")
+}
+
+// propagation_policy is threaded through to the API's DeleteOptions; unset
+// leaves the server default (nil).
+func TestExecuteTool_DeleteResource_PropagationPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		arg  string
+		want *metav1.DeletionPropagation
+	}{
+		{"unset", "", nil},
+		{"orphan", "Orphan", ptr(metav1.DeletePropagationOrphan)},
+		{"background", "Background", ptr(metav1.DeletePropagationBackground)},
+		{"foreground", "Foreground", ptr(metav1.DeletePropagationForeground)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestClient(unstructuredObj("v1", "Pod", "default", "p1"))
+			rec := &deleteRecorder{Interface: c.dyn}
+			c.dyn = rec
+			args := map[string]any{"api_version": "v1", "kind": "Pod", "name": "p1"}
+			if tt.arg != "" {
+				args["propagation_policy"] = tt.arg
+			}
+			_, isErr, err := runTool(t, c, "delete_resource", args)
+			require.NoError(t, err)
+			assert.False(t, isErr)
+			require.NotNil(t, rec.opts)
+			assert.Equal(t, tt.want, rec.opts.PropagationPolicy)
+		})
+	}
+}
+
+func TestExecuteTool_DeleteResource_InvalidPropagationPolicy(t *testing.T) {
+	c := newTestClient(unstructuredObj("v1", "Pod", "default", "p1"))
+	_, _, err := runTool(t, c, "delete_resource", map[string]any{
+		"api_version": "v1", "kind": "Pod", "name": "p1", "propagation_policy": "orphan-ish",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid propagation_policy")
+
+	// Nothing was deleted.
+	r, _ := c.resolve("v1", "Pod")
+	_, err = c.get(context.Background(), r, "default", "p1")
+	require.NoError(t, err)
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// deleteRecorder captures the DeleteOptions a delete is sent with: the
+// client-go dynamic fake drops them before reaching its reactors.
+type deleteRecorder struct {
+	dynamic.Interface
+	opts *metav1.DeleteOptions
+}
+
+func (d *deleteRecorder) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	return &recordingResource{NamespaceableResourceInterface: d.Interface.Resource(gvr), rec: d}
+}
+
+type recordingResource struct {
+	dynamic.NamespaceableResourceInterface
+	rec *deleteRecorder
+}
+
+func (r *recordingResource) Namespace(ns string) dynamic.ResourceInterface {
+	return &recordingNamespaced{ResourceInterface: r.NamespaceableResourceInterface.Namespace(ns), rec: r.rec}
+}
+
+func (r *recordingResource) Delete(ctx context.Context, name string, opts metav1.DeleteOptions, sub ...string) error {
+	r.rec.opts = &opts
+	return r.NamespaceableResourceInterface.Delete(ctx, name, opts, sub...)
+}
+
+type recordingNamespaced struct {
+	dynamic.ResourceInterface
+	rec *deleteRecorder
+}
+
+func (r *recordingNamespaced) Delete(ctx context.Context, name string, opts metav1.DeleteOptions, sub ...string) error {
+	r.rec.opts = &opts
+	return r.ResourceInterface.Delete(ctx, name, opts, sub...)
 }
 
 func TestExecuteTool_GetLogs(t *testing.T) {
