@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 )
@@ -54,8 +57,9 @@ type jsonSchema struct {
 }
 
 type property struct {
-	Type        string `json:"type"`
-	Description string `json:"description,omitempty"`
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
 }
 
 var toolRegistry map[string]*toolDef
@@ -357,9 +361,18 @@ func deleteResourceTool() *toolDef {
 			Name:        "delete_resource",
 			Description: "Delete a Kubernetes resource by name.",
 			InputSchema: jsonSchema{
-				Type:       "object",
-				Properties: gvkProps(map[string]property{"name": {Type: "string", Description: "Resource name"}}),
-				Required:   []string{"api_version", "kind", "name"},
+				Type: "object",
+				Properties: gvkProps(map[string]property{
+					"name": {Type: "string", Description: "Resource name"},
+					"propagation_policy": {
+						Type: "string",
+						Description: "How dependents (objects whose ownerReferences point at this one) are garbage-collected. " +
+							"\"Orphan\" keeps them (kubectl delete --cascade=orphan); \"Background\" deletes them after the owner; " +
+							"\"Foreground\" deletes them before the owner. Defaults to the resource's server-side policy.",
+						Enum: propagationPolicies,
+					},
+				}),
+				Required: []string{"api_version", "kind", "name"},
 			},
 		},
 		handle: func(ctx context.Context, args map[string]any, policy *Policy, client *Client) (string, bool, error) {
@@ -375,16 +388,42 @@ func deleteResourceTool() *toolDef {
 			if err != nil {
 				return "", false, err
 			}
+			propagation, err := propagationPolicy(args)
+			if err != nil {
+				return "", false, err
+			}
 			r, err := resolveAndCheck(client, policy, apiVersion, kind, "", "delete")
 			if err != nil {
 				return "", false, err
 			}
-			if err := client.delete(ctx, r, namespaceFor(r, args), name); err != nil {
+			if err := client.delete(ctx, r, namespaceFor(r, args), name, propagation); err != nil {
 				return "", false, err
 			}
 			return fmt.Sprintf("deleted %s/%s %q", apiVersion, kind, name), false, nil
 		},
 	}
+}
+
+// propagationPolicies are the metav1.DeletionPropagation values delete_resource
+// accepts.
+var propagationPolicies = []string{
+	string(metav1.DeletePropagationOrphan),
+	string(metav1.DeletePropagationBackground),
+	string(metav1.DeletePropagationForeground),
+}
+
+// propagationPolicy reads the optional "propagation_policy" argument. Unset
+// returns nil so the API server applies the resource's default policy.
+func propagationPolicy(args map[string]any) (*metav1.DeletionPropagation, error) {
+	v := getString(args, "propagation_policy")
+	if v == "" {
+		return nil, nil
+	}
+	if !slices.Contains(propagationPolicies, v) {
+		return nil, fmt.Errorf("invalid propagation_policy %q: must be one of %s", v, strings.Join(propagationPolicies, ", "))
+	}
+	p := metav1.DeletionPropagation(v)
+	return &p, nil
 }
 
 func getLogsTool() *toolDef {
