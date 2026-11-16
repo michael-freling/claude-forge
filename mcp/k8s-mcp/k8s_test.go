@@ -258,7 +258,7 @@ func TestClient_Delete(t *testing.T) {
 	ctx := context.Background()
 	r := podResolved()
 
-	require.NoError(t, c.delete(ctx, r, "default", "p1"))
+	require.NoError(t, c.delete(ctx, r, "default", "p1", nil))
 
 	_, err := c.get(ctx, r, "default", "p1")
 	require.Error(t, err)

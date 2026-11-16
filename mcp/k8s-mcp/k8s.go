@@ -131,8 +131,10 @@ func (c *Client) get(ctx context.Context, r resolved, namespace, name string) (*
 	return c.resource(r, namespace).Get(ctx, name, metav1.GetOptions{})
 }
 
-func (c *Client) delete(ctx context.Context, r resolved, namespace, name string) error {
-	return c.resource(r, namespace).Delete(ctx, name, metav1.DeleteOptions{})
+// delete removes the object. A nil propagation leaves the policy to the API
+// server (the resource's default).
+func (c *Client) delete(ctx context.Context, r resolved, namespace, name string, propagation *metav1.DeletionPropagation) error {
+	return c.resource(r, namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: propagation})
 }
 
 // applyResource creates the object, or updates it if it already exists. (A
