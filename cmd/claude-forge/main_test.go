@@ -29,7 +29,7 @@ func TestNewRootCmd(t *testing.T) {
 	expectedSubcommands := []string{
 		"init", "start", "resume", "list", "prune", "stop", "status",
 		"build", "auth", "plugins", "version", "gateway", "mcp",
-		"dashboard",
+		"dashboard", "openshell",
 	}
 
 	subcommandNames := make(map[string]bool)

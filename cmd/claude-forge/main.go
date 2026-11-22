@@ -68,6 +68,7 @@ containers, Docker networks, and session state.`,
 		newGatewayCmd(),
 		newMcpCmd(),
 		newDashboardCmd(),
+		newOpenShellCmd(),
 	)
 
 	return rootCmd

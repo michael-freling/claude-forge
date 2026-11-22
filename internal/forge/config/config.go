@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -41,6 +42,38 @@ type Config struct {
 	Defaults   DefaultsConfig    `yaml:"defaults"`
 	Docker     DockerConfig      `yaml:"docker"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
+	OpenShell  OpenShellConfig   `yaml:"openshell"`
+}
+
+// OpenShellConfig configures `claude-forge openshell` sessions, which run in
+// OpenShell sandboxes instead of Docker containers: no gateway or git proxy,
+// no host project mount, and network access from a generated sandbox policy.
+type OpenShellConfig struct {
+	// Gateway selects the OpenShell gateway (default: the CLI's active one).
+	Gateway string `yaml:"gateway"`
+	// Image is the sandbox image (default: images.agent).
+	Image  string                `yaml:"image"`
+	GitHub OpenShellGitHubConfig `yaml:"github"`
+}
+
+// OpenShellGitHubConfig configures GitHub access from OpenShell sandboxes.
+type OpenShellGitHubConfig struct {
+	// PushRepos limits git push and GitHub REST API writes to these
+	// repositories (owner/name). Empty allows whatever the GitHub token
+	// allows. Reading and cloning any repository is always allowed.
+	PushRepos []string `yaml:"push_repos"`
+}
+
+// githubRepoPattern matches a GitHub owner/name.
+var githubRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+
+func validateOpenShell(c OpenShellConfig) error {
+	for _, r := range c.GitHub.PushRepos {
+		if !githubRepoPattern.MatchString(r) || strings.HasSuffix(r, ".git") {
+			return fmt.Errorf("openshell.github.push_repos: invalid repository %q: use owner/name", r)
+		}
+	}
+	return nil
 }
 
 // MCPServerConfig configures a custom MCP server exposed to the agent.
@@ -315,6 +348,9 @@ func Load(configDir string) (*Config, error) {
 	}
 
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
+		return nil, err
+	}
+	if err := validateOpenShell(cfg.OpenShell); err != nil {
 		return nil, err
 	}
 	if err := ValidateAgentName(cfg.Defaults.Agent); err != nil {

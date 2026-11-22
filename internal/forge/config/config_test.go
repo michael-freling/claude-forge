@@ -455,3 +455,31 @@ func TestValidateAgentName(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_OpenShell(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		want    []string
+		wantErr string
+	}{
+		{name: "push repos", yaml: "openshell:\n  image: img:1\n  github:\n    push_repos: [octo/demo, octo/.github]\n", want: []string{"octo/demo", "octo/.github"}},
+		{name: "default", yaml: "", want: nil},
+		{name: "invalid repo", yaml: "openshell:\n  github:\n    push_repos: [demo]\n", wantErr: "invalid repository"},
+		{name: "git suffix", yaml: "openshell:\n  github:\n    push_repos: [octo/demo.git]\n", wantErr: "invalid repository"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.yaml), 0o644))
+			cfg, err := Load(dir)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.OpenShell.GitHub.PushRepos)
+		})
+	}
+}

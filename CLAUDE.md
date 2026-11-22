@@ -61,6 +61,9 @@ output to verify the flags exist.
 - `internal/forge/orchestrator.go` — container lifecycle (Start, Cleanup, sidecars)
 - `internal/forge/container/client.go` — Docker API wrapper
 - `internal/forge/session/` — session listing and JSONL parsing
+- `internal/forge/openshell/` — the `claude-forge openshell` runtime: generated
+  sandbox policy and provider profiles, home-directory staging, and a wrapper
+  around the `openshell` CLI (there is no Go SDK for OpenShell 0.1.x)
 - `internal/forge/layout/` — container filesystem layout (workspace path,
   session-bucket encoding, managed-memory path)
 
