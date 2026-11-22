@@ -37,8 +37,15 @@ var claudeSubdirs = []string{"rules", "agents", "commands", "skills"}
 
 // settingsDroppedKeys are claude-forge settings that only make sense for the
 // Docker runtime: MCP servers reached on the session network, and plugins
-// installed into the Docker plugins directory.
+// installed into the Docker plugins directory. A sandbox installs its own
+// plugins instead (see Manager.installPlugins).
 var settingsDroppedKeys = []string{"mcpServers", "enabledPlugins"}
+
+// stagedSettingsFile is where StageHome writes the forge settings.json in
+// .claude. The sandbox's own settings.json is never overwritten directly:
+// mergeSettingsScript folds the staged file into it, so the plugins Claude Code
+// installed in the sandbox stay enabled.
+const stagedSettingsFile = "settings.claude-forge.json"
 
 // StageHome writes the home-directory files for a sandbox into stageDir,
 // laid out as they should appear under the sandbox's home.
@@ -52,8 +59,8 @@ func StageHome(stageDir string, opts HomeOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), settings, 0o644); err != nil {
-		return fmt.Errorf("failed to write settings.json: %w", err)
+	if err := os.WriteFile(filepath.Join(claudeDir, stagedSettingsFile), settings, 0o644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", stagedSettingsFile, err)
 	}
 
 	memory := Memory(opts.GitHubToken, opts.PushRepos)

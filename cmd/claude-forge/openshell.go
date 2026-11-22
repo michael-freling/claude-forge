@@ -62,8 +62,9 @@ func newOpenShellCmd() *cobra.Command {
 		Long: `Run Claude Code in OpenShell sandboxes instead of Docker containers.
 
 An OpenShell session is not tied to a project directory or git repository:
-each sandbox has its own persistent workspace (~/work), and the agent clones
-whatever repositories it needs into it, several at a time if needed. There is
+each sandbox has its own persistent workspace (~/work). 'start --repo' and
+openshell.repositories clone repositories into it when the sandbox is
+created, and the agent can clone more whenever it needs them. There is
 no gateway container or git proxy. Network access comes from a generated
 sandbox policy (see 'claude-forge openshell policy'), and the Claude and
 GitHub credentials are OpenShell providers, so the sandbox only ever sees
@@ -91,13 +92,25 @@ func newOpenShellStartCmd() *cobra.Command {
 		noSkipPermissions bool
 		prompt            string
 		agent             string
+		repos             []string
 	)
 	cmd := &cobra.Command{
 		Use:   "start <name>",
 		Short: "Create a sandbox and start Claude Code in it",
 		Long: `Create an OpenShell sandbox named <name> and start Claude Code in its
 workspace. Exiting Claude Code leaves the sandbox running; reconnect with
-'claude-forge openshell connect <name>'.`,
+'claude-forge openshell connect <name>'.
+
+Before Claude Code starts, the new sandbox is set up:
+
+  - The repositories in openshell.repositories and --repo are cloned into
+    ~/work/<name> (~/work/<owner>-<name> when two share a name).
+  - Claude Code plugins are installed: openshell.plugins, or the plugins
+    enabled on the host when that key is not set. Each plugin's marketplace
+    is added from the host's marketplace list; one added from a local
+    directory is added from that directory's GitHub origin.
+
+A repository or plugin that fails only prints a warning.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m, err := newOpenShellManager()
@@ -109,12 +122,14 @@ workspace. Exiting Claude Code leaves the sandbox running; reconnect with
 				Prompt:          prompt,
 				SkipPermissions: !noSkipPermissions,
 				Agent:           agent,
+				Repos:           repos,
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&noSkipPermissions, "no-skip-permissions", false, "Disable --dangerously-skip-permissions")
 	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Initial prompt to send to Claude Code")
 	cmd.Flags().StringVar(&agent, "agent", "", agentFlagUsage)
+	cmd.Flags().StringArrayVar(&repos, "repo", nil, "GitHub repository (owner/name) to clone into the workspace, in addition to openshell.repositories (repeatable)")
 	return cmd
 }
 

@@ -253,9 +253,10 @@ func (c *Client) Upload(ctx context.Context, name, local, dest string) error {
 	return err
 }
 
-// Exec runs a command in the sandbox with the terminal attached.
-func (c *Client) Exec(ctx context.Context, name, workdir string, env map[string]string, command ...string) error {
-	args := []string{"sandbox", "exec", "-n", name, "--tty"}
+// execArgs builds a `sandbox exec` command line. env values are visible in
+// the host's process list, so they must never hold secrets.
+func execArgs(name, ttyFlag, workdir string, env map[string]string, command []string) []string {
+	args := []string{"sandbox", "exec", "-n", name, ttyFlag}
 	if workdir != "" {
 		args = append(args, "--workdir", workdir)
 	}
@@ -263,8 +264,18 @@ func (c *Client) Exec(ctx context.Context, name, workdir string, env map[string]
 		args = append(args, "--env", k+"="+env[k])
 	}
 	args = append(args, "--")
-	args = append(args, command...)
-	return c.Runner.Interactive(ctx, args...)
+	return append(args, command...)
+}
+
+// Exec runs a command in the sandbox with the terminal attached.
+func (c *Client) Exec(ctx context.Context, name, workdir string, env map[string]string, command ...string) error {
+	return c.Runner.Interactive(ctx, execArgs(name, "--tty", workdir, env, command)...)
+}
+
+// Run runs a command in the sandbox without a terminal and returns its
+// combined output.
+func (c *Client) Run(ctx context.Context, name, workdir string, env map[string]string, command ...string) ([]byte, error) {
+	return c.Runner.Output(ctx, nil, execArgs(name, "--no-tty", workdir, env, command)...)
 }
 
 // Start starts a stopped sandbox.

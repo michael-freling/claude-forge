@@ -54,6 +54,13 @@ type OpenShellConfig struct {
 	// Image is the sandbox image (default: images.agent).
 	Image  string                `yaml:"image"`
 	GitHub OpenShellGitHubConfig `yaml:"github"`
+	// Repositories (owner/name) are cloned into the workspace when a sandbox
+	// is created.
+	Repositories []string `yaml:"repositories"`
+	// Plugins (name@marketplace) are installed when a sandbox is created.
+	// Nil (the key is absent) installs the plugins enabled on the host; an
+	// empty list installs none.
+	Plugins []string `yaml:"plugins"`
 }
 
 // OpenShellGitHubConfig configures GitHub access from OpenShell sandboxes.
@@ -67,10 +74,31 @@ type OpenShellGitHubConfig struct {
 // githubRepoPattern matches a GitHub owner/name.
 var githubRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
 
+// pluginPattern matches a Claude Code plugin ID, name@marketplace.
+var pluginPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+$`)
+
+// ValidateGitHubRepo checks a GitHub repository reference (owner/name).
+func ValidateGitHubRepo(repo string) error {
+	if !githubRepoPattern.MatchString(repo) || strings.HasSuffix(repo, ".git") {
+		return fmt.Errorf("invalid repository %q: use owner/name", repo)
+	}
+	return nil
+}
+
 func validateOpenShell(c OpenShellConfig) error {
 	for _, r := range c.GitHub.PushRepos {
-		if !githubRepoPattern.MatchString(r) || strings.HasSuffix(r, ".git") {
-			return fmt.Errorf("openshell.github.push_repos: invalid repository %q: use owner/name", r)
+		if err := ValidateGitHubRepo(r); err != nil {
+			return fmt.Errorf("openshell.github.push_repos: %w", err)
+		}
+	}
+	for _, r := range c.Repositories {
+		if err := ValidateGitHubRepo(r); err != nil {
+			return fmt.Errorf("openshell.repositories: %w", err)
+		}
+	}
+	for _, p := range c.Plugins {
+		if !pluginPattern.MatchString(p) {
+			return fmt.Errorf("openshell.plugins: invalid plugin %q: use name@marketplace", p)
 		}
 	}
 	return nil

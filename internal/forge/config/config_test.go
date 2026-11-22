@@ -483,3 +483,68 @@ func TestLoad_OpenShell(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_OpenShellRepositoriesAndPlugins(t *testing.T) {
+	tests := []struct {
+		name      string
+		yaml      string
+		wantRepos []string
+		// wantPlugins distinguishes nil (key absent) from an empty list.
+		wantPlugins []string
+		wantErr     string
+	}{
+		{name: "absent", yaml: "openshell:\n  image: img:1\n"},
+		{name: "explicit empty plugins", yaml: "openshell:\n  plugins: []\n", wantPlugins: []string{}},
+		{
+			name:        "lists",
+			yaml:        "openshell:\n  repositories: [octo/demo, octo/.github]\n  plugins: [a@m1, b-c@m-2]\n",
+			wantRepos:   []string{"octo/demo", "octo/.github"},
+			wantPlugins: []string{"a@m1", "b-c@m-2"},
+		},
+		{name: "invalid repository", yaml: "openshell:\n  repositories: [demo]\n", wantErr: "openshell.repositories: invalid repository"},
+		{name: "repository git suffix", yaml: "openshell:\n  repositories: [octo/demo.git]\n", wantErr: "invalid repository"},
+		{name: "plugin without marketplace", yaml: "openshell:\n  plugins: [demo]\n", wantErr: "openshell.plugins: invalid plugin"},
+		{name: "plugin with space", yaml: "openshell:\n  plugins: [\"a b@m\"]\n", wantErr: "invalid plugin"},
+		{name: "plugin with two markers", yaml: "openshell:\n  plugins: [a@b@c]\n", wantErr: "invalid plugin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.yaml), 0o644))
+			cfg, err := Load(dir)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantRepos, cfg.OpenShell.Repositories)
+			assert.Equal(t, tt.wantPlugins, cfg.OpenShell.Plugins)
+			assert.Equal(t, tt.wantPlugins == nil, cfg.OpenShell.Plugins == nil, "nil and empty plugin lists mean different things")
+		})
+	}
+}
+
+func TestValidateGitHubRepo(t *testing.T) {
+	tests := []struct {
+		repo    string
+		wantErr bool
+	}{
+		{repo: "octo/demo"},
+		{repo: "octo/.github"},
+		{repo: "demo", wantErr: true},
+		{repo: "octo/demo.git", wantErr: true},
+		{repo: "-octo/demo", wantErr: true},
+		{repo: "octo/de/mo", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.repo, func(t *testing.T) {
+			err := ValidateGitHubRepo(tt.repo)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}

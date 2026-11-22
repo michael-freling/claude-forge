@@ -9,8 +9,9 @@ container. It is a separate runtime with a different model from
 `claude-forge start`:
 
 - **Not tied to a directory or repository.** You can run it from anywhere.
-  Each sandbox has its own persistent workspace (`~/work`), and the agent
-  clones whatever repositories it needs into it, several side by side.
+  Each sandbox has its own persistent workspace (`~/work`). Repositories you
+  name are cloned into it when the sandbox is created, and the agent clones
+  any others it needs, several side by side.
   Nothing on your machine is mounted, so the agent's work reaches you through
   what it pushes.
 - **No gateway or git proxy.** Network access comes from a generated OpenShell
@@ -33,8 +34,8 @@ container. It is a separate runtime with a different model from
 ## Quick start
 
 ```bash
-# Create a sandbox and start Claude Code in it
-claude-forge openshell start api-work -p "clone octo/api and octo/web, then ..."
+# Create a sandbox with two repositories cloned and start Claude Code in it
+claude-forge openshell start api-work --repo octo/api --repo octo/web -p "..."
 
 # Exit Claude Code; the sandbox keeps running. Later:
 claude-forge openshell connect api-work   # continues the last conversation
@@ -47,7 +48,7 @@ claude-forge openshell delete api-work    # removes the sandbox and its workspac
 
 | Command | What it does |
 | --- | --- |
-| `openshell start <name>` | Creates a sandbox and starts Claude Code in `~/work`. Flags: `-p/--prompt`, `--agent`, `--no-skip-permissions` |
+| `openshell start <name>` | Creates a sandbox and starts Claude Code in `~/work`. Flags: `--repo owner/name` (repeatable), `-p/--prompt`, `--agent`, `--no-skip-permissions` |
 | `openshell connect <name>` | Runs Claude Code again with `--continue`, starting the sandbox first if it is stopped. Flags: `--agent`, `--no-skip-permissions` |
 | `openshell list` | Lists the sandboxes claude-forge created (labelled `claude-forge=true`) |
 | `openshell stop <name>` | Stops a sandbox, keeping its workspace |
@@ -69,6 +70,25 @@ sandboxes pick up the new token within seconds.
 The GitHub token is stored the first time a sandbox needs it. Run
 `claude-forge openshell auth` after rotating it.
 
+## What happens at creation
+
+Before Claude Code starts in a new sandbox, `start`:
+
+- **Clones repositories.** `openshell.repositories` and every `--repo` are
+  cloned over HTTPS into `~/work/<name>`. When two repositories share a name,
+  the later one goes to `~/work/<owner>-<name>`. A directory that already
+  exists is skipped.
+- **Installs Claude Code plugins.** Unless `openshell.plugins` is set, these
+  are the plugins enabled on your machine (`enabledPlugins` in
+  `~/.claude/settings.json`). Each plugin's marketplace is added first, from
+  the source in your `~/.claude/plugins/known_marketplaces.json`. A
+  marketplace you added from a local directory is added from that
+  directory's GitHub `origin` remote instead.
+
+A repository or plugin that fails (a typo, no access, an unknown marketplace)
+prints a warning and the session starts anyway. `connect` does neither again:
+the sandbox keeps what it cloned and installed, and the plugins stay enabled.
+
 ## What is copied into a sandbox
 
 Every `start` and `connect` refreshes `~/.claude` in the sandbox from your
@@ -77,7 +97,8 @@ machine:
 - your `~/.claude/CLAUDE.md`, after generated instructions about the sandbox
 - `~/.claude/rules`, `agents`, `commands` and `skills`, with symlinks resolved
 - `~/.config/claude-forge/settings.json`, minus the settings that only work in
-  the Docker runtime: MCP servers, plugins and OpenTelemetry exporters
+  the Docker runtime: MCP servers, plugins and OpenTelemetry exporters. The
+  plugins and marketplaces the sandbox installed itself are kept.
 
 `start` also seeds `~/.claude.json` (onboarding done, your theme, the workspace
 trusted) and `~/.gitconfig` (your global git `user.name`/`user.email`, and a
@@ -95,6 +116,14 @@ you want commits made in sandboxes to carry it.
 openshell:
   gateway: ""          # OpenShell gateway name (default: the CLI's active gateway)
   image: ""            # sandbox image (default: images.agent)
+  # Cloned into ~/work when a sandbox is created, before any --repo.
+  repositories:
+    - octo/api
+  # Claude Code plugins installed when a sandbox is created.
+  # Leave the key out to install the plugins enabled on your machine;
+  # set it to [] to install none.
+  plugins:
+    - michael-config@michael-freling
   github:
     # Limit git push and GitHub REST API writes to these repositories.
     # Empty (the default) allows whatever the GitHub token allows.
@@ -116,8 +145,7 @@ keep the rules they started with.
 
 ## Limitations
 
-- No Docker inside the sandbox, and no MCP servers or plugins from the Docker
-  runtime.
+- No Docker inside the sandbox, and no MCP servers from the Docker runtime.
 - No `gh` CLI in the image. The agent calls the GitHub API with `curl` and the
   `$GITHUB_TOKEN` placeholder.
 - git over SSH has no key. Use HTTPS remotes.

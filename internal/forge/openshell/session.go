@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 
@@ -37,6 +38,10 @@ type Manager struct {
 	GitIdentity func() (name, email string)
 	// ClaudeModel returns the host's Claude Code model setting ("" for none).
 	ClaudeModel func() string
+	// GitOrigin returns the origin remote URL of a host git checkout (git
+	// remote get-url by default). It resolves plugin marketplaces the host
+	// added from a local directory.
+	GitOrigin func(dir string) (string, error)
 }
 
 func (m *Manager) logf(format string, args ...any) {
@@ -159,11 +164,18 @@ type StartOptions struct {
 	Prompt          string
 	SkipPermissions bool
 	Agent           string
+	// Repos (owner/name) are cloned in addition to openshell.repositories.
+	Repos []string
 }
 
-// Start creates a sandbox and runs Claude Code in it.
+// Start creates a sandbox, clones the repositories and installs the plugins
+// it is set up with, and runs Claude Code in it.
 func (m *Manager) Start(ctx context.Context, opts StartOptions) error {
 	if err := ValidateName(opts.Name); err != nil {
+		return err
+	}
+	repos, err := m.repositories(opts.Repos)
+	if err != nil {
 		return err
 	}
 	if _, err := m.Client.GetSandbox(ctx, opts.Name); err == nil {
@@ -198,6 +210,8 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) error {
 	if err := m.uploadHome(ctx, opts.Name, true, github); err != nil {
 		return err
 	}
+	m.cloneRepos(ctx, opts.Name, repos)
+	m.installPlugins(ctx, opts.Name)
 	return m.runClaude(ctx, opts.Name, false, opts)
 }
 
@@ -250,8 +264,28 @@ func (m *Manager) uploadHome(ctx context.Context, name string, firstRun, github 
 	if err := StageHome(stage, opts); err != nil {
 		return err
 	}
-	return m.Client.uploadHome(ctx, name, stage, layout.Home)
+	if err := m.Client.uploadHome(ctx, name, stage, layout.Home); err != nil {
+		return err
+	}
+	claudeDir := path.Join(layout.Home, ".claude")
+	if _, err := m.Client.Run(ctx, name, "", nil, "bash", "-c", mergeSettingsScript, "bash",
+		path.Join(claudeDir, stagedSettingsFile), path.Join(claudeDir, "settings.json")); err != nil {
+		return fmt.Errorf("failed to update settings.json in sandbox %s: %w", name, err)
+	}
+	return nil
 }
+
+// mergeSettingsScript replaces the sandbox's settings.json ($2) with the
+// staged forge settings ($1), keeping the keys `claude plugin` manages in
+// the sandbox, so reconnecting does not disable the installed plugins.
+const mergeSettingsScript = `set -e
+if [ -f "$2" ]; then
+  jq -s '.[0] + (.[1] | {enabledPlugins, extraKnownMarketplaces} | with_entries(select(.value != null)))' "$1" "$2" > "$1.merged"
+  mv "$1.merged" "$2"
+  rm "$1"
+else
+  mv "$1" "$2"
+fi`
 
 // claudeArgs builds the Claude Code command line.
 func (m *Manager) claudeArgs(opts StartOptions) []string {
@@ -279,16 +313,22 @@ func (m *Manager) claudeArgs(opts StartOptions) []string {
 // starts a new one when there is none yet (claude --continue fails then).
 var continueScript = `if ls ~/.claude/projects/` + layout.SessionSubdir + `/*.jsonl >/dev/null 2>&1; then exec claude --continue "$@"; else exec claude "$@"; fi`
 
-func (m *Manager) runClaude(ctx context.Context, name string, resume bool, opts StartOptions) error {
-	env := map[string]string{
+// sandboxEnv is the environment of the commands claude-forge runs in a
+// sandbox. Values show up in the host's process list: never put secrets here.
+func sandboxEnv() map[string]string {
+	return map[string]string{
 		// sandbox exec sets HOME to the working directory; Claude Code's
-		// config and the uploaded files live in the real home.
+		// config, the uploaded files and .gitconfig live in the real home.
 		"HOME":                    layout.Home,
 		"DISABLE_AUTOUPDATER":     "1",
 		"DISABLE_TELEMETRY":       "1",
 		"DISABLE_ERROR_REPORTING": "1",
 		"GIT_TERMINAL_PROMPT":     "0",
 	}
+}
+
+func (m *Manager) runClaude(ctx context.Context, name string, resume bool, opts StartOptions) error {
+	env := sandboxEnv()
 	if m.ClaudeModel != nil {
 		if model := m.ClaudeModel(); model != "" {
 			env["ANTHROPIC_MODEL"] = model

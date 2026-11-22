@@ -14,6 +14,7 @@ import (
 
 	"github.com/michael-freling/claude-forge/internal/forge/auth"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
+	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/michael-freling/claude-forge/internal/forge/openshell"
 )
 
@@ -99,6 +100,25 @@ func TestOpenShellCmd(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOpenShellStartRepoFlag(t *testing.T) {
+	t.Run("repeatable", func(t *testing.T) {
+		runner := withFakeOpenShell(t)
+		_, err := runOpenShell(t, "start", "new1", "--repo", "octo/a", "--repo", "other/b")
+		require.NoError(t, err)
+		calls := strings.Join(runner.calls, "\n")
+		assert.Contains(t, calls, "-- test -e "+layout.Workspace+"/a")
+		assert.Contains(t, calls, "-- test -e "+layout.Workspace+"/b")
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		runner := withFakeOpenShell(t)
+		_, err := runOpenShell(t, "start", "new1", "--repo", "not-a-repo")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `invalid repository "not-a-repo"`)
+		assert.NotContains(t, strings.Join(runner.calls, "\n"), "sandbox create")
+	})
 }
 
 func TestOpenShellCmd_ManagerError(t *testing.T) {

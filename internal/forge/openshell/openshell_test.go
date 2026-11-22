@@ -190,7 +190,7 @@ func TestStageHome(t *testing.T) {
 		assert.NoFileExists(t, filepath.Join(stage, ".claude", "agents", "broken.md"))
 
 		var settings map[string]any
-		data, err := os.ReadFile(filepath.Join(stage, ".claude", "settings.json"))
+		data, err := os.ReadFile(filepath.Join(stage, ".claude", stagedSettingsFile))
 		require.NoError(t, err)
 		require.NoError(t, json.Unmarshal(data, &settings))
 		assert.NotContains(t, settings, "mcpServers")
@@ -214,7 +214,7 @@ func TestStageHome(t *testing.T) {
 		require.NoError(t, StageHome(stage, HomeOptions{ClaudeDir: claudeDir, ConfigDir: configDir, HomeDir: host}))
 		assert.NoFileExists(t, filepath.Join(stage, ".claude.json"))
 		assert.NoFileExists(t, filepath.Join(stage, ".gitconfig"))
-		assert.FileExists(t, filepath.Join(stage, ".claude", "settings.json"))
+		assert.FileExists(t, filepath.Join(stage, ".claude", stagedSettingsFile))
 	})
 
 	t.Run("defaults without host files", func(t *testing.T) {
@@ -222,7 +222,7 @@ func TestStageHome(t *testing.T) {
 		empty := t.TempDir()
 		require.NoError(t, StageHome(stage, HomeOptions{ClaudeDir: empty, ConfigDir: empty, HomeDir: empty, FirstRun: true}))
 		var settings map[string]any
-		data, err := os.ReadFile(filepath.Join(stage, ".claude", "settings.json"))
+		data, err := os.ReadFile(filepath.Join(stage, ".claude", stagedSettingsFile))
 		require.NoError(t, err)
 		require.NoError(t, json.Unmarshal(data, &settings))
 		assert.Equal(t, "disabled", settings["autoUpdaterStatus"])
@@ -343,7 +343,7 @@ func TestManagerStart(t *testing.T) {
 		}
 		assert.ElementsMatch(t, []string{layout.Home, layout.Home + "/.claude.json", layout.Home + "/.gitconfig"}, dests)
 
-		execs := f.runner.find("sandbox exec")
+		execs := f.runner.find("sandbox exec -n demo --tty")
 		require.Len(t, execs, 1)
 		assert.True(t, execs[0].Interactive)
 		e := execs[0].String()
@@ -367,7 +367,7 @@ func TestManagerStart(t *testing.T) {
 		assert.Contains(t, updates[0].File, "resource_version: 3")
 		assert.Empty(t, f.runner.find("provider create"))
 		assert.Len(t, f.runner.find("provider update "+ClaudeProviderName), 1, "the Claude token is refreshed on every start")
-		e := f.runner.find("sandbox exec")[0].String()
+		e := f.runner.find("sandbox exec -n demo --tty")[0].String()
 		assert.Contains(t, e, "-- claude --agent reviewer --name demo")
 		assert.Contains(t, f.runner.find("sandbox create")[0].String(), "--from custom:1")
 	})
@@ -526,7 +526,7 @@ func TestManagerConnect(t *testing.T) {
 			for _, u := range f.runner.find("sandbox upload") {
 				assert.Equal(t, layout.Home, u.Args[4], "reconnect only refreshes ~/.claude")
 			}
-			e := f.runner.find("sandbox exec")[0]
+			e := f.runner.find("sandbox exec -n demo --tty")[0]
 			assert.Equal(t, []string{"bash", "-c"}, e.Args[len(e.Args)-5:len(e.Args)-3])
 			assert.Contains(t, e.Args[len(e.Args)-3], "claude --continue")
 			assert.Equal(t, []string{"claude", "--dangerously-skip-permissions"}, e.Args[len(e.Args)-2:])
