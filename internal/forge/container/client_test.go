@@ -701,47 +701,56 @@ func TestStartAgent_Interactive(t *testing.T) {
 	}
 }
 
-func TestStartAgent_UIDGIDEnvVars(t *testing.T) {
+func TestStartAgent_User(t *testing.T) {
 	tests := []struct {
-		name       string
-		uid        int
-		gid        int
-		wantUID    bool
-		wantGID    bool
-		wantUIDVal string
-		wantGIDVal string
+		name         string
+		uid          int
+		gid          int
+		enableDocker bool
+		wantUser     string
+		wantEnv      []string
+		wantNoEnv    []string
+		wantIdentity bool
 	}{
 		{
-			name:       "sets FORGE_UID and FORGE_GID when both positive",
-			uid:        1000,
-			gid:        1000,
-			wantUID:    true,
-			wantGID:    true,
-			wantUIDVal: "FORGE_UID=1000",
-			wantGIDVal: "FORGE_GID=1000",
+			name:         "runs as host UID:GID with the identity mounted",
+			uid:          1000,
+			gid:          1000,
+			wantUser:     "1000:1000",
+			wantNoEnv:    []string{"FORGE_UID=", "FORGE_GID=", "FORGE_WORKSPACE="},
+			wantIdentity: true,
 		},
 		{
-			name:    "does not set FORGE_UID or FORGE_GID when both zero",
-			uid:     0,
-			gid:     0,
-			wantUID: false,
-			wantGID: false,
+			name:      "uses the image user without a host UID or GID",
+			wantUser:  "",
+			wantNoEnv: []string{"FORGE_UID=", "FORGE_GID=", "FORGE_WORKSPACE="},
 		},
 		{
-			name:       "sets only FORGE_UID when GID is zero",
-			uid:        501,
-			gid:        0,
-			wantUID:    true,
-			wantGID:    false,
-			wantUIDVal: "FORGE_UID=501",
+			name:      "uses the image user when only the UID is set",
+			uid:       501,
+			wantUser:  "",
+			wantNoEnv: []string{"FORGE_UID=", "FORGE_GID="},
 		},
 		{
-			name:       "sets only FORGE_GID when UID is zero",
-			uid:        0,
-			gid:        20,
-			wantUID:    false,
-			wantGID:    true,
-			wantGIDVal: "FORGE_GID=20",
+			name:      "uses the image user when only the GID is set",
+			gid:       20,
+			wantUser:  "",
+			wantNoEnv: []string{"FORGE_UID=", "FORGE_GID="},
+		},
+		{
+			name:         "starts as root for Docker-in-Docker and asks the entrypoint to remap",
+			uid:          1000,
+			gid:          1000,
+			enableDocker: true,
+			wantUser:     "0:0",
+			wantEnv:      []string{"FORGE_UID=1000", "FORGE_GID=1000", "FORGE_WORKSPACE=" + layout.Workspace},
+		},
+		{
+			name:         "starts as root for Docker-in-Docker without a host UID or GID",
+			enableDocker: true,
+			wantUser:     "0:0",
+			wantEnv:      []string{"FORGE_WORKSPACE=" + layout.Workspace},
+			wantNoEnv:    []string{"FORGE_UID=", "FORGE_GID="},
 		},
 	}
 
@@ -753,34 +762,48 @@ func TestStartAgent_UIDGIDEnvVars(t *testing.T) {
 			mockAPI := NewMockDockerAPI(ctrl)
 
 			opts := AgentOptions{
-				Name:        "forge-agent-test-session",
-				Image:       "agent:latest",
-				NetworkName: "forge_net",
-				ProjectDir:  "/home/user/project",
-				UID:         tt.uid,
-				GID:         tt.gid,
+				Name:         "forge-agent-test-session",
+				Image:        "agent:latest",
+				NetworkName:  "forge_net",
+				ProjectDir:   "/home/user/project",
+				UID:          tt.uid,
+				GID:          tt.gid,
+				EnableDocker: tt.enableDocker,
+				Privileged:   tt.enableDocker,
+				PasswdFile:   "/host/config/container-passwd",
+				GroupFile:    "/host/config/container-group",
 			}
 
 			mockAPI.EXPECT().
 				ContainerCreate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				DoAndReturn(func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, netConfig *network.NetworkingConfig, name string) (container.CreateResponse, error) {
-					if tt.wantUID {
-						assert.Contains(t, config.Env, tt.wantUIDVal)
-					} else {
+					assert.Equal(t, tt.wantUser, config.User)
+					for _, want := range tt.wantEnv {
+						assert.Contains(t, config.Env, want)
+					}
+					for _, unwanted := range tt.wantNoEnv {
 						for _, e := range config.Env {
-							assert.NotContains(t, e, "FORGE_UID=")
+							assert.NotContains(t, e, unwanted)
 						}
 					}
-					if tt.wantGID {
-						assert.Contains(t, config.Env, tt.wantGIDVal)
-					} else {
-						for _, e := range config.Env {
-							assert.NotContains(t, e, "FORGE_GID=")
+
+					identityMounts := map[string]string{}
+					for _, m := range hostConfig.Mounts {
+						if m.Target == "/etc/passwd" || m.Target == "/etc/group" {
+							assert.True(t, m.ReadOnly, "%s must be mounted read-only", m.Target)
+							identityMounts[m.Target] = m.Source
 						}
+					}
+					if tt.wantIdentity {
+						assert.Equal(t, map[string]string{
+							"/etc/passwd": "/host/config/container-passwd",
+							"/etc/group":  "/host/config/container-group",
+						}, identityMounts)
+					} else {
+						assert.Empty(t, identityMounts)
 					}
 					return container.CreateResponse{ID: "c-123"}, nil
 				})
-
 			mockAPI.EXPECT().
 				ContainerStart(gomock.Any(), "c-123", container.StartOptions{}).
 				Return(nil)

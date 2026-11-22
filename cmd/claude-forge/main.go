@@ -17,6 +17,7 @@ import (
 	"github.com/michael-freling/claude-forge/internal/dashboard"
 	"github.com/michael-freling/claude-forge/internal/forge"
 	"github.com/michael-freling/claude-forge/internal/forge/auth"
+	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	forgeconfig "github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/container"
 	"github.com/michael-freling/claude-forge/internal/forge/project"
@@ -900,15 +901,24 @@ var syncHostPlugins = func(homeDir string, force bool) error {
 		containerName := "forge-plugins-sync"
 		fmt.Printf("Syncing %d of %d plugins...\n", len(installPlugins), len(syncPlugins))
 
-		// Start a temporary container with the plugins dir mounted
-		uid := os.Getuid()
-		gid := os.Getgid()
+		// Start a temporary container with the plugins dir mounted, running
+		// as the host user (as agent sessions do) so installed plugins keep
+		// the host owner.
 		runArgs := []string{
 			"run", "--rm", "--name", containerName,
-			"-e", fmt.Sprintf("FORGE_UID=%d", uid),
-			"-e", fmt.Sprintf("FORGE_GID=%d", gid),
 			"-e", "DISABLE_AUTOUPDATER=1",
 			"-v", pluginsDir + ":/home/user/.claude/plugins",
+		}
+		if uid, gid := os.Getuid(), os.Getgid(); uid > 0 && gid > 0 {
+			identity, err := claudecode.WriteContainerIdentity(configDir, uid, gid)
+			if err != nil {
+				return fmt.Errorf("failed to write container identity: %w", err)
+			}
+			runArgs = append(runArgs,
+				"--user", fmt.Sprintf("%d:%d", uid, gid),
+				"-v", identity.PasswdFile+":/etc/passwd:ro",
+				"-v", identity.GroupFile+":/etc/group:ro",
+			)
 		}
 
 		// Build commands: add marketplaces, update, then install each plugin

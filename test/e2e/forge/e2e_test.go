@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -402,6 +403,7 @@ docker run --rm hello-world
 	runCmd := exec.CommandContext(ctx, "docker", "run",
 		"--name", containerName,
 		"--privileged",
+		"--user", "0:0",
 		"-v", "/var/lib/docker",
 		"-e", "FORGE_ENABLE_DOCKER=1",
 		agentImageName,
@@ -417,6 +419,87 @@ docker run --rm hello-world
 	// Isolation: the inner daemon sees none of the host daemon's containers.
 	assert.NotContains(t, logs, markerName, "inner daemon must not see host containers:\n%s", logs)
 	assert.NotContains(t, logs, "alpine", "inner daemon must not see host containers:\n%s", logs)
+}
+
+// TestAgentRunsAsHostUser verifies that the agent image works when run the way
+// the orchestrator runs it without docker.enabled: directly as the host UID:GID
+// (never root), with the generated passwd/group mounted. The image's default
+// user must be non-root too, since sandboxes such as OpenShell refuse UID 0.
+func TestAgentRunsAsHostUser(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("Docker daemon not available")
+	}
+	uid, gid := os.Getuid(), os.Getgid()
+	if uid == 0 || gid == 0 {
+		t.Skip("test must run as a non-root host user")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	projectRoot := findProjectRoot(t)
+
+	agentBinaryPath := filepath.Join(projectRoot, "docker", "agent", "claude-forge")
+	buildAgentBinary := exec.Command("go", "build", "-o", agentBinaryPath, "./cmd/claude-forge/")
+	buildAgentBinary.Dir = projectRoot
+	buildAgentBinary.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64")
+	out, err := buildAgentBinary.CombinedOutput()
+	require.NoError(t, err, "failed to build agent binary: %s", out)
+	t.Cleanup(func() { os.Remove(agentBinaryPath) })
+
+	agentImageName := "forge-e2e-agent-hostuser"
+	buildAgent := exec.CommandContext(ctx, "docker", "build", "-t", agentImageName, "docker/agent/")
+	buildAgent.Dir = projectRoot
+	out, err = buildAgent.CombinedOutput()
+	require.NoError(t, err, "failed to build agent image: %s", out)
+
+	out, err = exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Config.User}}", agentImageName).CombinedOutput()
+	require.NoError(t, err, "failed to inspect agent image: %s", out)
+	imageUser := strings.TrimSpace(string(out))
+	assert.NotContains(t, []string{"", "root", "0", "0:0"}, imageUser, "the image must default to a non-root user")
+
+	identity, err := claudecode.WriteContainerIdentity(t.TempDir(), uid, gid)
+	require.NoError(t, err)
+	workDir := t.TempDir()
+
+	script := `set -e
+echo "ID=$(id -u):$(id -g)"
+echo "WHOAMI=$(whoami)"
+echo "HOME_DIR=$(getent passwd "$(id -u)" | cut -d: -f6)"
+mkdir -p ~/.claude/todos ~/.config/forge-e2e ~/go/bin ~/.cache/forge-e2e ~/.local/share/forge-e2e && echo HOME_WRITABLE
+claude --version >/dev/null && echo CLAUDE_OK
+git init -q . && git -c user.name=e2e -c user.email=e2e@example.com commit -q --allow-empty -m init && echo GIT_OK
+touch created-in-container
+`
+	out, err = exec.CommandContext(ctx, "docker", "run", "--rm",
+		"--user", fmt.Sprintf("%d:%d", uid, gid),
+		"-v", identity.PasswdFile+":/etc/passwd:ro",
+		"-v", identity.GroupFile+":/etc/group:ro",
+		"-v", workDir+":"+layout.Workspace,
+		"-w", layout.Workspace,
+		"-e", "HOME="+layout.Home,
+		"-e", "DISABLE_AUTOUPDATER=1",
+		agentImageName, "bash", "-c", script,
+	).CombinedOutput()
+	logs := string(out)
+	require.NoError(t, err, "agent script failed:\n%s", logs)
+
+	assert.Contains(t, logs, fmt.Sprintf("ID=%d:%d", uid, gid), "the agent must run as the host UID:GID:\n%s", logs)
+	assert.Contains(t, logs, "WHOAMI="+claudecode.ContainerUserName, "the host UID must resolve to the container user:\n%s", logs)
+	assert.Contains(t, logs, "HOME_DIR="+layout.Home, logs)
+	assert.Contains(t, logs, "HOME_WRITABLE", "the host UID must be able to write its home:\n%s", logs)
+	assert.Contains(t, logs, "CLAUDE_OK", logs)
+	assert.Contains(t, logs, "GIT_OK", logs)
+
+	info, err := os.Stat(filepath.Join(workDir, "created-in-container"))
+	require.NoError(t, err)
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	require.True(t, ok)
+	assert.Equal(t, uint32(uid), stat.Uid, "files written to the workspace must keep the host owner")
+	assert.Equal(t, uint32(gid), stat.Gid)
 }
 
 // TestAgentContainerCLAUDEMD verifies that the forge-managed container
@@ -466,8 +549,7 @@ func TestAgentContainerCLAUDEMD(t *testing.T) {
 		"-v", memoryFile + ":" + claudecode.ContainerMemoryTarget + ":ro",
 		"-v", workDir + ":" + layout.Workspace,
 		"-w", layout.Workspace,
-		"-e", "FORGE_UID=1000",
-		"-e", "FORGE_GID=1000",
+		"--user", "1000:1000",
 		"-e", "DISABLE_AUTOUPDATER=1",
 	}
 
@@ -572,8 +654,7 @@ func TestAgentFlag(t *testing.T) {
 	args := []string{"run", "--rm",
 		"-v", workDir + ":" + layout.Workspace,
 		"-w", layout.Workspace,
-		"-e", fmt.Sprintf("FORGE_UID=%d", os.Getuid()),
-		"-e", fmt.Sprintf("FORGE_GID=%d", os.Getgid()),
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-e", "DISABLE_AUTOUPDATER=1",
 		"-e", "CLAUDE_CODE_OAUTH_TOKEN=" + oauthToken,
 		agentImageName,

@@ -178,6 +178,16 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		return nil, fmt.Errorf("failed to write container CLAUDE.md: %w", err)
 	}
 
+	// The agent runs as the host UID:GID (except with Docker-in-Docker, which
+	// starts as root); give that UID a name and home inside the container.
+	var identity claudecode.ContainerIdentity
+	if !cfg.Docker.Enabled && opts.UID > 0 && opts.GID > 0 {
+		identity, err = claudecode.WriteContainerIdentity(o.ConfigDir, opts.UID, opts.GID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to write container identity: %w", err)
+		}
+	}
+
 	// Pull images if not present
 	imagesToPull := []string{cfg.Images.Agent, cfg.Images.Gateway, cfg.Images.GitHubMCP}
 	for _, img := range imagesToPull {
@@ -380,12 +390,6 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 			agentEnv["CLAUDE_CODE_OAUTH_TOKEN"] = creds.Token
 		}
 	}
-	if opts.UID > 0 {
-		agentEnv["FORGE_UID"] = fmt.Sprintf("%d", opts.UID)
-	}
-	if opts.GID > 0 {
-		agentEnv["FORGE_GID"] = fmt.Sprintf("%d", opts.GID)
-	}
 
 	// Read host model preference and propagate to container
 	if model := claudecode.ReadHostModel(o.ClaudeDir); model != "" {
@@ -460,6 +464,8 @@ func (o *Orchestrator) Start(ctx context.Context, opts StartOptions) (*Session, 
 		Cmd:                 agentCmd,
 		UID:                 opts.UID,
 		GID:                 opts.GID,
+		PasswdFile:          identity.PasswdFile,
+		GroupFile:           identity.GroupFile,
 		CacheDirs:           containerCacheDirs,
 		ExtraMounts:         extraMounts,
 		ResumeWorktreeName:  opts.ResumeWorktreeName,

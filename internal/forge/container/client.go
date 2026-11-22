@@ -274,21 +274,27 @@ type NetworkAttachment struct {
 
 // AgentOptions holds configuration for starting an agent container.
 type AgentOptions struct {
-	Name               string            // container name: forge-agent-<project-id>-<session-id>
-	Image              string            // agent image
-	NetworkName        string            // Docker network to attach to
-	ProjectDir         string            // host path to project (mounted at layout.Workspace)
-	SessionDir         string            // host path to session storage
-	ClaudeDir          string            // host path to ~/.claude/
-	ConfigDir          string            // host path to ~/.config/claude-forge/
-	HomeDir            string            // host home dir for CLAUDE.md paths
-	Env                map[string]string // environment variables
-	Privileged         bool
-	EnableDocker       bool                // back /var/lib/docker with a volume for the in-container dockerd (DinD)
-	Interactive        bool                // allocate TTY and stdin (for docker attach)
-	Cmd                []string            // claude args: --dangerously-skip-permissions, --worktree, etc.
-	UID                int                 // host user UID (for file ownership mapping)
-	GID                int                 // host user GID (for file ownership mapping)
+	Name         string            // container name: forge-agent-<project-id>-<session-id>
+	Image        string            // agent image
+	NetworkName  string            // Docker network to attach to
+	ProjectDir   string            // host path to project (mounted at layout.Workspace)
+	SessionDir   string            // host path to session storage
+	ClaudeDir    string            // host path to ~/.claude/
+	ConfigDir    string            // host path to ~/.config/claude-forge/
+	HomeDir      string            // host home dir for CLAUDE.md paths
+	Env          map[string]string // environment variables
+	Privileged   bool
+	EnableDocker bool     // back /var/lib/docker with a volume for the in-container dockerd (DinD)
+	Interactive  bool     // allocate TTY and stdin (for docker attach)
+	Cmd          []string // claude args: --dangerously-skip-permissions, --worktree, etc.
+	UID          int      // host user UID (for file ownership mapping)
+	GID          int      // host user GID (for file ownership mapping)
+	// PasswdFile and GroupFile are host paths to account databases that name
+	// UID:GID as the container user (written by claudecode.WriteContainerIdentity).
+	// They are mounted read-only over /etc/passwd and /etc/group when the agent
+	// runs as UID:GID. Empty skips the mounts.
+	PasswdFile         string
+	GroupFile          string
 	PluginsDir         string              // host path to forge plugins dir (mounted rw at ~/.claude/plugins)
 	CacheDirs          []CacheDir          // host dependency cache directories to mount (rw)
 	ExtraMounts        []CacheDir          // additional user-specified bind mounts (rw)
@@ -301,22 +307,48 @@ type AgentOptions struct {
 	ContainerMemoryFile string
 }
 
+// rootUser is the container user for sessions that start as root.
+const rootUser = "0:0"
+
+// agentUser returns the user the agent container runs as.
+//
+// By default the container runs directly as the host user's UID:GID, so it
+// never holds root and files it writes to bind mounts keep the host owner.
+// Docker-in-Docker is the exception: dockerd needs root, so those sessions
+// start as root and the entrypoint drops to the remapped user. Without a host
+// UID/GID (both must be non-root), the image's default non-root user is used.
+func agentUser(opts AgentOptions) string {
+	if opts.EnableDocker {
+		return rootUser
+	}
+	if opts.UID > 0 && opts.GID > 0 {
+		return fmt.Sprintf("%d:%d", opts.UID, opts.GID)
+	}
+	return ""
+}
+
 // StartAgent creates and starts an agent container.
 func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, error) {
 	env := make([]string, 0, len(opts.Env))
 	for k, v := range opts.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
-	if opts.UID > 0 {
-		env = append(env, fmt.Sprintf("FORGE_UID=%d", opts.UID))
-	}
-	if opts.GID > 0 {
-		env = append(env, fmt.Sprintf("FORGE_GID=%d", opts.GID))
-	}
+	runAs := agentUser(opts)
+	if runAs == rootUser {
+		// Docker-in-Docker needs dockerd running as root, so the container
+		// starts as root and the entrypoint remaps the image's user to the
+		// host UID/GID before dropping privileges for Claude Code.
+		if opts.UID > 0 {
+			env = append(env, fmt.Sprintf("FORGE_UID=%d", opts.UID))
+		}
+		if opts.GID > 0 {
+			env = append(env, fmt.Sprintf("FORGE_GID=%d", opts.GID))
+		}
 
-	// The entrypoint needs the workspace path to keep its ownership fixup out of
-	// the bind-mounted project tree.
-	env = append(env, "FORGE_WORKSPACE="+layout.Workspace)
+		// The entrypoint needs the workspace path to keep its ownership fixup
+		// out of the bind-mounted project tree.
+		env = append(env, "FORGE_WORKSPACE="+layout.Workspace)
+	}
 
 	mounts := []mount.Mount{
 		{
@@ -397,6 +429,27 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 		})
 	}
 
+	// Account databases (read-only) naming the host UID:GID as the container
+	// user, so tools that look up the current user (ssh, git) work.
+	if runAs != rootUser && runAs != "" {
+		if opts.PasswdFile != "" {
+			mounts = append(mounts, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   opts.PasswdFile,
+				Target:   "/etc/passwd",
+				ReadOnly: true,
+			})
+		}
+		if opts.GroupFile != "" {
+			mounts = append(mounts, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   opts.GroupFile,
+				Target:   "/etc/group",
+				ReadOnly: true,
+			})
+		}
+	}
+
 	// Forge-managed container instructions (read-only): mounted at Claude Code's
 	// managed-memory path, so every session is told it runs in a container, how
 	// to name workspace paths, and how to reach GitHub through the gateway.
@@ -472,6 +525,7 @@ func (c *Client) StartAgent(ctx context.Context, opts AgentOptions) (string, err
 
 	containerConfig := &container.Config{
 		Image:      opts.Image,
+		User:       runAs,
 		Env:        env,
 		Cmd:        cmd,
 		WorkingDir: layout.Workspace,

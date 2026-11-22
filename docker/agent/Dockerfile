@@ -38,8 +38,17 @@ RUN apt-get update && apt-get install -y software-properties-common \
     tar unzip openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user (entrypoint adjusts UID/GID at startup)
-RUN useradd -m -s /bin/bash user
+# Create the non-root user as UID/GID 1000, the usual UID of the first user on
+# a Linux host (ubuntu:24.04 ships an "ubuntu" user there, removed first). The
+# image's default USER is this user, so a container started without --user
+# (OpenShell, a plain `docker run`, or a claude-forge release older than the
+# --user change) still runs as the host user on most machines and can read
+# owner-only files such as .claude/settings.local.json in the project.
+# claude-forge itself passes --user with the host's UID:GID, so other UIDs work
+# too; root-started DinD sessions are remapped by the entrypoint.
+RUN userdel -r ubuntu 2>/dev/null || true \
+    && groupadd -g 1000 user \
+    && useradd -m -s /bin/bash -u 1000 -g 1000 user
 
 # Claude Code (latest) via the standalone installer, installed as the runtime
 # user. An npm -g install lives in a root-owned prefix, and Claude Code warns
@@ -64,6 +73,19 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # The host project is bind-mounted here (see internal/forge/layout). Created in
 # the image so a run without the mount still has a writable working directory.
 RUN mkdir -p /home/user/work && chown user:user /home/user/work
+
+# The container runs as the host user's UID:GID, which is not the UID `user`
+# was created with. Pre-create the parents of claude-forge's mount targets
+# (Docker would otherwise create them root-owned) and let any UID write under
+# the home directory, so Claude Code can keep its state there.
+RUN mkdir -p /home/user/.claude /home/user/.config /home/user/.cache \
+        /home/user/.local/share /home/user/go/bin /home/user/go/pkg \
+    && chown -R user:user /home/user \
+    && chmod -R a+rwX /home/user
+
+# Default to the non-root user. Docker-in-Docker sessions override this with
+# root (see entrypoint.sh); sandboxes such as OpenShell refuse UID/GID 0.
+USER user
 
 WORKDIR /home/user/work
 ENTRYPOINT ["entrypoint.sh"]
