@@ -34,6 +34,9 @@ type HomeOptions struct {
 	PushRepos []string
 	// Network summarizes the reachable hosts in the agent's instructions.
 	Network string
+	// FullLogin stages the account and organization IDs of the host's
+	// 'claude' login (see stagedOAuthAccountFile), which Remote Control needs.
+	FullLogin bool
 }
 
 // claudeSubdirs are copied from the host's ~/.claude into the sandbox.
@@ -51,6 +54,27 @@ var settingsDroppedKeys = []string{"mcpServers", "enabledPlugins"}
 // installed in the sandbox stay enabled.
 const stagedSettingsFile = "settings.claude-forge.json"
 
+// stagedOAuthAccountFile is where StageHome writes, in .claude, the host's
+// ~/.claude.json oauthAccount reduced to oauthAccountKeys. loginScript merges
+// it into the sandbox's ~/.claude.json.
+const stagedOAuthAccountFile = "oauth-account.claude-forge.json"
+
+// oauthAccountKeys are the oauthAccount fields copied into a sandbox: the
+// account and organization IDs and plan tiers Claude Code needs to check
+// Remote Control eligibility. Personal fields (email address, names) are
+// never copied.
+var oauthAccountKeys = []string{
+	"accountUuid",
+	"organizationUuid",
+	"organizationRole",
+	"organizationType",
+	"billingType",
+	"workspaceRole",
+	"organizationRateLimitTier",
+	"userRateLimitTier",
+	"seatTier",
+}
+
 // StageHome writes the home-directory files for a sandbox into stageDir,
 // laid out as they should appear under the sandbox's home.
 func StageHome(stageDir string, opts HomeOptions) error {
@@ -65,6 +89,12 @@ func StageHome(stageDir string, opts HomeOptions) error {
 	}
 	if err := os.WriteFile(filepath.Join(claudeDir, stagedSettingsFile), settings, 0o644); err != nil {
 		return fmt.Errorf("failed to write %s: %w", stagedSettingsFile, err)
+	}
+
+	if opts.FullLogin {
+		if err := stageOAuthAccount(claudeDir, opts.HomeDir); err != nil {
+			return err
+		}
 	}
 
 	memory := Memory(opts.Network, opts.GitHubToken, opts.PushRepos)
@@ -152,6 +182,46 @@ func hostTheme(homeDir string) string {
 		}
 	}
 	return "dark"
+}
+
+// hostOAuthAccount returns the oauthAccountKeys fields of the host's
+// ~/.claude.json oauthAccount, or nil when there are none.
+func hostOAuthAccount(homeDir string) map[string]any {
+	var parsed struct {
+		OAuthAccount map[string]any `json:"oauthAccount"`
+	}
+	data, err := os.ReadFile(filepath.Join(homeDir, ".claude.json"))
+	if err != nil || json.Unmarshal(data, &parsed) != nil {
+		return nil
+	}
+	account := map[string]any{}
+	for _, k := range oauthAccountKeys {
+		if v, ok := parsed.OAuthAccount[k]; ok {
+			account[k] = v
+		}
+	}
+	if len(account) == 0 {
+		return nil
+	}
+	return account
+}
+
+// stageOAuthAccount writes the host's filtered oauthAccount to
+// stagedOAuthAccountFile in claudeDir. Without one nothing is written, and
+// the sandbox's ~/.claude.json keeps its own oauthAccount.
+func stageOAuthAccount(claudeDir, homeDir string) error {
+	account := hostOAuthAccount(homeDir)
+	if account == nil {
+		return nil
+	}
+	data, err := json.MarshalIndent(account, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal %s: %w", stagedOAuthAccountFile, err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, stagedOAuthAccountFile), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", stagedOAuthAccountFile, err)
+	}
+	return nil
 }
 
 // Gitconfig returns the sandbox's ~/.gitconfig.

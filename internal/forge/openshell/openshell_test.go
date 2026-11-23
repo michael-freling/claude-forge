@@ -418,7 +418,9 @@ func newManagerFixture(t *testing.T) *managerFixture {
 	runner.responses["profile export"] = "id: x\nresource_version: 3\n"
 	f := &managerFixture{
 		runner: runner, out: &bytes.Buffer{}, env: map[string]string{},
-		claude: &auth.Credentials{AuthType: "oauth", Token: "oauth-secret"},
+		// A setup-token in CLAUDE_CODE_OAUTH_TOKEN; fullLogin switches to a
+		// 'claude' login.
+		claude: &auth.Credentials{AuthType: "oauth", Token: "oauth-secret", FromEnv: true},
 	}
 	f.m = &Manager{
 		Client:    &Client{Runner: runner, TempDir: t.TempDir()},
@@ -882,8 +884,9 @@ func TestManagerClaudeCredential(t *testing.T) {
 	t.Run("API key", func(t *testing.T) {
 		f := newManagerFixture(t)
 		f.claude = &auth.Credentials{AuthType: "api_key", Token: "sk-key"}
-		key, value, err := f.m.claudeCredential()
+		creds, err := f.m.resolveClaude()
 		require.NoError(t, err)
+		key, value := providerCredential(creds)
 		assert.Equal(t, spec.EnvAnthropicAPIKey, key)
 		assert.Equal(t, "sk-key", value)
 	})
@@ -894,8 +897,10 @@ func TestManagerClaudeCredential(t *testing.T) {
 		f := newManagerFixture(t)
 		f.m.ResolveClaude = nil
 		writeFile(t, filepath.Join(f.m.ClaudeDir, ".credentials.json"), `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-host","refreshToken":"never-sent"}}`)
-		key, value, err := f.m.claudeCredential()
+		creds, err := f.m.resolveClaude()
 		require.NoError(t, err)
+		assert.True(t, creds.FullLogin())
+		key, value := providerCredential(creds)
 		assert.Equal(t, spec.EnvClaudeOAuthToken, key)
 		assert.Equal(t, "sk-ant-oat01-host", value)
 	})

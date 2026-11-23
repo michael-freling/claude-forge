@@ -81,6 +81,23 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
+			name: "credentials file with scopes and subscription type",
+			credFile: `{
+				"claudeAiOauth": {
+					"accessToken": "sk-ant-oat01-full",
+					"refreshToken": "sk-ant-ort01-refresh",
+					"scopes": ["user:inference", "user:profile"],
+					"subscriptionType": "max"
+				}
+			}`,
+			want: &Credentials{
+				AuthType:         "oauth",
+				Token:            "sk-ant-oat01-full",
+				Scopes:           []string{"user:inference", "user:profile"},
+				SubscriptionType: "max",
+			},
+		},
+		{
 			name: "credentials file with legacy flat format",
 			credFile: `{
 				"accessToken": "file-access-token",
@@ -213,4 +230,21 @@ func TestResolve_EnvVarPrecedenceOverFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "api_key", got.AuthType)
 	assert.Equal(t, "env-key", got.Token)
+}
+
+func TestCredentialsFullLogin(t *testing.T) {
+	tests := []struct {
+		name  string
+		creds Credentials
+		want  bool
+	}{
+		{name: "login from the credentials file", creds: Credentials{AuthType: "oauth"}, want: true},
+		{name: "CLAUDE_CODE_OAUTH_TOKEN", creds: Credentials{AuthType: "oauth", FromEnv: true}},
+		{name: "ANTHROPIC_API_KEY", creds: Credentials{AuthType: "api_key", FromEnv: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.creds.FullLogin())
+		})
+	}
 }
