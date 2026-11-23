@@ -17,6 +17,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/michael-freling/claude-forge/internal/forge/auth"
@@ -458,9 +459,36 @@ func (m *Manager) claudeArgs(opts StartOptions) []string {
 	return args
 }
 
+// continueFallbackSeconds is how soon claude --continue must fail for connect
+// to start a new conversation instead. With nothing to resume it exits 1
+// within about a second; the margin covers a slow sandbox, and a resumed
+// conversation that ends with an error after this long is real work that must
+// not be replaced by a new session.
+const continueFallbackSeconds = 10
+
 // continueScript continues the most recent conversation in the workspace, or
-// starts a new one when there is none yet (claude --continue fails then).
-var continueScript = `if ls ~/.claude/projects/` + layout.SessionSubdir + `/*.jsonl >/dev/null 2>&1; then exec claude --continue "$@"; else exec claude "$@"; fi`
+// starts a new one when there is none to continue.
+var continueScript = continueScriptWithin(continueFallbackSeconds)
+
+// ContinueScript returns the bash script connect runs in a sandbox: its
+// positional parameters are the claude arguments.
+func ContinueScript() string {
+	return continueScript
+}
+
+// continueScriptWithin returns the continue script with a fallback window of
+// fallbackSeconds. Transcripts alone do not mean there is a conversation to
+// continue: claude -p, claude remote-control, and sessions quit before the
+// first message leave ones that claude --continue cannot resume, and it exits
+// with "No conversation found to continue". So a --continue that fails within
+// the window falls back to a new conversation, in the same shell so the
+// terminal stays attached.
+func continueScriptWithin(fallbackSeconds int) string {
+	return `if ls ~/.claude/projects/` + layout.SessionSubdir + `/*.jsonl >/dev/null 2>&1; then ` +
+		`start=$SECONDS; claude --continue "$@"; status=$?; ` +
+		`if [ "$status" -eq 0 ] || [ $((SECONDS - start)) -ge ` + strconv.Itoa(fallbackSeconds) + ` ]; then exit "$status"; fi; ` +
+		`fi; exec claude "$@"`
+}
 
 // sandboxEnv is the environment of the commands claude-forge runs in a
 // sandbox. Values show up in the host's process list: never put secrets here.

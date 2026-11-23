@@ -51,7 +51,7 @@ claude-forge openshell delete api-work    # removes the sandbox and its workspac
 | Command | What it does |
 | --- | --- |
 | `openshell start <name>` | Creates a sandbox and starts Claude Code in `~/work`. Flags: `--repo owner/name` (repeatable), `-p/--prompt`, `--agent`, `--no-skip-permissions`, `--remote-control` |
-| `openshell connect <name>` | Runs Claude Code again with `--continue`, starting the sandbox first if it is stopped. Flags: `--agent`, `--no-skip-permissions`, `--remote-control` |
+| `openshell connect <name>` | Runs Claude Code again with `--continue` (or in a new conversation when there is none it can continue, such as after only `claude -p` runs), starting the sandbox first if it is stopped. Flags: `--agent`, `--no-skip-permissions`, `--remote-control` |
 | `openshell list` | Lists the sandboxes claude-forge created (labelled `claude-forge=true`) |
 | `openshell stop <name>` | Stops a sandbox, keeping its workspace |
 | `openshell delete <name>` | Deletes a sandbox **and its workspace**. Push any work first |
