@@ -97,7 +97,10 @@ Every `start` and `connect` refreshes `~/.claude` in the sandbox from your
 machine:
 
 - your `~/.claude/CLAUDE.md`, after generated instructions about the sandbox
-- `~/.claude/rules`, `agents`, `commands` and `skills`, with symlinks resolved
+- `~/.claude/rules`, `agents`, `commands` and `skills`, with symlinks resolved.
+  Symlinks are followed even when they point outside `~/.claude`, so whatever
+  they point to is uploaded into the sandbox; a link back to a directory
+  already being copied is skipped.
 - `~/.config/claude-forge/settings.json`, minus the settings that only work in
   the Docker runtime: MCP servers, plugins and OpenTelemetry exporters. The
   plugins and marketplaces the sandbox installed itself are kept.

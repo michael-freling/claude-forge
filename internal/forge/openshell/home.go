@@ -6,7 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/michael-freling/claude-forge/internal/forge/claudecode"
 	"github.com/michael-freling/claude-forge/internal/forge/layout"
@@ -158,10 +160,10 @@ func Gitconfig(opts HomeOptions) string {
 	if opts.GitUserName != "" || opts.GitUserEmail != "" {
 		b.WriteString("[user]\n")
 		if opts.GitUserName != "" {
-			fmt.Fprintf(&b, "    name = %s\n", opts.GitUserName)
+			fmt.Fprintf(&b, "    name = %s\n", gitconfigQuote(opts.GitUserName))
 		}
 		if opts.GitUserEmail != "" {
-			fmt.Fprintf(&b, "    email = %s\n", opts.GitUserEmail)
+			fmt.Fprintf(&b, "    email = %s\n", gitconfigQuote(opts.GitUserEmail))
 		}
 		b.WriteString("\n")
 	}
@@ -177,14 +179,48 @@ func Gitconfig(opts HomeOptions) string {
 	return b.String()
 }
 
+// gitconfigQuote returns v as a git-config quoted string. Control characters
+// are dropped, so a value cannot end the line and start a new section (such as
+// [core] sshCommand), and backslashes and double quotes are escaped.
+func gitconfigQuote(v string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range v {
+		switch {
+		case unicode.IsControl(r):
+			continue
+		case r == '\\' || r == '"':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 // copyTree copies a directory, following symlinks so the sandbox gets real
 // files (rules and skills are often symlinked into a dotfiles repository).
+// A symlink may point anywhere, including outside ~/.claude, and its target is
+// copied. A symlinked directory that would re-enter a directory already being
+// copied, such as a link to an ancestor, is skipped so a cycle cannot recurse
+// forever.
 func copyTree(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	root, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return fmt.Errorf("failed to resolve %s: %w", src, err)
+	}
+	return copyTreeFrom(root, dst, nil)
+}
+
+// copyTreeFrom copies the real directory root to dst. active holds the real
+// roots of the copies that led here through symlinks.
+func copyTreeFrom(root, dst string, active []string) error {
+	active = append(active[:len(active):len(active)], root)
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
@@ -199,10 +235,16 @@ func copyTree(src, dst string) error {
 			if err != nil {
 				return nil
 			}
-			if ri.IsDir() {
-				return copyTree(resolved, target)
+			if !ri.IsDir() {
+				return copyFile(resolved, target)
 			}
-			return copyFile(resolved, target)
+			// Walk does not follow symlinks and root is a real path, so the
+			// link's own directory is a real path too.
+			reenters := func(dir string) bool { return containsPath(resolved, dir) }
+			if reenters(filepath.Dir(path)) || slices.ContainsFunc(active, reenters) {
+				return nil // cycle
+			}
+			return copyTreeFrom(resolved, target, active)
 		}
 		if info.IsDir() {
 			return os.MkdirAll(target, 0o755)
@@ -212,6 +254,12 @@ func copyTree(src, dst string) error {
 		}
 		return copyFile(path, target)
 	})
+}
+
+// containsPath reports whether dir is path or one of its ancestors.
+func containsPath(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func copyFile(src, dst string) error {

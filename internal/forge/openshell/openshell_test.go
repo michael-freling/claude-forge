@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,8 +68,8 @@ func TestManagerNetworkSummary(t *testing.T) {
 
 func TestGitconfig(t *testing.T) {
 	got := Gitconfig(HomeOptions{GitUserName: "Octo", GitUserEmail: "octo@example.com", GitHubToken: true})
-	assert.Contains(t, got, "name = Octo")
-	assert.Contains(t, got, "email = octo@example.com")
+	assert.Contains(t, got, `name = "Octo"`)
+	assert.Contains(t, got, `email = "octo@example.com"`)
 	assert.Contains(t, got, `[credential "https://github.com"]`)
 	assert.Contains(t, got, "password=$GITHUB_TOKEN")
 
@@ -78,8 +79,62 @@ func TestGitconfig(t *testing.T) {
 	assert.Contains(t, bare, "defaultBranch = main")
 
 	nameOnly := Gitconfig(HomeOptions{GitUserName: "Octo"})
-	assert.Contains(t, nameOnly, "name = Octo")
+	assert.Contains(t, nameOnly, `name = "Octo"`)
 	assert.NotContains(t, nameOnly, "email")
+}
+
+func TestGitconfigQuote(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "plain", value: "Octo Cat", want: `"Octo Cat"`},
+		{name: "unicode", value: "Zoë 太郎", want: `"Zoë 太郎"`},
+		{name: "comment characters stay inside the quotes", value: "a #b ;c", want: `"a #b ;c"`},
+		{name: "quote and backslash are escaped", value: `O"c\to`, want: `"O\"c\\to"`},
+		{name: "control characters are dropped", value: "a\tb\rc\x00d\x7f", want: `"abcd"`},
+		{name: "newline cannot start a section", value: "Evil\n[core]\n    sshCommand = x", want: `"Evil[core]    sshCommand = x"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, gitconfigQuote(tt.value))
+		})
+	}
+}
+
+// TestGitconfig_GitParses checks with git itself that values round-trip and an
+// injection attempt stays inside user.name.
+func TestGitconfig_GitParses(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	tests := []struct {
+		name      string
+		userName  string
+		userEmail string
+		wantName  string
+	}{
+		{name: "ordinary", userName: "Octo Cat", userEmail: "octo@example.com", wantName: "Octo Cat"},
+		{name: "special characters", userName: `O"Brien \ #1 ;x`, userEmail: "o@example.com", wantName: `O"Brien \ #1 ;x`},
+		{name: "injection", userName: "Evil\n[core]\n    sshCommand = x", userEmail: "e@example.com", wantName: "Evil[core]    sshCommand = x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "gitconfig")
+			writeFile(t, path, Gitconfig(HomeOptions{GitUserName: tt.userName, GitUserEmail: tt.userEmail, GitHubToken: true}))
+
+			gitConfig := func(args ...string) string {
+				out, err := exec.Command("git", append([]string{"config", "-f", path}, args...)...).Output()
+				require.NoError(t, err)
+				return strings.TrimSuffix(string(out), "\n")
+			}
+			assert.Equal(t, tt.wantName, gitConfig("user.name"))
+			assert.Equal(t, tt.userEmail, gitConfig("user.email"))
+			keys := strings.Split(gitConfig("--name-only", "--list"), "\n")
+			assert.ElementsMatch(t, []string{"user.name", "user.email", "credential.https://github.com.helper", "init.defaultbranch"}, keys)
+		})
+	}
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -138,7 +193,7 @@ func TestStageHome(t *testing.T) {
 
 		gitconfig, err := os.ReadFile(filepath.Join(stage, ".gitconfig"))
 		require.NoError(t, err)
-		assert.Contains(t, string(gitconfig), "name = Octo")
+		assert.Contains(t, string(gitconfig), `name = "Octo"`)
 	})
 
 	t.Run("reconnect leaves runtime files alone", func(t *testing.T) {
@@ -176,11 +231,166 @@ func TestStageHome(t *testing.T) {
 	})
 }
 
+func TestCopyTree_SymlinkCycles(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, src, outside string)
+		want  map[string]string // path under dst -> content
+	}{
+		{
+			name: "link to an ancestor",
+			setup: func(t *testing.T, src, _ string) {
+				writeFile(t, filepath.Join(src, "a", "SKILL.md"), "a")
+				require.NoError(t, os.Symlink(src, filepath.Join(src, "a", "loop")))
+				require.NoError(t, os.Symlink("..", filepath.Join(src, "a", "up")))
+			},
+			want: map[string]string{"a/SKILL.md": "a"},
+		},
+		{
+			name: "link to itself through a parent directory",
+			setup: func(t *testing.T, src, _ string) {
+				writeFile(t, filepath.Join(src, "a", "b", "f.md"), "f")
+				require.NoError(t, os.Symlink(filepath.Join(src, "a"), filepath.Join(src, "a", "b", "loop")))
+			},
+			want: map[string]string{"a/b/f.md": "f"},
+		},
+		{
+			name: "cycle between two linked directories",
+			setup: func(t *testing.T, src, outside string) {
+				writeFile(t, filepath.Join(outside, "x", "x.md"), "x")
+				writeFile(t, filepath.Join(outside, "y", "y.md"), "y")
+				require.NoError(t, os.Symlink(filepath.Join(outside, "y"), filepath.Join(outside, "x", "to-y")))
+				require.NoError(t, os.Symlink(filepath.Join(outside, "x"), filepath.Join(outside, "y", "to-x")))
+				require.NoError(t, os.Symlink(filepath.Join(outside, "x"), filepath.Join(src, "x")))
+			},
+			want: map[string]string{"x/x.md": "x", "x/to-y/y.md": "y"},
+		},
+		{
+			name: "the same directory linked twice is copied twice",
+			setup: func(t *testing.T, src, outside string) {
+				writeFile(t, filepath.Join(outside, "shared", "s.md"), "s")
+				require.NoError(t, os.Symlink(filepath.Join(outside, "shared"), filepath.Join(src, "one")))
+				require.NoError(t, os.Symlink(filepath.Join(outside, "shared"), filepath.Join(src, "two")))
+			},
+			want: map[string]string{"one/s.md": "s", "two/s.md": "s"},
+		},
+		{
+			name: "symlinked source directory",
+			setup: func(t *testing.T, src, outside string) {
+				writeFile(t, filepath.Join(outside, "real", "r.md"), "r")
+				require.NoError(t, os.Symlink(outside, filepath.Join(outside, "real", "loop")))
+				require.NoError(t, os.Remove(src))
+				require.NoError(t, os.Symlink(filepath.Join(outside, "real"), src))
+			},
+			want: map[string]string{"r.md": "r"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			src := filepath.Join(root, "skills")
+			outside := filepath.Join(root, "dotfiles")
+			require.NoError(t, os.MkdirAll(src, 0o755))
+			require.NoError(t, os.MkdirAll(outside, 0o755))
+			tt.setup(t, src, outside)
+			dst := filepath.Join(root, "dst")
+
+			require.NoError(t, copyTree(src, dst))
+
+			got := map[string]string{}
+			require.NoError(t, filepath.Walk(dst, func(path string, info os.FileInfo, err error) error {
+				require.NoError(t, err)
+				if info.Mode().IsRegular() {
+					rel, err := filepath.Rel(dst, path)
+					require.NoError(t, err)
+					data, err := os.ReadFile(path)
+					require.NoError(t, err)
+					got[filepath.ToSlash(rel)] = string(data)
+				}
+				return nil
+			}))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCopyTree_MissingSource(t *testing.T) {
+	assert.Error(t, copyTree(filepath.Join(t.TempDir(), "missing"), t.TempDir()))
+}
+
+func TestSetProvider_DeleteInUse(t *testing.T) {
+	oauthProvider := "  Credential keys: " + spec.EnvClaudeOAuthToken + "\n"
+	switched := "provider " + ClaudeProviderName + " changed type from " + spec.EnvClaudeOAuthToken + " to " + spec.EnvAnthropicAPIKey
+	switchBack := "switch the host back to " + spec.EnvClaudeOAuthToken
+	tests := []struct {
+		name         string
+		providerGet  string
+		sandboxList  string
+		listFails    bool
+		wantContains []string
+	}{
+		{
+			name:        "names the claude-forge sandboxes",
+			providerGet: oauthProvider,
+			sandboxList: sandboxListJSON(sandboxJSON("api-work", "Ready", true), sandboxJSON("other", "Ready", false), sandboxJSON("docs", "Stopped", true)),
+			wantContains: []string{
+				switched, switchBack,
+				"delete the sandboxes using it (claude-forge sandboxes: api-work, docs) with",
+			},
+		},
+		{
+			name:         "no claude-forge sandboxes listed",
+			providerGet:  oauthProvider,
+			sandboxList:  sandboxListJSON(sandboxJSON("other", "Ready", false)),
+			wantContains: []string{switched, switchBack, "delete the sandboxes using it with"},
+		},
+		{
+			name:         "sandbox list fails",
+			providerGet:  oauthProvider,
+			listFails:    true,
+			wantContains: []string{switched, switchBack, "delete the sandboxes using it with"},
+		},
+		{
+			name:        "previous credential key unknown",
+			providerGet: "Provider:\n  Name: " + ClaudeProviderName + "\n",
+			sandboxList: sandboxListJSON(),
+			wantContains: []string{
+				"changed type from another credential to " + spec.EnvAnthropicAPIKey,
+				"switch the host back to the previous credential",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := newFakeRunner()
+			runner.responses["provider get"] = tt.providerGet
+			runner.failures["provider delete"] = errFake
+			runner.responses["sandbox list"] = tt.sandboxList
+			if tt.listFails {
+				runner.failures["sandbox list"] = errFake
+			}
+			c := &Client{Runner: runner, TempDir: t.TempDir()}
+
+			err := c.SetProvider(context.Background(), ClaudeProviderName, spec.ClaudeProfileID, spec.EnvAnthropicAPIKey, "api-secret")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, errFake)
+			msg := err.Error()
+			for _, want := range append(tt.wantContains, "claude-forge openshell delete <name>") {
+				assert.Contains(t, msg, want)
+			}
+			assert.NotContains(t, msg, "api-secret")
+			assert.Empty(t, runner.find("provider create"))
+		})
+	}
+}
+
 func TestHasCredentialKey(t *testing.T) {
 	out := "Provider:\n\n  Name: x\n  Credential keys: ANTHROPIC_API_KEY, OTHER\n"
 	assert.True(t, hasCredentialKey(out, "ANTHROPIC_API_KEY"))
 	assert.True(t, hasCredentialKey(out, "OTHER"))
 	assert.False(t, hasCredentialKey(out, "CLAUDE_CODE_OAUTH_TOKEN"))
+	assert.Equal(t, []string{"ANTHROPIC_API_KEY", "OTHER"}, credentialKeys(out))
+	assert.Empty(t, credentialKeys("Provider:\n  Credential keys:\n"))
 }
 
 func TestValidateName(t *testing.T) {
@@ -521,7 +731,7 @@ func TestManagerAuth(t *testing.T) {
 		f.env[spec.EnvClaudeOAuthToken] = "new"
 		err := f.m.Auth(context.Background())
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "delete the sandboxes using it first")
+		assert.Contains(t, err.Error(), "changed type from "+spec.EnvAnthropicAPIKey+" to "+spec.EnvClaudeOAuthToken)
 	})
 }
 

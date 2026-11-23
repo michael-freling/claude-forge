@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,11 +70,40 @@ func WriteContainerIdentity(configDir string, uid, gid int) (ContainerIdentity, 
 		PasswdFile: filepath.Join(configDir, ContainerPasswdFile),
 		GroupFile:  filepath.Join(configDir, ContainerGroupFile),
 	}
-	if err := os.WriteFile(id.PasswdFile, []byte(RenderContainerPasswd(uid, gid)), 0o644); err != nil {
+	if err := writeFileAtomic(id.PasswdFile, []byte(RenderContainerPasswd(uid, gid))); err != nil {
 		return ContainerIdentity{}, fmt.Errorf("failed to write %s: %w", ContainerPasswdFile, err)
 	}
-	if err := os.WriteFile(id.GroupFile, []byte(RenderContainerGroup(gid)), 0o644); err != nil {
+	if err := writeFileAtomic(id.GroupFile, []byte(RenderContainerGroup(gid))); err != nil {
 		return ContainerIdentity{}, fmt.Errorf("failed to write %s: %w", ContainerGroupFile, err)
 	}
 	return id, nil
+}
+
+// writeFileAtomic writes data to path with mode 0644 so that a reader, such as
+// a container bind-mounting the file while another session starts, never sees
+// it truncated or half written. The file is left untouched when it already
+// holds data; otherwise data goes to a temporary file in the same directory
+// that is then renamed over path.
+func writeFileAtomic(path string, data []byte) error {
+	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, data) {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }() // fails harmlessly once renamed
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }

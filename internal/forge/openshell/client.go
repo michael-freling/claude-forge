@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -141,27 +142,62 @@ func (c *Client) SetProvider(ctx context.Context, name, profileType, envKey, sec
 		// A different credential (e.g. switching from an API key to a
 		// subscription token): replace the provider so the old one is gone.
 		if _, err := c.Runner.Output(ctx, nil, "provider", "delete", name); err != nil {
-			return fmt.Errorf("failed to replace provider %s (delete the sandboxes using it first): %w", name, err)
+			return c.providerInUseError(ctx, name, credentialKeys(string(out)), envKey, err)
 		}
 	}
 	_, err := c.Runner.Output(ctx, env, "provider", "create", "--name", name, "--type", profileType, "--credential", envKey)
 	return err
 }
 
-// hasCredentialKey reports whether `provider get` output lists key under
+// providerInUseError explains why a provider whose credential type changed
+// could not be replaced: OpenShell refuses to delete a provider while any
+// sandbox still references it, and every claude-forge sandbox shares it. The
+// sandbox list does not say which providers a sandbox uses, so all
+// claude-forge sandboxes are named. Only credential key names are included,
+// never their values.
+func (c *Client) providerInUseError(ctx context.Context, name string, oldKeys []string, newKey string, deleteErr error) error {
+	from, previous := "another credential", "the previous credential"
+	if len(oldKeys) > 0 {
+		from = strings.Join(oldKeys, ", ")
+		previous = from
+	}
+	sandboxes := "the sandboxes using it"
+	if list, err := c.ListSandboxes(ctx); err == nil && len(list) > 0 {
+		names := make([]string, 0, len(list))
+		for _, s := range list {
+			names = append(names, s.Name)
+		}
+		sandboxes = "the sandboxes using it (claude-forge sandboxes: " + strings.Join(names, ", ") + ")"
+	}
+	return fmt.Errorf(
+		"the credential for provider %s changed type from %s to %s, and the provider cannot be replaced while sandboxes use it; "+
+			"delete %s with 'claude-forge openshell delete <name>', or switch the host back to %s: %w",
+		name, from, newKey, sandboxes, previous, deleteErr,
+	)
+}
+
+// credentialKeys returns the keys `provider get` output lists under
 // "Credential keys:".
-func hasCredentialKey(out, key string) bool {
+func credentialKeys(out string) []string {
+	var keys []string
 	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(line, "Credential keys:"); ok {
-			for _, k := range strings.Split(rest, ",") {
-				if strings.TrimSpace(k) == key {
-					return true
-				}
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Credential keys:")
+		if !ok {
+			continue
+		}
+		for _, k := range strings.Split(rest, ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				keys = append(keys, k)
 			}
 		}
 	}
-	return false
+	return keys
+}
+
+// hasCredentialKey reports whether `provider get` output lists key under
+// "Credential keys:".
+func hasCredentialKey(out, key string) bool {
+	return slices.Contains(credentialKeys(out), key)
 }
 
 // Sandbox is a sandbox as listed by the gateway.
