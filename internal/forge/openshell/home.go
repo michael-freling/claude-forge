@@ -30,6 +30,8 @@ type HomeOptions struct {
 	GitHubToken bool
 	// PushRepos is shown to the agent in its instructions.
 	PushRepos []string
+	// Network summarizes the reachable hosts in the agent's instructions.
+	Network string
 }
 
 // claudeSubdirs are copied from the host's ~/.claude into the sandbox.
@@ -63,7 +65,7 @@ func StageHome(stageDir string, opts HomeOptions) error {
 		return fmt.Errorf("failed to write %s: %w", stagedSettingsFile, err)
 	}
 
-	memory := Memory(opts.GitHubToken, opts.PushRepos)
+	memory := Memory(opts.Network, opts.GitHubToken, opts.PushRepos)
 	if hostMemory, err := os.ReadFile(filepath.Join(opts.ClaudeDir, "CLAUDE.md")); err == nil {
 		memory += "\n" + string(hostMemory)
 	}

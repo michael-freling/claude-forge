@@ -16,6 +16,7 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/layout"
 	"github.com/michael-freling/claude-forge/internal/forge/openshell"
+	"github.com/michael-freling/claude-forge/internal/forge/openshell/spec"
 )
 
 // recordingRunner records openshell invocations and answers sandbox list.
@@ -42,6 +43,11 @@ func (r *recordingRunner) Interactive(_ context.Context, args ...string) error {
 
 func withFakeOpenShell(t *testing.T) *recordingRunner {
 	t.Helper()
+	return withFakeOpenShellConfig(t, config.DefaultConfig())
+}
+
+func withFakeOpenShellConfig(t *testing.T, cfg *config.Config) *recordingRunner {
+	t.Helper()
 	runner := &recordingRunner{}
 	host := t.TempDir()
 	orig := newOpenShellManager
@@ -49,7 +55,7 @@ func withFakeOpenShell(t *testing.T) *recordingRunner {
 	newOpenShellManager = func() (*openshell.Manager, error) {
 		return &openshell.Manager{
 			Client:    &openshell.Client{Runner: runner, TempDir: t.TempDir()},
-			Config:    config.DefaultConfig(),
+			Config:    cfg,
 			ClaudeDir: host, ConfigDir: host, HomeDir: host,
 			LookupEnv: func(string) (string, bool) { return "", false },
 			ResolveClaude: func() (*auth.Credentials, error) {
@@ -98,6 +104,58 @@ func TestOpenShellCmd(t *testing.T) {
 			if tt.wantCall != "" {
 				assert.True(t, strings.Contains(strings.Join(runner.calls, "\n"), tt.wantCall), "calls: %v", runner.calls)
 			}
+		})
+	}
+}
+
+func TestOpenShellPolicyCmd(t *testing.T) {
+	policyFile := filepath.Join(t.TempDir(), "policy.yaml")
+	const policy = "version: 1\nnetwork_policies: {}\n"
+	require.NoError(t, os.WriteFile(policyFile, []byte(policy), 0o644))
+
+	tests := []struct {
+		name      string
+		openshell config.OpenShellConfig
+		want      func(t *testing.T, out string)
+		wantErr   bool
+	}{
+		{
+			name: "generated with extensions",
+			openshell: config.OpenShellConfig{Policy: spec.PolicyConfig{
+				Allow:    []string{"db.example.com:5432"},
+				ReadOnly: []string{"docs.example.com"},
+				Disable:  []string{"aws"},
+			}},
+			want: func(t *testing.T, out string) {
+				assert.Contains(t, out, "custom_allow:")
+				assert.Contains(t, out, "port: 5432")
+				assert.Contains(t, out, "custom_read_only:")
+				assert.NotContains(t, out, "amazonaws.com")
+			},
+		},
+		{
+			name:      "policy file",
+			openshell: config.OpenShellConfig{PolicyFile: policyFile},
+			want:      func(t *testing.T, out string) { assert.Equal(t, policy, out) },
+		},
+		{
+			name:      "unreadable policy file",
+			openshell: config.OpenShellConfig{PolicyFile: filepath.Join(t.TempDir(), "missing.yaml")},
+			wantErr:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.OpenShell = tt.openshell
+			withFakeOpenShellConfig(t, cfg)
+			out, err := runOpenShell(t, "policy")
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			tt.want(t, out)
 		})
 	}
 }

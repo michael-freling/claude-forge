@@ -1,4 +1,4 @@
-package openshell
+package spec
 
 import (
 	"fmt"
@@ -11,11 +11,6 @@ const (
 	// claude-forge imports into the gateway.
 	ClaudeProfileID = "claude-forge-claude"
 	GitHubProfileID = "claude-forge-github"
-
-	// ClaudeProviderName and GitHubProviderName are the provider instances
-	// (holding the credentials) every claude-forge sandbox attaches.
-	ClaudeProviderName = "claude-forge-claude"
-	GitHubProviderName = "claude-forge-github"
 
 	// Credential environment variables. Inside the sandbox they hold
 	// placeholders; OpenShell swaps in the real value only on requests to the

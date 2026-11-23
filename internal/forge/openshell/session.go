@@ -1,3 +1,11 @@
+// Package openshell runs claude-forge sessions in OpenShell sandboxes.
+//
+// Unlike the Docker runtime there is no gateway container, no git proxy and no
+// host project mount: the sandbox keeps its own persistent workspace, the agent
+// clones whatever repositories it needs into it, and network access comes from
+// a generated OpenShell policy. Credentials are OpenShell providers, so the
+// sandbox only ever sees placeholders that OpenShell swaps for the real values
+// on requests to the declared hosts.
 package openshell
 
 import (
@@ -13,6 +21,14 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/auth"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/layout"
+	"github.com/michael-freling/claude-forge/internal/forge/openshell/spec"
+)
+
+// ClaudeProviderName and GitHubProviderName are the provider instances
+// (holding the credentials) every claude-forge sandbox attaches.
+const (
+	ClaudeProviderName = "claude-forge-claude"
+	GitHubProviderName = "claude-forge-github"
 )
 
 // Manager runs claude-forge sessions in OpenShell sandboxes.
@@ -83,9 +99,9 @@ func (m *Manager) claudeCredential() (key, value string, err error) {
 		return "", "", fmt.Errorf("failed to resolve Claude credentials (log in with 'claude' on the host): %w", err)
 	}
 	if creds.AuthType == "api_key" {
-		return EnvAnthropicAPIKey, creds.Token, nil
+		return spec.EnvAnthropicAPIKey, creds.Token, nil
 	}
-	return EnvClaudeOAuthToken, creds.Token, nil
+	return spec.EnvClaudeOAuthToken, creds.Token, nil
 }
 
 // syncClaude copies the host's current Claude credential into the Claude
@@ -94,19 +110,19 @@ func (m *Manager) claudeCredential() (key, value string, err error) {
 // Claude Code refreshes, and only the access token (never the refresh token)
 // is handed to OpenShell.
 func (m *Manager) syncClaude(ctx context.Context) error {
-	if err := m.Client.EnsureProfile(ctx, ClaudeProfile()); err != nil {
+	if err := m.Client.EnsureProfile(ctx, spec.ClaudeProfile()); err != nil {
 		return err
 	}
 	key, value, err := m.claudeCredential()
 	if err != nil {
 		return err
 	}
-	return m.Client.SetProvider(ctx, ClaudeProviderName, ClaudeProfileID, key, value)
+	return m.Client.SetProvider(ctx, ClaudeProviderName, spec.ClaudeProfileID, key, value)
 }
 
 // githubToken returns a GitHub token from the environment or the gh CLI.
 func (m *Manager) githubToken(ctx context.Context) string {
-	for _, k := range []string{EnvGitHubToken, "GH_TOKEN"} {
+	for _, k := range []string{spec.EnvGitHubToken, "GH_TOKEN"} {
 		if v := m.env(k); v != "" {
 			return v
 		}
@@ -128,7 +144,7 @@ func (m *Manager) providers(ctx context.Context, refreshGitHub bool) (providers 
 	}
 	providers = append(providers, ClaudeProviderName)
 
-	if err := m.Client.EnsureProfile(ctx, GitHubProfile(m.Config.OpenShell.GitHub.PushRepos)); err != nil {
+	if err := m.Client.EnsureProfile(ctx, spec.GitHubProfile(m.Config.OpenShell.GitHub.PushRepos)); err != nil {
 		return nil, false, err
 	}
 	if refreshGitHub || !m.Client.ProviderExists(ctx, GitHubProviderName) {
@@ -137,7 +153,7 @@ func (m *Manager) providers(ctx context.Context, refreshGitHub bool) (providers 
 			m.logf("No GitHub token (GITHUB_TOKEN, GH_TOKEN or 'gh auth token'): only public repositories can be cloned")
 			return providers, false, nil
 		}
-		if err := m.Client.SetProvider(ctx, GitHubProviderName, GitHubProfileID, EnvGitHubToken, token); err != nil {
+		if err := m.Client.SetProvider(ctx, GitHubProviderName, spec.GitHubProfileID, spec.EnvGitHubToken, token); err != nil {
 			return nil, false, err
 		}
 	}
@@ -153,9 +169,42 @@ func (m *Manager) Auth(ctx context.Context) error {
 	return nil
 }
 
-// PolicyYAML returns the policy a new sandbox gets.
+// PolicyYAML returns the policy a new sandbox gets: openshell.policy_file
+// verbatim, or the generated policy with the openshell.policy extensions.
+//
+// A policy file is only checked for provider-owned hosts on a best-effort
+// basis, with warnings: OpenShell itself rejects a sandbox whose policy
+// disagrees with a provider on inspecting a host.
 func (m *Manager) PolicyYAML(github bool) ([]byte, error) {
-	return BuildPolicy(PolicyOptions{GitHubProvider: github}).Render()
+	cfg := m.Config.OpenShell
+	if cfg.PolicyFile == "" {
+		p, err := spec.BuildPolicy(spec.PolicyOptions{GitHubProvider: github, Custom: cfg.Policy})
+		if err != nil {
+			return nil, err
+		}
+		return p.Render()
+	}
+
+	data, err := os.ReadFile(cfg.PolicyFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read openshell.policy_file: %w", err)
+	}
+	warnings, err := spec.ProviderOverlaps(data)
+	if err != nil {
+		m.logf("Warning: could not check openshell.policy_file %s for provider-owned hosts: %v", cfg.PolicyFile, err)
+	}
+	for _, w := range warnings {
+		m.logf("Warning: openshell.policy_file %s: %s", cfg.PolicyFile, w)
+	}
+	return data, nil
+}
+
+// networkSummary describes the sandbox's network access for the agent.
+func (m *Manager) networkSummary() string {
+	if m.Config.OpenShell.PolicyFile != "" {
+		return "The user's own sandbox policy decides which hosts are reachable; most are not."
+	}
+	return spec.DescribeNetwork(m.Config.OpenShell.Policy)
 }
 
 // StartOptions configures a new session.
@@ -257,6 +306,7 @@ func (m *Manager) uploadHome(ctx context.Context, name string, firstRun, github 
 		FirstRun:    firstRun,
 		GitHubToken: github,
 		PushRepos:   m.Config.OpenShell.GitHub.PushRepos,
+		Network:     m.networkSummary(),
 	}
 	if m.GitIdentity != nil {
 		opts.GitUserName, opts.GitUserEmail = m.GitIdentity()

@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/michael-freling/claude-forge/internal/forge/openshell/spec"
 )
 
 // LabelKey marks the sandboxes claude-forge creates, so list only shows them.
@@ -92,7 +94,7 @@ func (c *Client) writeTemp(pattern string, data []byte) (string, func(), error) 
 // EnsureProfile imports the profile, or updates it if it already exists, so
 // config changes (such as openshell.github.push_repos) reach new sandboxes.
 // Sandboxes that are already running keep the profile they started with.
-func (c *Client) EnsureProfile(ctx context.Context, p *Profile) error {
+func (c *Client) EnsureProfile(ctx context.Context, p *spec.Profile) error {
 	update := *p
 	args := []string{"profile", "import"}
 	if current, err := c.Runner.Output(ctx, nil, "profile", "export", p.ID); err == nil {

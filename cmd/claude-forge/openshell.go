@@ -66,7 +66,8 @@ each sandbox has its own persistent workspace (~/work). 'start --repo' and
 openshell.repositories clone repositories into it when the sandbox is
 created, and the agent can clone more whenever it needs them. There is
 no gateway container or git proxy. Network access comes from a generated
-sandbox policy (see 'claude-forge openshell policy'), and the Claude and
+sandbox policy that openshell.policy can extend and openshell.policy_file
+replace (see 'claude-forge openshell policy'), and the Claude and
 GitHub credentials are OpenShell providers, so the sandbox only ever sees
 placeholders for them.
 
@@ -238,7 +239,18 @@ func newOpenShellPolicyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "policy",
 		Short: "Print the sandbox policy new sandboxes get",
-		Args:  cobra.NoArgs,
+		Long: `Print the OpenShell policy new sandboxes are created with.
+
+By default this is the generated allowlist (Claude Code, GitHub, PyPI, npm,
+AWS, GCP, Go modules and some documentation sites), extended by
+openshell.policy in the claude-forge config: extra 'allow' and 'read_only'
+hosts, and built-in groups to 'disable'. With openshell.policy_file set, that
+file is printed and used verbatim instead.
+
+A policy change only applies to sandboxes created afterwards. To open a host
+in a running sandbox, run
+'openshell policy update <sandbox> --add-endpoint <host>:443 --binary "/**" --wait'.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m, err := newOpenShellManager()
 			if err != nil {

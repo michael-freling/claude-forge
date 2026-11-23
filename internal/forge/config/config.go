@@ -9,6 +9,8 @@ import (
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/michael-freling/claude-forge/internal/forge/openshell/spec"
 )
 
 const (
@@ -61,6 +63,14 @@ type OpenShellConfig struct {
 	// Nil (the key is absent) installs the plugins enabled on the host; an
 	// empty list installs none.
 	Plugins []string `yaml:"plugins"`
+	// Policy extends the generated sandbox policy: extra allowed and
+	// read-only hosts, and built-in groups to drop.
+	Policy spec.PolicyConfig `yaml:"policy"`
+	// PolicyFile is a full OpenShell policy used verbatim instead of the
+	// generated one. Load expands a leading ~ and resolves a relative path
+	// against the config directory, so it is absolute afterwards. It cannot
+	// be combined with Policy.
+	PolicyFile string `yaml:"policy_file"`
 }
 
 // OpenShellGitHubConfig configures GitHub access from OpenShell sandboxes.
@@ -85,7 +95,64 @@ func ValidateGitHubRepo(repo string) error {
 	return nil
 }
 
+// loadOpenShell resolves openshell.policy_file and validates the openshell
+// section.
+func loadOpenShell(c *OpenShellConfig, configDir string) error {
+	if c.PolicyFile != "" {
+		path, err := resolvePath(c.PolicyFile, configDir)
+		if err != nil {
+			return fmt.Errorf("openshell.policy_file: %w", err)
+		}
+		c.PolicyFile = path
+	}
+	return validateOpenShell(*c)
+}
+
+// resolvePath expands a leading ~ to the home directory and makes a relative
+// path relative to configDir.
+func resolvePath(path, configDir string) (string, error) {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to expand %q: %w", path, err)
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(configDir, path)
+	}
+	return path, nil
+}
+
+// validatePolicyFile checks that a policy file exists and is a YAML mapping.
+// OpenShell validates its contents when a sandbox is created.
+func validatePolicyFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read policy file: %w", err)
+	}
+	var policy map[string]any
+	if err := yaml.Unmarshal(data, &policy); err != nil {
+		return fmt.Errorf("failed to parse policy file %s: %w", path, err)
+	}
+	if len(policy) == 0 {
+		return fmt.Errorf("policy file %s is empty", path)
+	}
+	return nil
+}
+
 func validateOpenShell(c OpenShellConfig) error {
+	if c.PolicyFile != "" {
+		if !c.Policy.IsEmpty() {
+			return fmt.Errorf("openshell.policy_file replaces the generated policy and cannot be combined with openshell.policy: put the extra hosts in the policy file")
+		}
+		if err := validatePolicyFile(c.PolicyFile); err != nil {
+			return fmt.Errorf("openshell.policy_file: %w", err)
+		}
+	}
+	if err := c.Policy.Validate(); err != nil {
+		return fmt.Errorf("openshell.policy.%w", err)
+	}
 	for _, r := range c.GitHub.PushRepos {
 		if err := ValidateGitHubRepo(r); err != nil {
 			return fmt.Errorf("openshell.github.push_repos: %w", err)
@@ -378,7 +445,7 @@ func Load(configDir string) (*Config, error) {
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
 		return nil, err
 	}
-	if err := validateOpenShell(cfg.OpenShell); err != nil {
+	if err := loadOpenShell(&cfg.OpenShell, configDir); err != nil {
 		return nil, err
 	}
 	if err := ValidateAgentName(cfg.Defaults.Agent); err != nil {

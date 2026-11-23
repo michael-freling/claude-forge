@@ -16,121 +16,53 @@ import (
 	"github.com/michael-freling/claude-forge/internal/forge/auth"
 	"github.com/michael-freling/claude-forge/internal/forge/config"
 	"github.com/michael-freling/claude-forge/internal/forge/layout"
+	"github.com/michael-freling/claude-forge/internal/forge/openshell/spec"
 )
 
-func allHosts(p *Policy) map[string]bool {
-	hosts := map[string]bool{}
-	for _, r := range p.NetworkPolicies {
-		for _, e := range r.Endpoints {
-			hosts[e.Host] = true
-		}
-	}
-	return hosts
-}
-
-func TestBuildPolicy(t *testing.T) {
-	tests := []struct {
-		name       string
-		github     bool
-		wantGitHub bool // github.com:443 etc. listed as uninspected
-	}{
-		{name: "with GitHub provider", github: true, wantGitHub: false},
-		{name: "without GitHub provider", github: false, wantGitHub: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := BuildPolicy(PolicyOptions{GitHubProvider: tt.github})
-			hosts := allHosts(p)
-
-			assert.False(t, hosts["api.anthropic.com"], "api.anthropic.com belongs to the Claude provider")
-			for h := range hosts {
-				assert.NotContains(t, []string{"**.anthropic.com", "**.github.com"}, h, "wildcards would overlap provider hosts")
-			}
-			assert.Equal(t, tt.wantGitHub, hosts["api.github.com"])
-			assert.Equal(t, tt.wantGitHub, hosts["uploads.github.com"])
-			assert.True(t, hosts["pypi.org"])
-			assert.True(t, hosts["registry.npmjs.org"])
-			assert.Contains(t, p.FilesystemPolicy.ReadWrite, layout.Home)
-
-			data, err := p.Render()
-			require.NoError(t, err)
-			var round Policy
-			require.NoError(t, yaml.Unmarshal(data, &round))
-			assert.Equal(t, *p, round)
-		})
-	}
-}
-
-func TestClaudeProfile(t *testing.T) {
-	p := ClaudeProfile()
-	assert.Equal(t, ClaudeProfileID, p.ID)
-	require.Len(t, p.Endpoints, 1)
-	assert.Equal(t, "api.anthropic.com", p.Endpoints[0].Host)
-	var envs []string
-	for _, c := range p.Credentials {
-		envs = append(envs, c.EnvVars...)
-	}
-	assert.ElementsMatch(t, []string{EnvClaudeOAuthToken, EnvAnthropicAPIKey}, envs)
-	_, err := p.Render()
-	require.NoError(t, err)
-}
-
-func TestGitHubProfile(t *testing.T) {
-	t.Run("no push repos allows everything", func(t *testing.T) {
-		p := GitHubProfile(nil)
-		for _, e := range p.Endpoints {
-			assert.Equal(t, "full", e.Access, e.Host)
-			assert.Empty(t, e.Rules)
-		}
-		assert.Len(t, p.Endpoints, 3)
-	})
-
-	t.Run("push repos restrict writes", func(t *testing.T) {
-		p := GitHubProfile([]string{"octo/demo"})
-		byHost := map[string][]Endpoint{}
-		for _, e := range p.Endpoints {
-			byHost[e.Host] = append(byHost[e.Host], e)
-		}
-		has := func(eps []Endpoint, method, path string) bool {
-			for _, e := range eps {
-				for _, r := range e.Rules {
-					if r.Allow.Method == method && r.Allow.Path == path {
-						return true
-					}
-				}
-			}
-			return false
-		}
-		assert.True(t, has(byHost["github.com"], "POST", "/octo/demo.git/git-receive-pack"))
-		assert.True(t, has(byHost["github.com"], "POST", "/**/git-upload-pack"))
-		assert.False(t, has(byHost["github.com"], "POST", "/**/git-receive-pack"))
-		assert.True(t, has(byHost["api.github.com"], "PATCH", "/repos/octo/demo/**"))
-		assert.True(t, has(byHost["api.github.com"], "GET", "**"))
-		assert.True(t, has(byHost["uploads.github.com"], "POST", "/repos/octo/demo/**"))
-
-		var graphql *Endpoint
-		for i, e := range byHost["api.github.com"] {
-			if e.Path == "/graphql" {
-				graphql = &byHost["api.github.com"][i]
-			}
-		}
-		require.NotNil(t, graphql)
-		assert.Equal(t, "read-only", graphql.Access)
-	})
-}
-
 func TestMemory(t *testing.T) {
-	noToken := Memory(false, nil)
+	network := "Only some hosts are reachable: Anthropic and api.example.com."
+
+	noToken := Memory(network, false, nil)
 	assert.Contains(t, noToken, layout.Workspace)
+	assert.Contains(t, noToken, "## Network access is an allowlist\n\n"+network+"\nOther hosts fail")
 	assert.Contains(t, noToken, "only public repositories")
 	assert.NotContains(t, noToken, "$GITHUB_TOKEN")
 
-	token := Memory(true, nil)
+	token := Memory(network, true, nil)
 	assert.Contains(t, token, "$GITHUB_TOKEN")
 	assert.NotContains(t, token, "allowed only for these repositories")
 
-	scoped := Memory(true, []string{"octo/demo"})
+	scoped := Memory(network, true, []string{"octo/demo"})
 	assert.Contains(t, scoped, "- octo/demo")
+}
+
+func TestManagerNetworkSummary(t *testing.T) {
+	tests := []struct {
+		name      string
+		openshell config.OpenShellConfig
+		want      string
+	}{
+		{
+			name: "generated policy",
+			openshell: config.OpenShellConfig{Policy: spec.PolicyConfig{
+				Allow:   []string{"api.example.com"},
+				Disable: []string{"aws"},
+			}},
+			want: spec.DescribeNetwork(spec.PolicyConfig{Allow: []string{"api.example.com"}, Disable: []string{"aws"}}),
+		},
+		{
+			name:      "policy file",
+			openshell: config.OpenShellConfig{PolicyFile: "/policy.yaml"},
+			want:      "The user's own sandbox policy decides which hosts are reachable; most are not.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newManagerFixture(t)
+			f.m.Config.OpenShell = tt.openshell
+			assert.Equal(t, tt.want, f.m.networkSummary())
+		})
+	}
 }
 
 func TestGitconfig(t *testing.T) {
@@ -309,8 +241,8 @@ func TestManagerStart(t *testing.T) {
 		f.missingProviders()
 		f.runner.failures["profile export"] = errFake
 		f.runner.responses["sandbox list"] = sandboxListJSON()
-		f.env[EnvClaudeOAuthToken] = "oauth-secret"
-		f.env[EnvGitHubToken] = "gh-secret"
+		f.env[spec.EnvClaudeOAuthToken] = "oauth-secret"
+		f.env[spec.EnvGitHubToken] = "gh-secret"
 
 		require.NoError(t, f.m.Start(context.Background(), StartOptions{Name: "demo", Prompt: "hi", SkipPermissions: true}))
 
@@ -324,8 +256,8 @@ func TestManagerStart(t *testing.T) {
 				assert.NotContains(t, a, "secret", "secrets must not be passed as arguments")
 			}
 		}
-		assert.Equal(t, []string{EnvClaudeOAuthToken + "=oauth-secret"}, creates[0].Env)
-		assert.Equal(t, []string{EnvGitHubToken + "=gh-secret"}, creates[1].Env)
+		assert.Equal(t, []string{spec.EnvClaudeOAuthToken + "=oauth-secret"}, creates[0].Env)
+		assert.Equal(t, []string{spec.EnvGitHubToken + "=gh-secret"}, creates[1].Env)
 
 		create := f.runner.find("sandbox create")
 		require.Len(t, create, 1)
@@ -357,7 +289,7 @@ func TestManagerStart(t *testing.T) {
 	t.Run("reuses existing providers and profiles", func(t *testing.T) {
 		f := newManagerFixture(t)
 		f.runner.responses["sandbox list"] = sandboxListJSON()
-		f.runner.responses["provider get"] = "  Credential keys: " + EnvClaudeOAuthToken + "\n"
+		f.runner.responses["provider get"] = "  Credential keys: " + spec.EnvClaudeOAuthToken + "\n"
 		f.m.Config.OpenShell.Image = "custom:1"
 		f.m.Config.Defaults.Agent = "reviewer"
 
@@ -372,11 +304,24 @@ func TestManagerStart(t *testing.T) {
 		assert.Contains(t, f.runner.find("sandbox create")[0].String(), "--from custom:1")
 	})
 
+	t.Run("uses the policy file", func(t *testing.T) {
+		f := newManagerFixture(t)
+		f.runner.responses["sandbox list"] = sandboxListJSON()
+		policy := "version: 1\nnetwork_policies: {}\n"
+		f.m.Config.OpenShell.PolicyFile = filepath.Join(t.TempDir(), "policy.yaml")
+		writeFile(t, f.m.Config.OpenShell.PolicyFile, policy)
+
+		require.NoError(t, f.m.Start(context.Background(), StartOptions{Name: "demo"}))
+		create := f.runner.find("sandbox create")
+		require.Len(t, create, 1)
+		assert.Equal(t, policy, create[0].File)
+	})
+
 	t.Run("no GitHub token", func(t *testing.T) {
 		f := newManagerFixture(t)
 		f.missingProviders()
 		f.runner.responses["sandbox list"] = sandboxListJSON()
-		f.env[EnvAnthropicAPIKey] = "key"
+		f.env[spec.EnvAnthropicAPIKey] = "key"
 		f.m.GitHubCLIToken = func(context.Context) (string, error) { return "", errFake }
 
 		require.NoError(t, f.m.Start(context.Background(), StartOptions{Name: "demo"}))
@@ -389,13 +334,13 @@ func TestManagerStart(t *testing.T) {
 		f := newManagerFixture(t)
 		f.missingProviders()
 		f.runner.responses["sandbox list"] = sandboxListJSON()
-		f.env[EnvAnthropicAPIKey] = "key"
+		f.env[spec.EnvAnthropicAPIKey] = "key"
 		f.m.GitHubCLIToken = func(context.Context) (string, error) { return "gho_x\n", nil }
 
 		require.NoError(t, f.m.Start(context.Background(), StartOptions{Name: "demo"}))
 		creates := f.runner.find("provider create --name " + GitHubProviderName)
 		require.Len(t, creates, 1)
-		assert.Equal(t, []string{EnvGitHubToken + "=gho_x"}, creates[0].Env)
+		assert.Equal(t, []string{spec.EnvGitHubToken + "=gho_x"}, creates[0].Env)
 	})
 
 	t.Run("errors", func(t *testing.T) {
@@ -462,7 +407,7 @@ func TestManagerStart(t *testing.T) {
 				name: "provider create fails",
 				setup: func(f *managerFixture) {
 					f.missingProviders()
-					f.env[EnvClaudeOAuthToken] = "t"
+					f.env[spec.EnvClaudeOAuthToken] = "t"
 					f.runner.responses["sandbox list"] = sandboxListJSON()
 					f.runner.failures["provider create"] = errFake
 				},
@@ -472,7 +417,7 @@ func TestManagerStart(t *testing.T) {
 				name: "GitHub provider create fails",
 				setup: func(f *managerFixture) {
 					f.missingProviders()
-					f.env[EnvClaudeOAuthToken] = "t"
+					f.env[spec.EnvClaudeOAuthToken] = "t"
 					f.env["GH_TOKEN"] = "g"
 					f.runner.responses["sandbox list"] = sandboxListJSON()
 					f.runner.failures["provider create --name "+GitHubProviderName] = errFake
@@ -558,11 +503,11 @@ func TestManagerConnect(t *testing.T) {
 func TestManagerAuth(t *testing.T) {
 	t.Run("updates matching credential in place", func(t *testing.T) {
 		f := newManagerFixture(t)
-		f.runner.responses["provider get"] = "  Credential keys: " + EnvClaudeOAuthToken + "\n"
-		f.env[EnvClaudeOAuthToken] = "new"
-		f.env[EnvGitHubToken] = "gh"
+		f.runner.responses["provider get"] = "  Credential keys: " + spec.EnvClaudeOAuthToken + "\n"
+		f.env[spec.EnvClaudeOAuthToken] = "new"
+		f.env[spec.EnvGitHubToken] = "gh"
 		require.NoError(t, f.m.Auth(context.Background()))
-		assert.Len(t, f.runner.find("provider update "+ClaudeProviderName+" --credential "+EnvClaudeOAuthToken), 1)
+		assert.Len(t, f.runner.find("provider update "+ClaudeProviderName+" --credential "+spec.EnvClaudeOAuthToken), 1)
 		assert.Empty(t, f.runner.find("provider delete "+ClaudeProviderName))
 		// The GitHub provider's key differs, so it is recreated.
 		assert.Len(t, f.runner.find("provider delete "+GitHubProviderName), 1)
@@ -571,9 +516,9 @@ func TestManagerAuth(t *testing.T) {
 
 	t.Run("delete in use fails", func(t *testing.T) {
 		f := newManagerFixture(t)
-		f.runner.responses["provider get"] = "  Credential keys: " + EnvAnthropicAPIKey + "\n"
+		f.runner.responses["provider get"] = "  Credential keys: " + spec.EnvAnthropicAPIKey + "\n"
 		f.runner.failures["provider delete"] = errFake
-		f.env[EnvClaudeOAuthToken] = "new"
+		f.env[spec.EnvClaudeOAuthToken] = "new"
 		err := f.m.Auth(context.Background())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "delete the sandboxes using it first")
@@ -613,13 +558,79 @@ func TestManagerListStopDelete(t *testing.T) {
 }
 
 func TestManagerPolicyYAML(t *testing.T) {
-	f := newManagerFixture(t)
-	with, err := f.m.PolicyYAML(true)
-	require.NoError(t, err)
-	without, err := f.m.PolicyYAML(false)
-	require.NoError(t, err)
-	assert.NotContains(t, string(with), "api.github.com")
-	assert.Contains(t, string(without), "api.github.com")
+	t.Run("generated", func(t *testing.T) {
+		f := newManagerFixture(t)
+		with, err := f.m.PolicyYAML(true)
+		require.NoError(t, err)
+		without, err := f.m.PolicyYAML(false)
+		require.NoError(t, err)
+		assert.NotContains(t, string(with), "api.github.com")
+		assert.Contains(t, string(without), "api.github.com")
+	})
+
+	t.Run("generated with extensions", func(t *testing.T) {
+		f := newManagerFixture(t)
+		f.m.Config.OpenShell.Policy = spec.PolicyConfig{
+			Allow:    []string{"db.example.com:5432"},
+			ReadOnly: []string{"docs.example.com"},
+			Disable:  []string{"aws"},
+		}
+		data, err := f.m.PolicyYAML(true)
+		require.NoError(t, err)
+		var p spec.Policy
+		require.NoError(t, yaml.Unmarshal(data, &p))
+		assert.NotContains(t, p.NetworkPolicies, "aws")
+		assert.Equal(t, []spec.Endpoint{{Host: "db.example.com", Port: 5432}}, p.NetworkPolicies["custom_allow"].Endpoints)
+		require.Len(t, p.NetworkPolicies["custom_read_only"].Endpoints, 1)
+		assert.Equal(t, "read-only", p.NetworkPolicies["custom_read_only"].Endpoints[0].Access)
+	})
+
+	t.Run("invalid extension", func(t *testing.T) {
+		f := newManagerFixture(t)
+		f.m.Config.OpenShell.Policy.Allow = []string{"bad host"}
+		_, err := f.m.PolicyYAML(true)
+		assert.Error(t, err)
+	})
+
+	t.Run("policy file verbatim", func(t *testing.T) {
+		f := newManagerFixture(t)
+		policy := "# mine\nversion: 1\nnetwork_policies:\n  x:\n    endpoints:\n      - host: example.com\n        port: 443\n"
+		f.m.Config.OpenShell.PolicyFile = filepath.Join(t.TempDir(), "policy.yaml")
+		writeFile(t, f.m.Config.OpenShell.PolicyFile, policy)
+		data, err := f.m.PolicyYAML(true)
+		require.NoError(t, err)
+		assert.Equal(t, policy, string(data))
+		assert.NotContains(t, f.out.String(), "Warning")
+	})
+
+	t.Run("policy file with provider host warns", func(t *testing.T) {
+		f := newManagerFixture(t)
+		policy := "network_policies:\n  x:\n    endpoints:\n      - host: \"**.github.com\"\n        port: 443\n"
+		f.m.Config.OpenShell.PolicyFile = filepath.Join(t.TempDir(), "policy.yaml")
+		writeFile(t, f.m.Config.OpenShell.PolicyFile, policy)
+		data, err := f.m.PolicyYAML(true)
+		require.NoError(t, err)
+		assert.Equal(t, policy, string(data))
+		assert.Contains(t, f.out.String(), "Warning: openshell.policy_file "+f.m.Config.OpenShell.PolicyFile+": network_policies.x: **.github.com:443 overlaps")
+	})
+
+	t.Run("policy file that does not match the schema warns", func(t *testing.T) {
+		f := newManagerFixture(t)
+		policy := "network_policies: [1, 2]\n"
+		f.m.Config.OpenShell.PolicyFile = filepath.Join(t.TempDir(), "policy.yaml")
+		writeFile(t, f.m.Config.OpenShell.PolicyFile, policy)
+		data, err := f.m.PolicyYAML(true)
+		require.NoError(t, err)
+		assert.Equal(t, policy, string(data))
+		assert.Contains(t, f.out.String(), "could not check openshell.policy_file")
+	})
+
+	t.Run("missing policy file", func(t *testing.T) {
+		f := newManagerFixture(t)
+		f.m.Config.OpenShell.PolicyFile = filepath.Join(t.TempDir(), "missing.yaml")
+		_, err := f.m.PolicyYAML(true)
+		assert.ErrorContains(t, err, "openshell.policy_file")
+	})
 }
 
 func TestExecRunner(t *testing.T) {
@@ -645,7 +656,7 @@ func TestExecRunner(t *testing.T) {
 
 func TestClientWriteTempError(t *testing.T) {
 	c := &Client{Runner: newFakeRunner(), TempDir: filepath.Join(t.TempDir(), "missing")}
-	assert.Error(t, c.EnsureProfile(context.Background(), ClaudeProfile()))
+	assert.Error(t, c.EnsureProfile(context.Background(), spec.ClaudeProfile()))
 	assert.Error(t, c.CreateSandbox(context.Background(), CreateOptions{Name: "x"}))
 	assert.Error(t, c.uploadHome(context.Background(), "x", filepath.Join(t.TempDir(), "missing"), layout.Home))
 }
@@ -663,7 +674,7 @@ func TestManagerClaudeCredential(t *testing.T) {
 		f.claude = &auth.Credentials{AuthType: "api_key", Token: "sk-key"}
 		key, value, err := f.m.claudeCredential()
 		require.NoError(t, err)
-		assert.Equal(t, EnvAnthropicAPIKey, key)
+		assert.Equal(t, spec.EnvAnthropicAPIKey, key)
 		assert.Equal(t, "sk-key", value)
 	})
 
@@ -675,18 +686,18 @@ func TestManagerClaudeCredential(t *testing.T) {
 		writeFile(t, filepath.Join(f.m.ClaudeDir, ".credentials.json"), `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-host","refreshToken":"never-sent"}}`)
 		key, value, err := f.m.claudeCredential()
 		require.NoError(t, err)
-		assert.Equal(t, EnvClaudeOAuthToken, key)
+		assert.Equal(t, spec.EnvClaudeOAuthToken, key)
 		assert.Equal(t, "sk-ant-oat01-host", value)
 	})
 
 	t.Run("connect refreshes the Claude provider", func(t *testing.T) {
 		f := newManagerFixture(t)
 		f.runner.responses["sandbox list"] = sandboxListJSON(sandboxJSON("demo", "Ready", true))
-		f.runner.responses["provider get"] = "  Credential keys: " + EnvClaudeOAuthToken + "\n"
+		f.runner.responses["provider get"] = "  Credential keys: " + spec.EnvClaudeOAuthToken + "\n"
 		require.NoError(t, f.m.Connect(context.Background(), "demo", StartOptions{}))
 		updates := f.runner.find("provider update " + ClaudeProviderName)
 		require.Len(t, updates, 1)
-		assert.Equal(t, []string{EnvClaudeOAuthToken + "=oauth-secret"}, updates[0].Env)
+		assert.Equal(t, []string{spec.EnvClaudeOAuthToken + "=oauth-secret"}, updates[0].Env)
 	})
 
 	t.Run("connect fails without a host login", func(t *testing.T) {

@@ -16,7 +16,9 @@ container. It is a separate runtime with a different model from
   what it pushes.
 - **No gateway or git proxy.** Network access comes from a generated OpenShell
   policy: an allowlist of Anthropic, GitHub, PyPI, npm, AWS, GCP, Go modules
-  and a few documentation sites. Anything else is blocked.
+  and a few documentation sites, which you can
+  [extend or replace](#customizing-the-network-policy). Anything else is
+  blocked.
 - **Credentials never enter the sandbox.** The Claude and GitHub credentials
   are held by OpenShell *providers*. The sandbox only sees placeholders, which
   OpenShell replaces with the real values on requests to Anthropic and GitHub.
@@ -54,7 +56,7 @@ claude-forge openshell delete api-work    # removes the sandbox and its workspac
 | `openshell stop <name>` | Stops a sandbox, keeping its workspace |
 | `openshell delete <name>` | Deletes a sandbox **and its workspace**. Push any work first |
 | `openshell auth` | Re-syncs the Claude and GitHub credentials to OpenShell; running sandboxes pick them up within seconds |
-| `openshell policy` | Prints the policy new sandboxes get |
+| `openshell policy` | Prints the policy new sandboxes get, including your `openshell.policy` extensions or the `openshell.policy_file` contents. Flag: `--no-github-token` |
 
 ## Credentials
 
@@ -130,6 +132,19 @@ openshell:
     push_repos:
       - octo/api
       - octo/web
+  # Extend the generated network policy (see below).
+  policy:
+    allow:             # any traffic, uninspected
+      - api.example.com
+      - "**.example.org"
+      - db.example.com:5432
+    read_only:         # GET, HEAD and OPTIONS only
+      - docs.example.com
+    disable:           # built-in groups to drop
+      - aws
+  # Or replace it: a full OpenShell policy, used verbatim.
+  # Cannot be combined with openshell.policy.
+  # policy_file: sandbox-policy.yaml
 ```
 
 With `push_repos` set, the agent can still read and clone any repository the
@@ -143,6 +158,48 @@ token can access, but OpenShell blocks the following:
 The setting takes effect for sandboxes created afterwards. Running sandboxes
 keep the rules they started with.
 
+## Customizing the network policy
+
+The generated policy is a set of built-in groups: `claude_code`, `github`,
+`python` (PyPI), `nodejs` (npm), `aws`, `gcp`, and `read_only` (Go modules and
+documentation sites, `GET`/`HEAD`/`OPTIONS` only). There are two ways to
+change it:
+
+- **Extend it** with `openshell.policy`. `allow` hosts take any traffic,
+  uninspected, like the built-in groups; `read_only` hosts only `GET`, `HEAD`
+  and `OPTIONS` requests. They become the `custom_allow` and
+  `custom_read_only` rules. `disable` drops built-in groups by name.
+- **Replace it** with `openshell.policy_file`, a complete
+  [OpenShell policy](https://github.com/NVIDIA/OpenShell) that is used
+  verbatim. `~` expands to your home directory, and a relative path is
+  relative to `~/.config/claude-forge`. Start from the output of
+  `claude-forge openshell policy`.
+
+Entries are `host` or `host:port` (port 443 by default). A wildcard, `*` for
+one label or `**` for one or more, may only be the whole first label of a host
+with at least three labels, such as `**.example.org`. claude-forge rejects
+invalid entries when it loads the config, along with `api.anthropic.com`,
+`github.com`, `api.github.com` and `uploads.github.com` on port 443 and any
+wildcard that matches them: the Claude and GitHub providers inspect those
+hosts to swap in credentials, and OpenShell rejects overlapping endpoints
+that disagree on inspection. Loopback, link-local and cloud metadata
+addresses are always blocked by OpenShell, so they are rejected too. A
+`policy_file` only has to be valid YAML; claude-forge prints a warning when it
+lists a provider-owned host.
+
+The agent's instructions name the hosts you added and leave out the groups
+you disabled (with a `policy_file`, they only say the policy is yours).
+
+A policy change applies to sandboxes created afterwards. To open a host in a
+running sandbox, update its policy directly:
+
+```bash
+openshell policy update api-work --add-endpoint api.example.com:443 --binary '/**' --wait
+```
+
+Keep `--binary '/**'`: with OpenShell 0.1.2, an endpoint added without it
+stays blocked.
+
 ## Limitations
 
 - No Docker inside the sandbox, and no MCP servers from the Docker runtime.
@@ -150,4 +207,5 @@ keep the rules they started with.
   `$GITHUB_TOKEN` placeholder.
 - git over SSH has no key. Use HTTPS remotes.
 - Hosts outside the allowlist are unreachable. Check
-  `claude-forge openshell policy` for the full list.
+  `claude-forge openshell policy` for the full list, and
+  [customize it](#customizing-the-network-policy) to add hosts.

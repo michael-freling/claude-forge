@@ -10,7 +10,9 @@ import (
 // They tell the agent what it cannot observe about its environment: that it is
 // in a sandbox with its own workspace, which network access it has, and how
 // GitHub credentials work.
-func Memory(githubToken bool, pushRepos []string) string {
+//
+// network summarizes the reachable hosts (spec.DescribeNetwork).
+func Memory(network string, githubToken bool, pushRepos []string) string {
 	var b strings.Builder
 	b.WriteString(`# OpenShell sandbox (claude-forge)
 
@@ -40,10 +42,10 @@ name a file to the user, write it relative to its repository root.
 
 ## Network access is an allowlist
 
-Only some hosts are reachable: Anthropic, GitHub, PyPI, npm, AWS, GCP, Go
-modules and a few documentation sites. Other hosts fail with a connection or
-policy error; that is the sandbox policy, not an outage. Say which host you
-needed instead of retrying. Docker is not available.
+` + network + `
+Other hosts fail with a connection or policy error; that is the sandbox
+policy, not an outage. Say which host you needed instead of retrying. Docker
+is not available.
 `)
 
 	b.WriteString("\n## GitHub\n\n")

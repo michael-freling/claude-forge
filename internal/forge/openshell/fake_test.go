@@ -12,7 +12,7 @@ type call struct {
 	Env         []string
 	Args        []string
 	Interactive bool
-	File        string // contents of the -f file, read when the call ran
+	File        string // contents of the -f or --policy file, read when the call ran
 }
 
 func (c call) String() string { return strings.Join(c.Args, " ") }
@@ -50,7 +50,7 @@ func (f *fakeRunner) match(args []string) (string, error) {
 func (f *fakeRunner) Output(_ context.Context, env []string, args ...string) ([]byte, error) {
 	c := call{Env: env, Args: args}
 	for i, a := range args {
-		if a == "-f" && i+1 < len(args) {
+		if (a == "-f" || a == "--policy") && i+1 < len(args) {
 			data, _ := os.ReadFile(args[i+1])
 			c.File = string(data)
 		}
