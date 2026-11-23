@@ -83,9 +83,11 @@ func TestOpenShellCmd(t *testing.T) {
 		wantCall string
 		wantOut  string
 	}{
-		{args: []string{"start", "new1", "-p", "hello", "--agent", "a1"}, wantCall: "-- claude --dangerously-skip-permissions --agent a1 --name new1 hello"},
-		{args: []string{"start", "new1", "--no-skip-permissions"}, wantCall: "-- claude --name new1"},
+		{args: []string{"start", "new1", "-p", "hello", "--agent", "a1"}, wantCall: "-- env -u CLAUDE_CODE_OAUTH_TOKEN claude --dangerously-skip-permissions --agent a1 --name new1 hello"},
+		{args: []string{"start", "new1", "--no-skip-permissions"}, wantCall: "-- env -u CLAUDE_CODE_OAUTH_TOKEN claude --name new1"},
+		{args: []string{"start", "new1", "--remote-control"}, wantCall: "-- env -u CLAUDE_CODE_OAUTH_TOKEN claude --remote-control new1 --dangerously-skip-permissions --name new1"},
 		{args: []string{"connect", "demo", "--agent", "a1"}, wantCall: "claude --dangerously-skip-permissions --agent a1"},
+		{args: []string{"connect", "demo", "--remote-control"}, wantCall: "claude --remote-control demo --dangerously-skip-permissions"},
 		{args: []string{"list"}, wantOut: "demo"},
 		{args: []string{"stop", "demo"}, wantCall: "sandbox stop demo"},
 		{args: []string{"delete", "demo"}, wantCall: "sandbox delete demo"},
@@ -104,6 +106,26 @@ func TestOpenShellCmd(t *testing.T) {
 			if tt.wantCall != "" {
 				assert.True(t, strings.Contains(strings.Join(runner.calls, "\n"), tt.wantCall), "calls: %v", runner.calls)
 			}
+		})
+	}
+}
+
+func TestOpenShellRemoteControlNeedsLogin(t *testing.T) {
+	for _, args := range [][]string{{"start", "new1", "--remote-control"}, {"connect", "demo", "--remote-control"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			runner := withFakeOpenShell(t)
+			orig := newOpenShellManager
+			newOpenShellManager = func() (*openshell.Manager, error) {
+				m, err := orig()
+				require.NoError(t, err)
+				m.ResolveClaude = func() (*auth.Credentials, error) {
+					return &auth.Credentials{AuthType: "oauth", Token: "t", FromEnv: true}, nil
+				}
+				return m, nil
+			}
+			_, err := runOpenShell(t, args...)
+			require.ErrorIs(t, err, openshell.ErrRemoteControlNeedsLogin)
+			assert.NotContains(t, strings.Join(runner.calls, "\n"), "sandbox exec")
 		})
 	}
 }

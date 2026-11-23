@@ -18,6 +18,17 @@ type Credentials struct {
 	// the agent explicitly: the credentials file may still exist (e.g. holding
 	// only remote MCP server OAuth tokens) without any Claude login in it.
 	FromEnv bool
+	// Scopes and SubscriptionType describe a login from the credentials file
+	// (claudeAiOauth.scopes and .subscriptionType); they are empty otherwise.
+	Scopes           []string
+	SubscriptionType string
+}
+
+// FullLogin reports whether the credentials are a full 'claude' login from
+// ~/.claude/.credentials.json. Tokens from the environment (an API key, or a
+// 'claude setup-token' token in CLAUDE_CODE_OAUTH_TOKEN) are inference-only.
+func (c *Credentials) FullLogin() bool {
+	return c.AuthType == "oauth" && !c.FromEnv
 }
 
 // credentialsFile represents ~/.claude/.credentials.json with the nested format.
@@ -30,6 +41,9 @@ type oauthCredentials struct {
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
 	ExpiresAt    int64  `json:"expiresAt"`
+
+	Scopes           []string `json:"scopes"`
+	SubscriptionType string   `json:"subscriptionType"`
 }
 
 // legacyCredentialsFile represents the old flat ~/.claude/.credentials.json format.
@@ -86,8 +100,10 @@ func Resolve(claudeDir string) (*Credentials, error) {
 			}
 		}
 		return &Credentials{
-			AuthType: "oauth",
-			Token:    creds.ClaudeAiOauth.AccessToken,
+			AuthType:         "oauth",
+			Token:            creds.ClaudeAiOauth.AccessToken,
+			Scopes:           creds.ClaudeAiOauth.Scopes,
+			SubscriptionType: creds.ClaudeAiOauth.SubscriptionType,
 		}, nil
 	}
 

@@ -10,12 +10,14 @@ package openshell
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/michael-freling/claude-forge/internal/forge/auth"
@@ -86,22 +88,41 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// claudeCredential resolves the Claude login claude-forge already uses for
-// Docker sessions (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or the host's
-// ~/.claude/.credentials.json) and returns the provider env key and value.
-func (m *Manager) claudeCredential() (key, value string, err error) {
+// resolveClaude resolves the Claude login claude-forge already uses for
+// Docker sessions: ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or the host's
+// ~/.claude/.credentials.json.
+func (m *Manager) resolveClaude() (*auth.Credentials, error) {
 	resolve := m.ResolveClaude
 	if resolve == nil {
 		resolve = func() (*auth.Credentials, error) { return auth.Resolve(m.ClaudeDir) }
 	}
 	creds, err := resolve()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to resolve Claude credentials (log in with 'claude' on the host): %w", err)
+		return nil, fmt.Errorf("failed to resolve Claude credentials (log in with 'claude' on the host): %w", err)
 	}
+	return creds, nil
+}
+
+// ErrRemoteControlNeedsLogin is returned for --remote-control when the host's
+// Claude credential is not a full 'claude' login.
+var ErrRemoteControlNeedsLogin = errors.New("--remote-control needs the host's 'claude' login (~/.claude/.credentials.json): " +
+	"ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN ('claude setup-token') are inference-only; unset them and log in with 'claude'")
+
+// checkRemoteControl fails when Remote Control is requested without a full
+// login, before anything is created or started.
+func checkRemoteControl(opts StartOptions, creds *auth.Credentials) error {
+	if opts.RemoteControl && !creds.FullLogin() {
+		return ErrRemoteControlNeedsLogin
+	}
+	return nil
+}
+
+// providerCredential returns the Claude provider's env key and value.
+func providerCredential(creds *auth.Credentials) (key, value string) {
 	if creds.AuthType == "api_key" {
-		return spec.EnvAnthropicAPIKey, creds.Token, nil
+		return spec.EnvAnthropicAPIKey, creds.Token
 	}
-	return spec.EnvClaudeOAuthToken, creds.Token, nil
+	return spec.EnvClaudeOAuthToken, creds.Token
 }
 
 // syncClaude copies the host's current Claude credential into the Claude
@@ -109,14 +130,11 @@ func (m *Manager) claudeCredential() (key, value string, err error) {
 // ~/.claude/.credentials.json is a short-lived access token that the host's
 // Claude Code refreshes, and only the access token (never the refresh token)
 // is handed to OpenShell.
-func (m *Manager) syncClaude(ctx context.Context) error {
+func (m *Manager) syncClaude(ctx context.Context, creds *auth.Credentials) error {
 	if err := m.Client.EnsureProfile(ctx, spec.ClaudeProfile()); err != nil {
 		return err
 	}
-	key, value, err := m.claudeCredential()
-	if err != nil {
-		return err
-	}
+	key, value := providerCredential(creds)
 	return m.Client.SetProvider(ctx, ClaudeProviderName, spec.ClaudeProfileID, key, value)
 }
 
@@ -135,34 +153,37 @@ func (m *Manager) githubToken(ctx context.Context) string {
 	return ""
 }
 
-// providers syncs the Claude provider and makes sure the GitHub provider
-// exists, returning the providers to attach. With refreshGitHub, the GitHub
-// token is re-read from the host even when the provider already exists.
-func (m *Manager) providers(ctx context.Context, refreshGitHub bool) (providers []string, github bool, err error) {
-	if err := m.syncClaude(ctx); err != nil {
-		return nil, false, err
-	}
-	providers = append(providers, ClaudeProviderName)
-
+// syncGitHub makes sure the GitHub provider exists and reports whether it
+// does. With refresh, the GitHub token is re-read from the host even when the
+// provider already exists.
+func (m *Manager) syncGitHub(ctx context.Context, refresh bool) (bool, error) {
 	if err := m.Client.EnsureProfile(ctx, spec.GitHubProfile(m.Config.OpenShell.GitHub.PushRepos)); err != nil {
-		return nil, false, err
+		return false, err
 	}
-	if refreshGitHub || !m.Client.ProviderExists(ctx, GitHubProviderName) {
-		token := m.githubToken(ctx)
-		if token == "" {
-			m.logf("No GitHub token (GITHUB_TOKEN, GH_TOKEN or 'gh auth token'): only public repositories can be cloned")
-			return providers, false, nil
-		}
-		if err := m.Client.SetProvider(ctx, GitHubProviderName, spec.GitHubProfileID, spec.EnvGitHubToken, token); err != nil {
-			return nil, false, err
-		}
+	if !refresh && m.Client.ProviderExists(ctx, GitHubProviderName) {
+		return true, nil
 	}
-	return append(providers, GitHubProviderName), true, nil
+	token := m.githubToken(ctx)
+	if token == "" {
+		m.logf("No GitHub token (GITHUB_TOKEN, GH_TOKEN or 'gh auth token'): only public repositories can be cloned")
+		return false, nil
+	}
+	if err := m.Client.SetProvider(ctx, GitHubProviderName, spec.GitHubProfileID, spec.EnvGitHubToken, token); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Auth re-syncs the Claude and GitHub providers from the host's credentials.
 func (m *Manager) Auth(ctx context.Context) error {
-	if _, _, err := m.providers(ctx, true); err != nil {
+	creds, err := m.resolveClaude()
+	if err != nil {
+		return err
+	}
+	if err := m.syncClaude(ctx, creds); err != nil {
+		return err
+	}
+	if _, err := m.syncGitHub(ctx, true); err != nil {
 		return err
 	}
 	m.logf("Synced Claude and GitHub credentials to OpenShell providers %s and %s", ClaudeProviderName, GitHubProviderName)
@@ -215,6 +236,9 @@ type StartOptions struct {
 	Agent           string
 	// Repos (owner/name) are cloned in addition to openshell.repositories.
 	Repos []string
+	// RemoteControl starts Claude Code with Remote Control, named after the
+	// sandbox. It needs a full 'claude' login on the host.
+	RemoteControl bool
 }
 
 // Start creates a sandbox, clones the repositories and installs the plugins
@@ -233,9 +257,23 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) error {
 		return err
 	}
 
-	providers, github, err := m.providers(ctx, false)
+	creds, err := m.resolveClaude()
 	if err != nil {
 		return err
+	}
+	if err := checkRemoteControl(opts, creds); err != nil {
+		return err
+	}
+	if err := m.syncClaude(ctx, creds); err != nil {
+		return err
+	}
+	providers := []string{ClaudeProviderName}
+	github, err := m.syncGitHub(ctx, false)
+	if err != nil {
+		return err
+	}
+	if github {
+		providers = append(providers, GitHubProviderName)
 	}
 	policy, err := m.PolicyYAML(github)
 	if err != nil {
@@ -256,12 +294,12 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) error {
 		return err
 	}
 
-	if err := m.uploadHome(ctx, opts.Name, true, github); err != nil {
+	if err := m.uploadHome(ctx, opts.Name, true, github, creds); err != nil {
 		return err
 	}
 	m.cloneRepos(ctx, opts.Name, repos)
 	m.installPlugins(ctx, opts.Name)
-	return m.runClaude(ctx, opts.Name, false, opts)
+	return m.runClaude(ctx, opts.Name, false, creds, opts)
 }
 
 // Connect runs Claude Code again in an existing sandbox, continuing its most
@@ -269,6 +307,13 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) error {
 func (m *Manager) Connect(ctx context.Context, name string, opts StartOptions) error {
 	sb, err := m.Client.GetSandbox(ctx, name)
 	if err != nil {
+		return err
+	}
+	creds, err := m.resolveClaude()
+	if err != nil {
+		return err
+	}
+	if err := checkRemoteControl(opts, creds); err != nil {
 		return err
 	}
 	switch sb.Phase {
@@ -282,17 +327,19 @@ func (m *Manager) Connect(ctx context.Context, name string, opts StartOptions) e
 		return fmt.Errorf("sandbox %q is %s and cannot be reconnected: delete it and start a new one", name, sb.Phase)
 	}
 
-	if err := m.syncClaude(ctx); err != nil {
+	if err := m.syncClaude(ctx, creds); err != nil {
 		return err
 	}
 	github := m.Client.ProviderExists(ctx, GitHubProviderName)
-	if err := m.uploadHome(ctx, name, false, github); err != nil {
+	if err := m.uploadHome(ctx, name, false, github, creds); err != nil {
 		return err
 	}
-	return m.runClaude(ctx, name, true, opts)
+	return m.runClaude(ctx, name, true, creds, opts)
 }
 
-func (m *Manager) uploadHome(ctx context.Context, name string, firstRun, github bool) error {
+// uploadHome refreshes the sandbox's home directory files. With a full login
+// it also writes the sandbox's Claude login (see loginScript).
+func (m *Manager) uploadHome(ctx context.Context, name string, firstRun, github bool, creds *auth.Credentials) error {
 	stage, err := os.MkdirTemp(m.Client.TempDir, "claude-forge-home-*")
 	if err != nil {
 		return fmt.Errorf("failed to create staging directory: %w", err)
@@ -307,6 +354,7 @@ func (m *Manager) uploadHome(ctx context.Context, name string, firstRun, github 
 		GitHubToken: github,
 		PushRepos:   m.Config.OpenShell.GitHub.PushRepos,
 		Network:     m.networkSummary(),
+		FullLogin:   creds.FullLogin(),
 	}
 	if m.GitIdentity != nil {
 		opts.GitUserName, opts.GitUserEmail = m.GitIdentity()
@@ -322,8 +370,60 @@ func (m *Manager) uploadHome(ctx context.Context, name string, firstRun, github 
 		path.Join(claudeDir, stagedSettingsFile), path.Join(claudeDir, "settings.json")); err != nil {
 		return fmt.Errorf("failed to update settings.json in sandbox %s: %w", name, err)
 	}
+	if !creds.FullLogin() {
+		return nil
+	}
+	return m.writeLogin(ctx, name, creds)
+}
+
+// writeLogin writes the sandbox's Claude login, which Remote Control needs:
+// a token from CLAUDE_CODE_OAUTH_TOKEN is inference-only, but the same token
+// in ~/.claude/.credentials.json is a full login. It runs on every start and
+// connect, since the provider's placeholder can change.
+func (m *Manager) writeLogin(ctx context.Context, name string, creds *auth.Credentials) error {
+	scopes, err := json.Marshal(creds.Scopes)
+	if err != nil {
+		return fmt.Errorf("failed to marshal the Claude login scopes: %w", err)
+	}
+	if _, err := m.Client.Run(ctx, name, "", nil, "bash", "-c", loginScript, "bash",
+		path.Join(layout.Home, ".claude", stagedOAuthAccountFile),
+		path.Join(layout.Home, ".claude.json"),
+		path.Join(layout.Home, ".claude", ".credentials.json"),
+		string(scopes), creds.SubscriptionType); err != nil {
+		return fmt.Errorf("failed to write the Claude login in sandbox %s: %w", name, err)
+	}
 	return nil
 }
+
+// loginScript merges the staged oauthAccount ($1, when there is one) into
+// ~/.claude.json ($2) and writes ~/.claude/.credentials.json ($3) with the
+// host login's scopes ($4, JSON) and subscription type ($5).
+//
+// The access token is the Claude provider's placeholder, read from the
+// sandbox's own environment, so the real token never leaves the host and
+// never appears in a command line. There is no refresh token, and the far
+// future expiry (2100-01-01) keeps Claude Code from trying to refresh: the
+// host's claude-forge re-syncs the provider when the real token changes.
+const loginScript = `set -e
+if [ -f "$1" ]; then
+  if [ -f "$2" ]; then
+    jq --slurpfile account "$1" '.oauthAccount = $account[0]' "$2" > "$2.claude-forge"
+  else
+    jq -n --slurpfile account "$1" '{oauthAccount: $account[0]}' > "$2.claude-forge"
+  fi
+  mv "$2.claude-forge" "$2"
+  rm "$1"
+fi
+if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+  echo "CLAUDE_CODE_OAUTH_TOKEN is not set in the sandbox" >&2
+  exit 1
+fi
+umask 077
+mkdir -p "$(dirname "$3")"
+jq -n --arg token "$CLAUDE_CODE_OAUTH_TOKEN" --argjson scopes "$4" --arg subscription "$5" \
+  '{claudeAiOauth: {accessToken: $token, refreshToken: null, expiresAt: 4102444800000, scopes: $scopes,
+    subscriptionType: (if $subscription == "" then null else $subscription end)}}' > "$3.claude-forge"
+mv "$3.claude-forge" "$3"`
 
 // mergeSettingsScript replaces the sandbox's settings.json ($2) with the
 // staged forge settings ($1), keeping the keys `claude plugin` manages in
@@ -359,9 +459,36 @@ func (m *Manager) claudeArgs(opts StartOptions) []string {
 	return args
 }
 
+// continueFallbackSeconds is how soon claude --continue must fail for connect
+// to start a new conversation instead. With nothing to resume it exits 1
+// within about a second; the margin covers a slow sandbox, and a resumed
+// conversation that ends with an error after this long is real work that must
+// not be replaced by a new session.
+const continueFallbackSeconds = 10
+
 // continueScript continues the most recent conversation in the workspace, or
-// starts a new one when there is none yet (claude --continue fails then).
-var continueScript = `if ls ~/.claude/projects/` + layout.SessionSubdir + `/*.jsonl >/dev/null 2>&1; then exec claude --continue "$@"; else exec claude "$@"; fi`
+// starts a new one when there is none to continue.
+var continueScript = continueScriptWithin(continueFallbackSeconds)
+
+// ContinueScript returns the bash script connect runs in a sandbox: its
+// positional parameters are the claude arguments.
+func ContinueScript() string {
+	return continueScript
+}
+
+// continueScriptWithin returns the continue script with a fallback window of
+// fallbackSeconds. Transcripts alone do not mean there is a conversation to
+// continue: claude -p, claude remote-control, and sessions quit before the
+// first message leave ones that claude --continue cannot resume, and it exits
+// with "No conversation found to continue". So a --continue that fails within
+// the window falls back to a new conversation, in the same shell so the
+// terminal stays attached.
+func continueScriptWithin(fallbackSeconds int) string {
+	return `if ls ~/.claude/projects/` + layout.SessionSubdir + `/*.jsonl >/dev/null 2>&1; then ` +
+		`start=$SECONDS; claude --continue "$@"; status=$?; ` +
+		`if [ "$status" -eq 0 ] || [ $((SECONDS - start)) -ge ` + strconv.Itoa(fallbackSeconds) + ` ]; then exit "$status"; fi; ` +
+		`fi; exec claude "$@"`
+}
 
 // sandboxEnv is the environment of the commands claude-forge runs in a
 // sandbox. Values show up in the host's process list: never put secrets here.
@@ -377,7 +504,7 @@ func sandboxEnv() map[string]string {
 	}
 }
 
-func (m *Manager) runClaude(ctx context.Context, name string, resume bool, opts StartOptions) error {
+func (m *Manager) runClaude(ctx context.Context, name string, resume bool, creds *auth.Credentials, opts StartOptions) error {
 	env := sandboxEnv()
 	if m.ClaudeModel != nil {
 		if model := m.ClaudeModel(); model != "" {
@@ -386,9 +513,17 @@ func (m *Manager) runClaude(ctx context.Context, name string, resume bool, opts 
 	}
 
 	args := m.claudeArgs(opts)
+	if opts.RemoteControl {
+		args = append([]string{"--remote-control", name}, args...)
+	}
 	command := append([]string{"claude"}, args...)
 	if resume {
 		command = append([]string{"bash", "-c", continueScript, "claude"}, args...)
+	}
+	if creds.FullLogin() {
+		// Claude Code treats a token in CLAUDE_CODE_OAUTH_TOKEN as
+		// inference-only; without it, the full login writeLogin wrote is used.
+		command = append([]string{"env", "-u", spec.EnvClaudeOAuthToken}, command...)
 	}
 	err := m.Client.Exec(ctx, name, layout.Workspace, env, command...)
 	m.logf("\nSandbox %s keeps running. Reconnect: claude-forge openshell connect %s | stop: claude-forge openshell stop %s", name, name, name)

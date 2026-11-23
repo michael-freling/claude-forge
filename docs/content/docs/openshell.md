@@ -50,8 +50,8 @@ claude-forge openshell delete api-work    # removes the sandbox and its workspac
 
 | Command | What it does |
 | --- | --- |
-| `openshell start <name>` | Creates a sandbox and starts Claude Code in `~/work`. Flags: `--repo owner/name` (repeatable), `-p/--prompt`, `--agent`, `--no-skip-permissions` |
-| `openshell connect <name>` | Runs Claude Code again with `--continue`, starting the sandbox first if it is stopped. Flags: `--agent`, `--no-skip-permissions` |
+| `openshell start <name>` | Creates a sandbox and starts Claude Code in `~/work`. Flags: `--repo owner/name` (repeatable), `-p/--prompt`, `--agent`, `--no-skip-permissions`, `--remote-control` |
+| `openshell connect <name>` | Runs Claude Code again with `--continue` (or in a new conversation when there is none it can continue, such as after only `claude -p` runs), starting the sandbox first if it is stopped. Flags: `--agent`, `--no-skip-permissions`, `--remote-control` |
 | `openshell list` | Lists the sandboxes claude-forge created (labelled `claude-forge=true`) |
 | `openshell stop <name>` | Stops a sandbox, keeping its workspace |
 | `openshell delete <name>` | Deletes a sandbox **and its workspace**. Push any work first |
@@ -71,6 +71,28 @@ sandboxes pick up the new token within seconds.
 
 The GitHub token is stored the first time a sandbox needs it. Run
 `claude-forge openshell auth` after rotating it.
+
+## Remote Control
+
+With a `claude` login on your machine, you can drive a sandbox's Claude Code
+from claude.ai or the Claude app with Remote Control: pass `--remote-control`
+to `start` or `connect` (the session is named after the sandbox), or run
+`/remote-control` inside the session. Claude Code asks once
+per sandbox whether to enable Remote Control; answer it in the terminal.
+
+Remote Control does not work with `ANTHROPIC_API_KEY` or with a
+`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`: those are inference-only,
+and `--remote-control` fails with them. Unset them to use your `claude` login.
+
+To make this work, every `start` and `connect` with a `claude` login writes
+`~/.claude/.credentials.json` in the sandbox from the OpenShell provider's
+placeholder, and runs Claude Code with `CLAUDE_CODE_OAUTH_TOKEN` unset so it
+uses that file. It also copies the account and organization IDs and plan tiers
+from the `oauthAccount` in your `~/.claude.json`, which Remote Control needs to
+check eligibility. The real access token and the refresh token never enter
+the sandbox, and claude-forge does not copy your email address or name. Claude
+Code in the sandbox does fetch your account profile (including them) from
+Anthropic, as it does on any machine you log in on.
 
 ## What happens at creation
 
@@ -108,7 +130,8 @@ machine:
 `start` also seeds `~/.claude.json` (onboarding done, your theme, the workspace
 trusted) and `~/.gitconfig` (your global git `user.name`/`user.email`, and a
 credential helper for GitHub over HTTPS). After that the sandbox owns them, so
-`connect` leaves them alone.
+`connect` leaves them alone, except for the `claude` login details described
+in [Remote Control](#remote-control).
 
 The git identity comes from `git config --get` in the directory you run
 claude-forge from. Set it globally (`git config --global user.name ...`) if

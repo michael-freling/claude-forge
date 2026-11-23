@@ -55,6 +55,16 @@ var newOpenShellManager = func() (*openshell.Manager, error) {
 	}, nil
 }
 
+const remoteControlUsage = "Start Claude Code with Remote Control, named after the sandbox (needs a 'claude' login on the host)"
+
+// remoteControlHelp explains Remote Control in sandboxes for start and connect.
+const remoteControlHelp = `With a 'claude' login on the host (not ANTHROPIC_API_KEY or a
+CLAUDE_CODE_OAUTH_TOKEN from 'claude setup-token', which are inference-only),
+Claude Code in the sandbox can use Remote Control: pass --remote-control, or
+run /remote-control in the session. Claude Code asks once whether to enable
+it. claude-forge gives the sandbox only the provider's placeholder token and
+the account and organization IDs of the login, never the real token.`
+
 func newOpenShellCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "openshell",
@@ -94,6 +104,7 @@ func newOpenShellStartCmd() *cobra.Command {
 		prompt            string
 		agent             string
 		repos             []string
+		remoteControl     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "start <name>",
@@ -111,7 +122,9 @@ Before Claude Code starts, the new sandbox is set up:
     is added from the host's marketplace list; one added from a local
     directory is added from that directory's GitHub origin.
 
-A repository or plugin that fails only prints a warning.`,
+A repository or plugin that fails only prints a warning.
+
+` + remoteControlHelp,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m, err := newOpenShellManager()
@@ -124,6 +137,7 @@ A repository or plugin that fails only prints a warning.`,
 				SkipPermissions: !noSkipPermissions,
 				Agent:           agent,
 				Repos:           repos,
+				RemoteControl:   remoteControl,
 			})
 		},
 	}
@@ -131,6 +145,7 @@ A repository or plugin that fails only prints a warning.`,
 	cmd.Flags().StringVarP(&prompt, "prompt", "p", "", "Initial prompt to send to Claude Code")
 	cmd.Flags().StringVar(&agent, "agent", "", agentFlagUsage)
 	cmd.Flags().StringArrayVar(&repos, "repo", nil, "GitHub repository (owner/name) to clone into the workspace, in addition to openshell.repositories (repeatable)")
+	cmd.Flags().BoolVar(&remoteControl, "remote-control", false, remoteControlUsage)
 	return cmd
 }
 
@@ -138,12 +153,15 @@ func newOpenShellConnectCmd() *cobra.Command {
 	var (
 		noSkipPermissions bool
 		agent             string
+		remoteControl     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "connect <name>",
 		Short: "Continue Claude Code in an existing sandbox",
 		Long: `Run Claude Code again in sandbox <name>, continuing its most recent
-conversation. A stopped sandbox is started first.`,
+conversation. A stopped sandbox is started first.
+
+` + remoteControlHelp,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m, err := newOpenShellManager()
@@ -153,11 +171,13 @@ conversation. A stopped sandbox is started first.`,
 			return m.Connect(cmd.Context(), args[0], openshell.StartOptions{
 				SkipPermissions: !noSkipPermissions,
 				Agent:           agent,
+				RemoteControl:   remoteControl,
 			})
 		},
 	}
 	cmd.Flags().BoolVar(&noSkipPermissions, "no-skip-permissions", false, "Disable --dangerously-skip-permissions")
 	cmd.Flags().StringVar(&agent, "agent", "", agentFlagUsage)
+	cmd.Flags().BoolVar(&remoteControl, "remote-control", false, remoteControlUsage)
 	return cmd
 }
 
