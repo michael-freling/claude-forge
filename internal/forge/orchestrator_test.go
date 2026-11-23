@@ -1127,6 +1127,63 @@ func TestStart_GHTokenFromHostsFile(t *testing.T) {
 	assert.NotEmpty(t, sess.AgentName)
 }
 
+func TestStart_WritesContainerIdentity(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-123")
+
+	mockCM.EXPECT().ImageExists(gomock.Any(), gomock.Any()).Return(true, nil).Times(3)
+	mockCM.EXPECT().CreateNetwork(gomock.Any(), gomock.Any()).Return("net-id", nil)
+	mockCM.EXPECT().StartGateway(gomock.Any(), gomock.Any()).Return("gw-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "gw-id", gomock.Any()).Return(nil)
+	mockCM.EXPECT().StartGitHubMCP(gomock.Any(), gomock.Any()).Return("mcp-id", nil)
+	mockCM.EXPECT().WaitForReady(gomock.Any(), "mcp-id", gomock.Any()).Return(nil)
+
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	passwdFile := filepath.Join(configDir, claudecode.ContainerPasswdFile)
+	groupFile := filepath.Join(configDir, claudecode.ContainerGroupFile)
+	mockCM.EXPECT().StartAgent(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, opts container.AgentOptions) (string, error) {
+			assert.Equal(t, passwdFile, opts.PasswdFile)
+			assert.Equal(t, groupFile, opts.GroupFile)
+			assert.NotContains(t, opts.Env, "FORGE_UID", "the agent runs as the UID directly; nothing to remap")
+			assert.NotContains(t, opts.Env, "FORGE_GID")
+			return "agent-id", nil
+		})
+
+	_, err := orch.Start(context.Background(), StartOptions{ProjectDir: projectDir, UID: 1234, GID: 5678})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(passwdFile)
+	require.NoError(t, err)
+	assert.Equal(t, claudecode.RenderContainerPasswd(1234, 5678), string(data))
+	data, err = os.ReadFile(groupFile)
+	require.NoError(t, err)
+	assert.Equal(t, claudecode.RenderContainerGroup(5678), string(data))
+}
+
+func TestStart_ContainerIdentityError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockCM := NewMockContainerManager(ctrl)
+	orch, homeDir := setupOrchestrator(t, mockCM)
+
+	projectDir := setupGitProject(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-123")
+
+	// A directory where the passwd file goes makes the write fail before any
+	// container is started.
+	configDir := filepath.Join(homeDir, ".config", "claude-forge")
+	require.NoError(t, os.MkdirAll(filepath.Join(configDir, claudecode.ContainerPasswdFile), 0o755))
+
+	_, err := orch.Start(context.Background(), StartOptions{ProjectDir: projectDir, UID: 1000, GID: 1000})
+	assert.ErrorContains(t, err, "failed to write container identity")
+}
+
 func TestStart_WithDockerEnabled(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
@@ -1153,11 +1210,15 @@ func TestStart_WithDockerEnabled(t *testing.T) {
 			assert.True(t, opts.Privileged)
 			assert.True(t, opts.EnableDocker)
 			assert.Equal(t, "1", opts.Env["FORGE_ENABLE_DOCKER"])
+			assert.Empty(t, opts.PasswdFile, "a root-started DinD session keeps the image's passwd")
+			assert.Empty(t, opts.GroupFile)
 			return "agent-id", nil
 		})
 
 	sess, err := orch.Start(context.Background(), StartOptions{
 		ProjectDir: projectDir,
+		UID:        1000,
+		GID:        1000,
 	})
 
 	require.NoError(t, err)

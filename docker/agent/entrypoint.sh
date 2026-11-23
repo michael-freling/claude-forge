@@ -1,6 +1,22 @@
 #!/bin/bash
 set -e
 
+# claude-forge runs the container as the host user's UID:GID (and OpenShell or
+# a plain `docker run` as the image's non-root user), so there is nothing to
+# remap: run the command directly. Only Docker-in-Docker sessions start as
+# root, because dockerd needs it; they continue below and drop to the user.
+if [ "$(id -u)" != "0" ]; then
+    # FORGE_UID is only set for root-started sessions. A non-root container
+    # that still gets it was started by a claude-forge release that expects
+    # the entrypoint to remap the user, which is impossible without root:
+    # files only the host user can read in the workspace would fail with
+    # EACCES. Say so instead of failing obscurely.
+    if [ -n "$FORGE_UID" ] && [ "$FORGE_UID" != "$(id -u)" ]; then
+        echo "claude-forge: running as UID $(id -u), but the host user is UID $FORGE_UID; files only the host user can read will be inaccessible. Update claude-forge (it now starts the container with --user)." >&2
+    fi
+    exec "$@"
+fi
+
 # Match container user UID/GID to host user if FORGE_UID/FORGE_GID are set.
 # This ensures files created in mounted volumes have correct host ownership.
 if [ -n "$FORGE_UID" ] && [ -n "$FORGE_GID" ]; then

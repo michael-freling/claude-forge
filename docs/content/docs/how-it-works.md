@@ -73,6 +73,9 @@ Claude Code in the session is given two facts it cannot work out for itself:
   the workspace (`internal/forge/orchestrator.go`) rather than the
   container-absolute path (`/home/user/work/internal/forge/orchestrator.go`),
   which would not resolve for you.
+- It runs as your own UID and GID, never as root, so everything it writes to
+  the workspace and the other mounted directories stays owned by you on the
+  host. Inside the container that UID is named `user` with home `/home/user`.
 - GitHub is reachable only through the session's gateway, which holds the
   credentials — so the session knows to clone and fetch via
   `https://github.com/...` (rewritten to the gateway) or, when a remote is an
@@ -98,6 +101,8 @@ session and read as user memory.
 By default the agent has no Docker access at all: the host's Docker socket is
 never mounted, in any configuration. Setting `docker.enabled` in `config.yaml`
 starts a **separate Docker daemon inside the agent container** (which then runs
-`--privileged`), so Claude Code can build and run its own containers. That
+`--privileged` and starts as root, because the daemon needs it; Claude Code
+itself still runs as your UID and GID), so Claude Code can build and run its own
+containers. That
 daemon is private to the session — the agent cannot see or control the host's
 containers, claude-forge's own containers, or those of other sessions.

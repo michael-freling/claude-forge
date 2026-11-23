@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/michael-freling/claude-forge/internal/forge/openshell/spec"
 )
 
 const (
@@ -41,6 +44,131 @@ type Config struct {
 	Defaults   DefaultsConfig    `yaml:"defaults"`
 	Docker     DockerConfig      `yaml:"docker"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
+	OpenShell  OpenShellConfig   `yaml:"openshell"`
+}
+
+// OpenShellConfig configures `claude-forge openshell` sessions, which run in
+// OpenShell sandboxes instead of Docker containers: no gateway or git proxy,
+// no host project mount, and network access from a generated sandbox policy.
+type OpenShellConfig struct {
+	// Gateway selects the OpenShell gateway (default: the CLI's active one).
+	Gateway string `yaml:"gateway"`
+	// Image is the sandbox image (default: images.agent).
+	Image  string                `yaml:"image"`
+	GitHub OpenShellGitHubConfig `yaml:"github"`
+	// Repositories (owner/name) are cloned into the workspace when a sandbox
+	// is created.
+	Repositories []string `yaml:"repositories"`
+	// Plugins (name@marketplace) are installed when a sandbox is created.
+	// Nil (the key is absent) installs the plugins enabled on the host; an
+	// empty list installs none.
+	Plugins []string `yaml:"plugins"`
+	// Policy extends the generated sandbox policy: extra allowed and
+	// read-only hosts, and built-in groups to drop.
+	Policy spec.PolicyConfig `yaml:"policy"`
+	// PolicyFile is a full OpenShell policy used verbatim instead of the
+	// generated one. Load expands a leading ~ and resolves a relative path
+	// against the config directory, so it is absolute afterwards. It cannot
+	// be combined with Policy.
+	PolicyFile string `yaml:"policy_file"`
+}
+
+// OpenShellGitHubConfig configures GitHub access from OpenShell sandboxes.
+type OpenShellGitHubConfig struct {
+	// PushRepos limits git push and GitHub REST API writes to these
+	// repositories (owner/name). Empty allows whatever the GitHub token
+	// allows. Reading and cloning any repository is always allowed.
+	PushRepos []string `yaml:"push_repos"`
+}
+
+// githubRepoPattern matches a GitHub owner/name.
+var githubRepoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+
+// pluginPattern matches a Claude Code plugin ID, name@marketplace.
+var pluginPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+$`)
+
+// ValidateGitHubRepo checks a GitHub repository reference (owner/name).
+func ValidateGitHubRepo(repo string) error {
+	if !githubRepoPattern.MatchString(repo) || strings.HasSuffix(repo, ".git") {
+		return fmt.Errorf("invalid repository %q: use owner/name", repo)
+	}
+	return nil
+}
+
+// loadOpenShell resolves openshell.policy_file and validates the openshell
+// section.
+func loadOpenShell(c *OpenShellConfig, configDir string) error {
+	if c.PolicyFile != "" {
+		path, err := resolvePath(c.PolicyFile, configDir)
+		if err != nil {
+			return fmt.Errorf("openshell.policy_file: %w", err)
+		}
+		c.PolicyFile = path
+	}
+	return validateOpenShell(*c)
+}
+
+// resolvePath expands a leading ~ to the home directory and makes a relative
+// path relative to configDir.
+func resolvePath(path, configDir string) (string, error) {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to expand %q: %w", path, err)
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(configDir, path)
+	}
+	return path, nil
+}
+
+// validatePolicyFile checks that a policy file exists and is a YAML mapping.
+// OpenShell validates its contents when a sandbox is created.
+func validatePolicyFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read policy file: %w", err)
+	}
+	var policy map[string]any
+	if err := yaml.Unmarshal(data, &policy); err != nil {
+		return fmt.Errorf("failed to parse policy file %s: %w", path, err)
+	}
+	if len(policy) == 0 {
+		return fmt.Errorf("policy file %s is empty", path)
+	}
+	return nil
+}
+
+func validateOpenShell(c OpenShellConfig) error {
+	if c.PolicyFile != "" {
+		if !c.Policy.IsEmpty() {
+			return fmt.Errorf("openshell.policy_file replaces the generated policy and cannot be combined with openshell.policy: put the extra hosts in the policy file")
+		}
+		if err := validatePolicyFile(c.PolicyFile); err != nil {
+			return fmt.Errorf("openshell.policy_file: %w", err)
+		}
+	}
+	if err := c.Policy.Validate(); err != nil {
+		return fmt.Errorf("openshell.policy.%w", err)
+	}
+	for _, r := range c.GitHub.PushRepos {
+		if err := ValidateGitHubRepo(r); err != nil {
+			return fmt.Errorf("openshell.github.push_repos: %w", err)
+		}
+	}
+	for _, r := range c.Repositories {
+		if err := ValidateGitHubRepo(r); err != nil {
+			return fmt.Errorf("openshell.repositories: %w", err)
+		}
+	}
+	for _, p := range c.Plugins {
+		if !pluginPattern.MatchString(p) {
+			return fmt.Errorf("openshell.plugins: invalid plugin %q: use name@marketplace", p)
+		}
+	}
+	return nil
 }
 
 // MCPServerConfig configures a custom MCP server exposed to the agent.
@@ -315,6 +443,9 @@ func Load(configDir string) (*Config, error) {
 	}
 
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
+		return nil, err
+	}
+	if err := loadOpenShell(&cfg.OpenShell, configDir); err != nil {
 		return nil, err
 	}
 	if err := ValidateAgentName(cfg.Defaults.Agent); err != nil {

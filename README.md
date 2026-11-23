@@ -12,6 +12,7 @@
 - A first-party **Kubernetes MCP** server (`mcp/k8s-mcp/`, added as a custom container server) serving every context in your own kubeconfig, with policy-enforced carveouts — no secrets, no exec, no RBAC
 - Custom **MCP servers** (remote http/sse or stdio) configurable per install
 - A ready-made read-only, multi-project **Google Cloud MCP** server (added as a custom container server)
+- Optional **OpenShell sandboxes** (`claude-forge openshell`): not tied to a directory, the agent clones and works on several repositories in a persistent sandbox, with an allowlist network policy and credentials that never enter the sandbox
 - Optional **Docker-in-Docker**: sessions get their own isolated Docker daemon, unable to see or touch host or other sessions' containers
 - Multiple instances can run in parallel across different projects
 - Named sessions with persistence — resume previous sessions by ID or name
@@ -64,6 +65,7 @@ The full user guide lives on the [documentation site](https://michael-freling.gi
 - [Configuration](https://michael-freling.github.io/claude-forge/docs/configuration/) — the `config.yaml` reference and credential detection
 - [MCP Servers](https://michael-freling.github.io/claude-forge/docs/mcp-servers/) — the built-in GitHub server, the first-party Kubernetes and Google Cloud servers, and adding custom ones
 - [How It Works](https://michael-freling.github.io/claude-forge/docs/how-it-works/) — what happens when a session starts
+- [OpenShell Sandboxes](https://michael-freling.github.io/claude-forge/docs/openshell/) — running sessions in OpenShell sandboxes instead of Docker
 
 ## License
 
