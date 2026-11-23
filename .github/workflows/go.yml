@@ -10,6 +10,7 @@ on:
 jobs:
 
   lint:
+    name: go-lint
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -26,6 +27,7 @@ jobs:
         version: v2.6.2
 
   buf:
+    name: go-buf
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -61,6 +63,7 @@ jobs:
         fi
 
   build:
+    name: go-build
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -104,6 +107,7 @@ jobs:
         path: coverage.txt
 
   unit-test-timeout:
+    name: go-unit-test-timeout
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -118,6 +122,7 @@ jobs:
       run: ./scripts/check-unit-test-timeout.sh
 
   forge-e2e:
+    name: go-forge-e2e
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -135,6 +140,7 @@ jobs:
       run: go test -tags=forge_e2e -v -race -timeout 15m ./test/e2e/forge/...
 
   docker-build:
+    name: go-docker-build
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
